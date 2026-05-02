@@ -1,0 +1,1568 @@
+const WORD_NUMBERS = new Map([
+  ["one", 1],
+  ["two", 2],
+  ["three", 3],
+  ["four", 4],
+  ["five", 5],
+  ["six", 6],
+  ["seven", 7],
+  ["eight", 8],
+  ["nine", 9],
+  ["ten", 10]
+]);
+
+const REQUIREMENT_HEADINGS = [
+  "minimum qualifications",
+  "preferred qualifications",
+  "key qualifications",
+  "requirements",
+  "required experience",
+  "education & experience",
+  "education and experience"
+];
+
+const RESUME_KEYWORDS = [
+  { label: "Python", terms: ["python"], weight: 4 },
+  { label: "PyTorch", terms: ["pytorch"], weight: 5 },
+  { label: "Transformers", terms: ["transformers", "transformer models"], weight: 5 },
+  { label: "RAG", terms: ["rag", "retrieval-augmented generation", "retrieval augmented generation"], weight: 5 },
+  { label: "LLMs", terms: ["llm", "llms", "large language model", "large language models"], weight: 5 },
+  { label: "Vision-Language Models", terms: ["vision-language", "vision language", "vlm", "vlms", "multimodal"], weight: 5 },
+  { label: "Image Generation", terms: ["image generation", "generative ai", "gen ai", "diffusion"], weight: 4 },
+  { label: "Embeddings", terms: ["embedding", "embeddings", "similarity search", "cosine similarity"], weight: 4 },
+  { label: "Machine Learning", terms: ["machine learning", "ml", "ai/ml", "artificial intelligence", "ai"], weight: 4 },
+  {
+    label: "AI Product Experiences",
+    terms: ["ai experiences", "ai experience", "gen ai", "generative ai", "ai products", "ai features", "intelligent experiences"],
+    weight: 5
+  },
+  { label: "Computer Vision", terms: ["computer vision", "vision products", "image classification"], weight: 4 },
+  { label: "C#/.NET", terms: ["c#", ".net", "dotnet", "asp.net"], weight: 5 },
+  { label: "Angular", terms: ["angular", "typescript"], weight: 4 },
+  { label: "AWS", terms: ["aws", "cloudwatch", "lambda", "eventbridge", "sqs"], weight: 5 },
+  { label: "DynamoDB", terms: ["dynamodb"], weight: 4 },
+  { label: "Terraform", terms: ["terraform", "infrastructure as code", "iac"], weight: 4 },
+  { label: "Microservices", terms: ["microservice", "microservices", "distributed systems"], weight: 5 },
+  {
+    label: "Backend/API Engineering",
+    terms: ["backend", "back-end", "api", "apis", "rest", "service", "services", "server-side", "server side"],
+    weight: 5
+  },
+  {
+    label: "Full Stack Engineering",
+    terms: ["full stack", "full-stack", "frontend", "front-end", "web application", "web app", "ui"],
+    weight: 4
+  },
+  {
+    label: "Event/Queue Systems",
+    terms: ["queue", "queues", "message queue", "messaging", "event-driven", "event driven", "eventbridge", "sqs"],
+    weight: 5
+  },
+  {
+    label: "Cloud Infrastructure",
+    terms: ["cloud infrastructure", "infrastructure", "scalability", "reliability", "observability", "monitoring"],
+    weight: 4
+  },
+  { label: "JavaScript", terms: ["javascript", "node.js", "nodejs", "react"], weight: 2 },
+  { label: "Java/C++", terms: ["java", "c++", "c programming"], weight: 2 },
+  { label: "SQL/Databases", terms: ["sql", "mysql", "mongodb", "database"], weight: 2 },
+  { label: "Testing/APIs", terms: ["swagger", "postman", "unit testing", "integration testing"], weight: 2 },
+  {
+    label: "QA/Test Automation",
+    terms: [
+      "qa",
+      "quality assurance",
+      "software qa",
+      "test automation",
+      "automated testing",
+      "automation testing",
+      "test engineer",
+      "testing framework",
+      "jasmine",
+      "mstest",
+      "blazemeter"
+    ],
+    weight: 5
+  }
+];
+
+const DOMAIN_MISMATCH_RULES = [
+  {
+    label: "iOS app development",
+    terms: ["ios", "swift", "objective-c", "objective c", "uikit", "swiftui", "xcode", "cocoa touch"],
+    penalty: 16
+  },
+  {
+    label: "macOS app development",
+    terms: ["macos", "appkit", "cocoa", "core data"],
+    penalty: 10
+  },
+  {
+    label: "mobile app UI",
+    terms: ["mobile app", "mobile applications", "client app", "native app"],
+    penalty: 8
+  },
+  {
+    label: "embedded/driver development",
+    terms: ["firmware", "kernel", "device driver", "drivers", "embedded"],
+    penalty: 8
+  }
+];
+
+const SENIORITY_RULES = [
+  { label: "senior title", terms: ["senior software engineer", "sr. software engineer", "senior engineer"], penalty: 6 },
+  { label: "staff/principal title", terms: ["staff engineer", "principal engineer", "lead engineer"], penalty: 10 },
+  { label: "high ownership requirement", terms: ["technical lead", "leadership", "mentor junior", "architect"], penalty: 4 }
+];
+
+const MISMATCH_OVERRIDES = [
+  "machine learning",
+  "ml",
+  "ai",
+  "computer vision",
+  "infrastructure",
+  "distributed systems",
+  "backend",
+  "cloud",
+  "data",
+  "platform",
+  "full stack",
+  "full-stack",
+  "api",
+  "service",
+  "microservices",
+  "queue",
+  "event-driven",
+  "scalability",
+  "reliability",
+  "qa",
+  "quality assurance",
+  "test automation"
+];
+
+const APPLE_JOBS_ORIGIN = "https://jobs.apple.com";
+const WORKFLOW_STEP_DELAY_MS = 1800;
+const WORKFLOW_WAIT_TIMEOUT_MS = 12000;
+const DEFAULT_USER_YOE = 2;
+
+function normalizeText(text) {
+  return text
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function getVisiblePageText() {
+  return normalizeText(document.body?.innerText || "");
+}
+
+function getJobId() {
+  const match = window.location.pathname.match(/\/details\/([^/?#]+)/i);
+  return match?.[1] || "unknown";
+}
+
+function getJobIdFromUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const match = parsedUrl.pathname.match(/\/details\/([^/?#]+)/i);
+    return match?.[1] || parsedUrl.href;
+  } catch (_error) {
+    return url;
+  }
+}
+
+function cleanTitle(title) {
+  return normalizeText(title || "")
+    .replace(/\s+-\s+Jobs\s+-\s+Careers at Apple\.?$/i, "")
+    .replace(/\s+-\s+Careers at Apple\.?$/i, "")
+    .replace(/\s*[>›»]\s*$/u, "")
+    .trim();
+}
+
+function getJobTitle() {
+  return cleanTitle(document.querySelector("h1")?.innerText || document.title);
+}
+
+function isElementVisible(element) {
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    style.visibility !== "hidden" &&
+    style.display !== "none"
+  );
+}
+
+function splitSentences(text) {
+  return normalizeText(text)
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function sentenceMentionsRequirement(sentence) {
+  const lower = sentence.toLowerCase();
+  return (
+    /\b(years?|yrs?)\b/.test(lower) &&
+    /\b(experience|professional|industry|software|engineering|development|work)\b/.test(lower)
+  );
+}
+
+function parseYears(sentence) {
+  const years = [];
+  const numericPattern = /\b(\d{1,2})\+?\s*(?:\+?\s*)?(?:years?|yrs?)\b/gi;
+  let numericMatch = numericPattern.exec(sentence);
+
+  while (numericMatch) {
+    years.push(Number(numericMatch[1]));
+    numericMatch = numericPattern.exec(sentence);
+  }
+
+  for (const [word, value] of WORD_NUMBERS.entries()) {
+    const wordPattern = new RegExp(`\\b${word}\\+?\\s+(?:years?|yrs?)\\b`, "i");
+    if (wordPattern.test(sentence)) {
+      years.push(value);
+    }
+  }
+
+  return years;
+}
+
+function classifyMatchType(sentence) {
+  const lower = sentence.toLowerCase();
+
+  if (/\b(preferred|preferably|nice to have|plus)\b/.test(lower)) {
+    return "preferred";
+  }
+
+  if (/\b(minimum|required|requires|must have|at least|need)\b/.test(lower)) {
+    return "required";
+  }
+
+  return "mentioned";
+}
+
+function extractExperienceMatches(text) {
+  return splitSentences(text)
+    .filter(sentenceMentionsRequirement)
+    .map((sentence) => ({
+      sentence,
+      years: parseYears(sentence),
+      type: classifyMatchType(sentence)
+    }))
+    .filter((match) => match.years.length > 0);
+}
+
+function extractRequirementPreview(text) {
+  const lines = normalizeText(text).split("\n");
+  const startIndex = lines.findIndex((line) =>
+    REQUIREMENT_HEADINGS.some((heading) => line.toLowerCase().includes(heading))
+  );
+
+  if (startIndex === -1) {
+    return lines.slice(0, 24).join("\n");
+  }
+
+  return lines.slice(startIndex, startIndex + 36).join("\n");
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function textIncludesTerm(text, term) {
+  const normalizedText = text.toLowerCase();
+  const normalizedTerm = term.toLowerCase();
+
+  if (/^[a-z0-9\s-]+$/i.test(normalizedTerm)) {
+    const pattern = new RegExp(`\\b${escapeRegExp(normalizedTerm)}\\b`, "i");
+    return pattern.test(normalizedText);
+  }
+
+  return normalizedText.includes(normalizedTerm);
+}
+
+function analyzeResumeMatch(text) {
+  const matched = RESUME_KEYWORDS.filter((keyword) =>
+    keyword.terms.some((term) => textIncludesTerm(text, term))
+  );
+  const score = matched.reduce((total, keyword) => total + keyword.weight, 0);
+  const percentage = Math.min(100, Math.round((score / 30) * 100));
+
+  return {
+    score,
+    percentage,
+    keywords: matched.map((keyword) => keyword.label)
+  };
+}
+
+function scoreRules(text, rules) {
+  return rules
+    .map((rule) => ({
+      ...rule,
+      matchedTerms: rule.terms.filter((term) => textIncludesTerm(text, term))
+    }))
+    .filter((rule) => rule.matchedTerms.length > 0);
+}
+
+function analyzeLocalMatch(text) {
+  const resumeMatch = analyzeResumeMatch(text);
+  const domainMismatches = scoreRules(text, DOMAIN_MISMATCH_RULES);
+  const senioritySignals = scoreRules(text, SENIORITY_RULES);
+  const overrideTerms = MISMATCH_OVERRIDES.filter((term) => textIncludesTerm(text, term));
+  const mismatchPenalty = domainMismatches.reduce((total, rule) => total + rule.penalty, 0);
+  const seniorityPenalty = senioritySignals.reduce((total, rule) => total + rule.penalty, 0);
+  const overrideCredit = overrideTerms.length ? Math.min(8, overrideTerms.length * 2) : 0;
+  const score = resumeMatch.score - mismatchPenalty - seniorityPenalty + overrideCredit;
+
+  return {
+    score,
+    percentage: Math.max(0, Math.min(100, Math.round((score / 30) * 100))),
+    positiveScore: resumeMatch.score,
+    mismatchPenalty,
+    seniorityPenalty,
+    overrideCredit,
+    keywords: resumeMatch.keywords,
+    domainMismatches: domainMismatches.map((rule) => rule.label),
+    senioritySignals: senioritySignals.map((rule) => rule.label),
+    overrideTerms,
+    reasons: [
+      ...resumeMatch.keywords.map((keyword) => `Matched resume skill: ${keyword}`),
+      ...domainMismatches.map((rule) => `Domain mismatch: ${rule.label}`),
+      ...senioritySignals.map((rule) => `Seniority signal: ${rule.label}`),
+      ...overrideTerms.map((term) => `Relevant domain override: ${term}`)
+    ]
+  };
+}
+
+function hasHardSeniorityMismatch(title) {
+  return /\b(senior|staff|principal|lead|manager)\b|\bsr\.?(?=\s|$|[-,()/])/i.test(title);
+}
+
+function hasBackendOrFullStackFit(matchScore) {
+  return matchScore.keywords.some((keyword) =>
+    [
+      "Backend/API Engineering",
+      "Full Stack Engineering",
+      "Event/Queue Systems",
+      "Cloud Infrastructure",
+      "C#/.NET",
+      "Angular",
+      "AWS",
+      "DynamoDB",
+      "Terraform",
+      "Microservices",
+      "SQL/Databases"
+    ].includes(keyword)
+  );
+}
+
+function normalizeUserYearsOfExperience(value) {
+  const years = Number(value);
+
+  if (!Number.isFinite(years) || years < 0) {
+    return DEFAULT_USER_YOE;
+  }
+
+  return Math.min(50, years);
+}
+
+function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAULT_USER_YOE) {
+  const maxAcceptableRequiredYears = normalizeUserYearsOfExperience(userYearsOfExperience);
+  const requiredYears = matches
+    .filter((match) => match.type === "required")
+    .flatMap((match) => match.years);
+
+  const mentionedYears = matches.flatMap((match) => match.years);
+  const maxRequiredYears = requiredYears.length ? Math.max(...requiredYears) : null;
+  const maxMentionedYears = mentionedYears.length ? Math.max(...mentionedYears) : null;
+
+  if (hasHardSeniorityMismatch(title)) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxRequiredYears,
+      reason: `Title appears senior-level: ${title}.`
+    };
+  }
+
+  if (maxRequiredYears !== null && maxRequiredYears > maxAcceptableRequiredYears) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxRequiredYears,
+      reason: `A required experience sentence appears to exceed your ${maxAcceptableRequiredYears} years of experience.`
+    };
+  }
+
+  if (matchScore.mismatchPenalty >= 16 && matchScore.overrideCredit < 4) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxRequiredYears,
+      reason: `Strong domain mismatch detected: ${matchScore.domainMismatches.join(", ")}.`
+    };
+  }
+
+  if (matchScore.seniorityPenalty >= 10 && matchScore.score < 14 && !hasBackendOrFullStackFit(matchScore)) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxRequiredYears,
+      reason: `Seniority mismatch detected: ${matchScore.senioritySignals.join(", ")}.`
+    };
+  }
+
+  if (maxRequiredYears !== null && matchScore.score >= 8) {
+    return {
+      decision: "Likely match",
+      requiredYears: maxRequiredYears,
+      reason: `Required experience is acceptable and local fit score is strong (${matchScore.percentage}%).`
+    };
+  }
+
+  if (matchScore.score >= 14) {
+    return {
+      decision: "Likely match",
+      requiredYears: maxRequiredYears,
+      reason: `Job description strongly matches your local profile (${matchScore.percentage}%).`
+    };
+  }
+
+  if (hasBackendOrFullStackFit(matchScore) && matchScore.score >= 8 && matchScore.mismatchPenalty < 16) {
+    return {
+      decision: "Review",
+      requiredYears: maxRequiredYears,
+      reason: `Backend/full-stack experience appears relevant (${matchScore.percentage}%).`
+    };
+  }
+
+  if (
+    (maxRequiredYears !== null ||
+      (maxMentionedYears !== null && maxMentionedYears <= maxAcceptableRequiredYears)) &&
+    matchScore.score >= 4
+  ) {
+    return {
+      decision: "Review",
+      requiredYears: null,
+      reason: `Experience looks acceptable, but local fit score is moderate (${matchScore.percentage}%).`
+    };
+  }
+
+  if (matchScore.score >= 6 && matchScore.mismatchPenalty < 16) {
+    return {
+      decision: "Review",
+      requiredYears: null,
+      reason: `No clear YOE requirement was found, but local fit score is relevant (${matchScore.percentage}%).`
+    };
+  }
+
+  return {
+    decision: "Unknown",
+    requiredYears: null,
+    reason: "No clear years-of-experience requirement or strong resume keyword match was detected."
+  };
+}
+
+function getSubmittedSignal() {
+  const candidates = document.querySelectorAll("button, [role='button'], a, [aria-label], span, div");
+
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) {
+      continue;
+    }
+
+    const rect = candidate.getBoundingClientRect();
+    if (rect.top > 700) {
+      continue;
+    }
+
+    const label = normalizeText(`${candidate.innerText || ""} ${candidate.getAttribute("aria-label") || ""}`);
+    const lower = label.toLowerCase();
+
+    if (!label || label.length > 120) {
+      continue;
+    }
+
+    if (
+      /^(submitted|application submitted|resume submitted)$/.test(lower) ||
+      /\b(application|resume)?\s*submitted\b/.test(lower)
+    ) {
+      return {
+        text: label,
+        tagName: candidate.tagName.toLowerCase()
+      };
+    }
+  }
+
+  return null;
+}
+
+function hasSubmitResumeAction() {
+  return Boolean(findClickableByText(/^submit resume$/i));
+}
+
+function extractJobDetails(options = {}) {
+  const text = getVisiblePageText();
+  const matches = extractExperienceMatches(text);
+  const matchScore = analyzeLocalMatch(text);
+  const title = getJobTitle();
+  const userYearsOfExperience = normalizeUserYearsOfExperience(options.userYearsOfExperience);
+  const classification = classifyRole(matches, matchScore, title, userYearsOfExperience);
+  const submittedSignal = getSubmittedSignal();
+
+  return {
+    url: window.location.href,
+    title,
+    jobId: getJobId(),
+    userYearsOfExperience,
+    alreadySubmitted: Boolean(submittedSignal),
+    submittedSignal,
+    resumeMatch: {
+      score: matchScore.positiveScore,
+      percentage: Math.min(100, Math.round((matchScore.positiveScore / 30) * 100)),
+      keywords: matchScore.keywords
+    },
+    matchScore,
+    jobText: text.slice(0, 12000),
+    preview: extractRequirementPreview(text),
+    matches,
+    ...classification
+  };
+}
+
+function collectJobLinks() {
+  const linksByUrl = new Map();
+
+  for (const anchor of document.querySelectorAll("a[href]")) {
+    if (!isElementVisible(anchor)) {
+      continue;
+    }
+
+    const url = new URL(anchor.href, window.location.href);
+    const isAppleJobDetail = url.origin === APPLE_JOBS_ORIGIN && /\/details\//i.test(url.pathname);
+
+    if (!isAppleJobDetail || linksByUrl.has(url.href)) {
+      continue;
+    }
+
+    const jobId = getJobIdFromUrl(url.href);
+
+    linksByUrl.set(url.href, {
+      url: url.href,
+      jobId,
+      title: cleanTitle(anchor.innerText || anchor.getAttribute("aria-label") || "Untitled job"),
+      alreadyAppliedFromList: hasAppliedSignalInListRow(anchor, jobId)
+    });
+  }
+
+  return Array.from(linksByUrl.values());
+}
+
+function getJobListStats(links) {
+  const applied = links.filter((link) => link.alreadyAppliedFromList).length;
+
+  return {
+    total: links.length,
+    applied,
+    unapplied: links.length - applied
+  };
+}
+
+function getJobScopedElements(jobId) {
+  if (!jobId) {
+    return [];
+  }
+
+  return Array.from(document.querySelectorAll("[id], [aria-describedby], img[src]")).filter((element) => {
+    const marker = `${element.getAttribute("id") || ""} ${element.getAttribute("aria-describedby") || ""} ${
+      element.getAttribute("src") || ""
+    }`;
+    return marker.includes(jobId);
+  });
+}
+
+function getSubmitControlState(control) {
+  if (!control) {
+    return "unknown";
+  }
+
+  const label = normalizeText(
+    `${control.textContent || ""} ${control.getAttribute("aria-label") || ""} ${
+      control.getAttribute("title") || ""
+    } ${control.getAttribute("id") || ""} ${control.getAttribute("class") || ""}`
+  ).toLowerCase();
+  const isDisabled = control.getAttribute("aria-disabled") === "true";
+
+  if (/\b(submitted|applied)\b/.test(label) || (isDisabled && /\bdisable-role-submit-button\b/.test(label))) {
+    return "applied";
+  }
+
+  if (/\bsubmit resume\b/.test(label) || control.getAttribute("aria-disabled") === "false") {
+    return "unapplied";
+  }
+
+  return "unknown";
+}
+
+function getJobListRow(anchor) {
+  const semanticRow = anchor.closest("li, article, [role='listitem'], tr, [data-job-id]");
+  if (semanticRow) {
+    return semanticRow;
+  }
+
+  let current = anchor.parentElement;
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    if (
+      current.querySelector(
+        "[id*='applied-role-icon'], [id*='submit-role'], [class*='submit-role'], img[src*='checkmark-green']"
+      )
+    ) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+
+  return anchor.parentElement;
+}
+
+function hasAppliedSignalInListRow(anchor, jobId) {
+  const jobScopedElements = getJobScopedElements(jobId);
+  const jobScopedSubmitControl = jobScopedElements.find((element) =>
+    `${element.getAttribute("id") || ""} ${element.getAttribute("class") || ""}`.includes("submit-role")
+  );
+  const jobScopedSubmitState = getSubmitControlState(jobScopedSubmitControl);
+  const jobScopedMarker = normalizeText(
+    jobScopedElements
+      .map(
+        (element) =>
+          `${element.getAttribute("id") || ""} ${element.getAttribute("aria-describedby") || ""} ${
+            element.getAttribute("src") || ""
+          } ${element.getAttribute("class") || ""}`
+      )
+      .join(" ")
+  ).toLowerCase();
+
+  if (/\b(applied-role-icon|circle-checkmark-green|checkmark-green)\b/.test(jobScopedMarker)) {
+    return true;
+  }
+
+  if (jobScopedSubmitState === "applied") {
+    return true;
+  }
+
+  if (jobScopedSubmitState === "unapplied") {
+    return false;
+  }
+
+  const row = getJobListRow(anchor);
+
+  if (!row || !isElementVisible(row)) {
+    return false;
+  }
+
+  const submitControl = row.querySelector(
+    [
+      "[id*='submit-role']",
+      "[class*='submit-role']",
+      "[aria-describedby*='submit-role']",
+      "a[role='link'][id*='submit-role']",
+      "button[id*='submit-role']"
+    ].join(", ")
+  );
+
+  const appliedIcon = row.querySelector(
+    [
+      "[id*='applied-role-icon']",
+      "[aria-describedby*='applied-role-icon']",
+      "img[id*='applied-role-icon']",
+      "img[src*='circle-checkmark-green']",
+      "img[src*='checkmark-green']"
+    ].join(", ")
+  );
+
+  if (appliedIcon) {
+    return true;
+  }
+
+  const submitState = getSubmitControlState(submitControl);
+  if (submitState === "applied") {
+    return true;
+  }
+
+  if (submitState === "unapplied") {
+    return false;
+  }
+
+  const text = normalizeText(row.innerText || "").toLowerCase();
+  if (/\b(submitted|applied|application submitted|resume submitted)\b/.test(text)) {
+    return true;
+  }
+
+  const expandedText = normalizeText(row.textContent || "").toLowerCase();
+  if (/\b(submitted|applied|application submitted|resume submitted)\b/.test(expandedText)) {
+    return true;
+  }
+
+  const statusCandidates = row.querySelectorAll("[aria-label], [title], svg, use, path, span, img, button, a");
+  for (const candidate of statusCandidates) {
+    const label = normalizeText(
+      `${candidate.getAttribute("aria-label") || ""} ${candidate.getAttribute("title") || ""} ${
+        candidate.getAttribute("id") || ""
+      } ${candidate.getAttribute("src") || ""} ${
+        candidate.getAttribute("class") || ""
+      }`
+    ).toLowerCase();
+
+    if (/\b(submit-role|disable-role-submit-button)\b/.test(label)) {
+      return false;
+    }
+
+    if (/\b(submitted|applied|applied-role-icon|circle-checkmark-green|checkmark-green)\b/.test(label)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getCurrentResultsPage() {
+  const url = new URL(window.location.href);
+  const pageParams = ["page", "pg", "p"];
+
+  for (const param of pageParams) {
+    const value = Number(url.searchParams.get(param));
+    if (Number.isInteger(value) && value > 0) {
+      return value;
+    }
+  }
+
+  const offset = Number(url.searchParams.get("offset") || url.searchParams.get("start"));
+  const pageSize = Number(url.searchParams.get("limit") || url.searchParams.get("size") || 20);
+  if (Number.isInteger(offset) && offset >= 0 && Number.isInteger(pageSize) && pageSize > 0) {
+    return Math.floor(offset / pageSize) + 1;
+  }
+
+  const currentPageControl = Array.from(
+    document.querySelectorAll("[aria-current='page'], [aria-selected='true'], .active, button, a")
+  )
+    .filter((element) => isElementVisible(element))
+    .map((element) => normalizeText(element.innerText || element.getAttribute("aria-label") || ""))
+    .map((label) => label.match(/\b(\d{1,4})\b/)?.[1])
+    .map(Number)
+    .find((value) => Number.isInteger(value) && value > 0);
+
+  return currentPageControl || 1;
+}
+
+function getNextPageControl() {
+  const candidates = document.querySelectorAll("a[href], button, [role='button']");
+
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) {
+      continue;
+    }
+
+    const label = normalizeText(`${candidate.innerText || ""} ${candidate.getAttribute("aria-label") || ""}`);
+    const lower = label.toLowerCase();
+    const isNext = /^(next|next page)$/.test(lower) || /\bnext page\b/.test(lower);
+    const isDisabled =
+      candidate.disabled ||
+      candidate.getAttribute("aria-disabled") === "true" ||
+      candidate.getAttribute("disabled") !== null;
+
+    if (!isNext || isDisabled) {
+      continue;
+    }
+
+    if (candidate instanceof HTMLAnchorElement && candidate.href) {
+      return {
+        action: "navigate",
+        url: candidate.href
+      };
+    }
+
+    return {
+      action: "click"
+    };
+  }
+
+  return null;
+}
+
+function goToNextPage() {
+  const nextPageControl = getNextPageControl();
+
+  if (!nextPageControl) {
+    return {
+      ok: false,
+      reason: "No enabled next-page control was found."
+    };
+  }
+
+  if (nextPageControl.action === "navigate") {
+    window.location.href = nextPageControl.url;
+    return {
+      ok: true,
+      action: "navigate",
+      url: nextPageControl.url
+    };
+  }
+
+  const candidates = document.querySelectorAll("a[href], button, [role='button']");
+  for (const candidate of candidates) {
+    const label = normalizeText(`${candidate.innerText || ""} ${candidate.getAttribute("aria-label") || ""}`);
+    const lower = label.toLowerCase();
+
+    if ((/^(next|next page)$/.test(lower) || /\bnext page\b/.test(lower)) && isElementVisible(candidate)) {
+      candidate.click();
+      return {
+        ok: true,
+        action: "click"
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    reason: "Next-page control disappeared before it could be clicked."
+  };
+}
+
+function getElementLabel(element) {
+  const labels = [];
+
+  if (element.labels?.length) {
+    labels.push(...Array.from(element.labels).map((label) => label.innerText));
+  }
+
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel) {
+    labels.push(ariaLabel);
+  }
+
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    for (const id of labelledBy.split(/\s+/)) {
+      const labelElement = document.getElementById(id);
+      if (labelElement) {
+        labels.push(labelElement.innerText);
+      }
+    }
+  }
+
+  const placeholder = element.getAttribute("placeholder");
+  if (placeholder) {
+    labels.push(placeholder);
+  }
+
+  const nearbyText = element.closest("label, fieldset, div, li, section")?.innerText;
+  if (nearbyText) {
+    labels.push(nearbyText.split("\n").slice(0, 3).join(" "));
+  }
+
+  return normalizeText(labels.find(Boolean) || element.name || element.id || "Unlabeled field");
+}
+
+function getFieldKind(element) {
+  const tagName = element.tagName.toLowerCase();
+
+  if (tagName === "select") {
+    return "select";
+  }
+
+  if (tagName === "textarea") {
+    return "textarea";
+  }
+
+  if (element.isContentEditable) {
+    return "rich_text";
+  }
+
+  return element.getAttribute("type") || "text";
+}
+
+function inferFieldCategory(label, kind) {
+  const lower = `${label} ${kind}`.toLowerCase();
+
+  if (/\b(first name|last name|full name|legal name|preferred name)\b/.test(lower)) {
+    return "name";
+  }
+
+  if (/\b(email|e-mail)\b/.test(lower)) {
+    return "email";
+  }
+
+  if (/\b(phone|mobile|telephone)\b/.test(lower)) {
+    return "phone";
+  }
+
+  if (/\b(resume|cv|curriculum vitae|upload|attachment)\b/.test(lower) || kind === "file") {
+    return "resume_or_file";
+  }
+
+  if (/\b(education|school|university|degree|major|gpa)\b/.test(lower)) {
+    return "education";
+  }
+
+  if (/\b(experience|employer|company|job title|work history)\b/.test(lower)) {
+    return "experience";
+  }
+
+  if (/\b(work authorization|authorized|visa|sponsor|sponsorship|citizen)\b/.test(lower)) {
+    return "work_authorization";
+  }
+
+  if (/\b(gender|race|ethnicity|veteran|disability|voluntary|demographic)\b/.test(lower)) {
+    return "voluntary_disclosure";
+  }
+
+  if (/\b(address|city|state|province|zip|postal|country)\b/.test(lower)) {
+    return "location";
+  }
+
+  return "unknown";
+}
+
+function isRequiredField(element, label) {
+  const lower = label.toLowerCase();
+
+  return (
+    element.required ||
+    element.getAttribute("aria-required") === "true" ||
+    /\brequired\b|\*/.test(lower)
+  );
+}
+
+function getOptionPreview(element) {
+  if (!(element instanceof HTMLSelectElement)) {
+    return [];
+  }
+
+  return Array.from(element.options)
+    .map((option) => normalizeText(option.textContent || option.value))
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function analyzeApplicationPage() {
+  const fields = Array.from(
+    document.querySelectorAll("input, select, textarea, [contenteditable='true']")
+  )
+    .filter((element) => isElementVisible(element))
+    .filter((element) => !["hidden", "submit", "button", "reset"].includes(getFieldKind(element)))
+    .map((element, index) => {
+      const label = getElementLabel(element);
+      const kind = getFieldKind(element);
+
+      return {
+        index: index + 1,
+        label,
+        kind,
+        category: inferFieldCategory(label, kind),
+        required: isRequiredField(element, label),
+        name: element.name || null,
+        id: element.id || null,
+        options: getOptionPreview(element)
+      };
+    });
+
+  const buttons = Array.from(document.querySelectorAll("button, input[type='submit'], [role='button']"))
+    .filter((element) => isElementVisible(element))
+    .map((element) => normalizeText(element.innerText || element.value || element.getAttribute("aria-label") || ""))
+    .filter(Boolean)
+    .slice(0, 12);
+
+  const requiredCount = fields.filter((field) => field.required).length;
+  const unsupportedFields = fields.filter((field) =>
+    ["file", "rich_text"].includes(field.kind) || field.category === "unknown"
+  );
+
+  return {
+    url: window.location.href,
+    title: document.title,
+    heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+    formCount: document.querySelectorAll("form").length,
+    fieldCount: fields.length,
+    requiredCount,
+    unsupportedCount: unsupportedFields.length,
+    fields: fields.slice(0, 40),
+    buttons,
+    summary:
+      fields.length === 0
+        ? "No visible application fields were detected on this page."
+        : `Detected ${fields.length} visible fields, including ${requiredCount} required fields.`
+  };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isActionDisabled(element) {
+  return (
+    element.disabled ||
+    element.getAttribute("aria-disabled") === "true" ||
+    element.getAttribute("disabled") !== null
+  );
+}
+
+function getActionLabel(element) {
+  return normalizeText(element.innerText || element.value || element.getAttribute("aria-label") || "");
+}
+
+function getClickableCandidates() {
+  return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit'], a, [role='button']"))
+    .filter((element) => isElementVisible(element))
+    .filter((element) => !isActionDisabled(element));
+}
+
+function getVisibleActionLabels() {
+  return getClickableCandidates()
+    .map(getActionLabel)
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function findClickableByText(pattern) {
+  return getClickableCandidates().find((element) => pattern.test(getActionLabel(element)));
+}
+
+function getLoadingSignal() {
+  const candidates = Array.from(
+    document.querySelectorAll("[aria-busy='true'], [role='progressbar'], [aria-label], button, div, span")
+  );
+
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) {
+      continue;
+    }
+
+    const label = normalizeText(
+      `${candidate.innerText || ""} ${candidate.getAttribute("aria-label") || ""} ${candidate.getAttribute("title") || ""}`
+    );
+
+    if (/\b(loading|please wait|submitting|processing|in progress)\b/i.test(label)) {
+      return label || "Loading";
+    }
+  }
+
+  return null;
+}
+
+async function waitForClickable(pattern, timeoutMs = WORKFLOW_WAIT_TIMEOUT_MS) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const element = findClickableByText(pattern);
+
+    if (element) {
+      return element;
+    }
+
+    await delay(300);
+  }
+
+  return null;
+}
+
+async function clickAction(pattern, stepName, steps, options = {}) {
+  if (options.scrollBottom) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await delay(500);
+  }
+
+  const element = await waitForClickable(pattern, options.timeoutMs);
+
+  if (!element) {
+    steps.push({
+      step: stepName,
+      status: "missing"
+    });
+    return false;
+  }
+
+  element.scrollIntoView({
+    block: "center"
+  });
+  await delay(200);
+  element.click();
+  steps.push({
+    step: stepName,
+    status: "clicked",
+    label: getActionLabel(element)
+  });
+  await delay(options.afterClickDelayMs || WORKFLOW_STEP_DELAY_MS);
+
+  return true;
+}
+
+async function clickFinalSubmit(steps) {
+  window.scrollTo(0, document.body.scrollHeight);
+  await delay(500);
+
+  const element = await waitForClickable(/^submit$/i, 2500);
+
+  if (!element) {
+    steps.push({
+      step: "Submit application",
+      status: "missing"
+    });
+    return {
+      clicked: false,
+      done: false,
+      pending: false,
+      summary: "Final Submit was not found."
+    };
+  }
+
+  element.scrollIntoView({
+    block: "center"
+  });
+  await delay(200);
+  element.click();
+  steps.push({
+    step: "Submit application",
+    status: "clicked",
+    label: getActionLabel(element)
+  });
+
+  await delay(5000);
+
+  const submittedSignal = getSubmittedSignal();
+  if (submittedSignal) {
+    steps.push({
+      step: "Confirm application submitted",
+      status: "detected",
+      label: submittedSignal.text
+    });
+    return {
+      clicked: true,
+      done: true,
+      pending: false,
+      summary: "Clicked final Submit and detected Submitted confirmation."
+    };
+  }
+
+  const loadingSignal = getLoadingSignal();
+  if (loadingSignal) {
+    steps.push({
+      step: "Wait for submit result",
+      status: "loading",
+      label: loadingSignal
+    });
+    return {
+      clicked: true,
+      done: false,
+      pending: true,
+      summary: "Clicked final Submit, but the page is still loading."
+    };
+  }
+
+  return {
+    clicked: true,
+    done: true,
+    pending: false,
+    summary: "Clicked final Submit."
+  };
+}
+
+function findSponsorshipContainer() {
+  const containers = Array.from(document.querySelectorAll("fieldset, section, div, li"))
+    .filter((element) => isElementVisible(element))
+    .filter((element) => {
+      const text = normalizeText(element.innerText || "").toLowerCase();
+      return /\b(visa|sponsor|sponsorship|work authorization)\b/.test(text);
+    })
+    .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
+
+  return containers[0] || null;
+}
+
+function clickSponsorshipAnswer(steps) {
+  const container = findSponsorshipContainer();
+
+  if (!container) {
+    return false;
+  }
+
+  const candidates = Array.from(
+    container.querySelectorAll("label, button, [role='radio'], [role='button'], input[type='radio']")
+  ).filter((element) => isElementVisible(element));
+
+  for (const candidate of candidates) {
+    const label = getActionLabel(candidate) || getElementLabel(candidate);
+    const value = candidate.value || "";
+    const lower = `${label} ${value}`.toLowerCase();
+    const isYes = /\byes\b/.test(lower) && !/\bno\b/.test(lower);
+
+    if (!isYes || isActionDisabled(candidate)) {
+      continue;
+    }
+
+    candidate.scrollIntoView({
+      block: "center"
+    });
+    candidate.click();
+    steps.push({
+      step: "Answer visa sponsorship",
+      status: "clicked",
+      label: "Yes"
+    });
+    return true;
+  }
+
+  steps.push({
+    step: "Answer visa sponsorship",
+    status: "missing"
+  });
+  return false;
+}
+
+function getQuestionContainers() {
+  return Array.from(document.querySelectorAll("fieldset, section, div, li"))
+    .filter((element) => isElementVisible(element))
+    .filter((element) => element.querySelector("input[type='radio'], [role='radio']"))
+    .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
+}
+
+function clickAnswerInContainer(container, answerPattern, stepName, steps) {
+  const candidates = Array.from(
+    container.querySelectorAll("label, button, [role='radio'], [role='button'], input[type='radio']")
+  ).filter((element) => isElementVisible(element));
+
+  for (const candidate of candidates) {
+    const label = getActionLabel(candidate) || getElementLabel(candidate);
+    const value = candidate.value || "";
+    const lower = `${label} ${value}`.toLowerCase();
+
+    if (!answerPattern.test(lower) || isActionDisabled(candidate)) {
+      continue;
+    }
+
+    candidate.scrollIntoView({
+      block: "center"
+    });
+    candidate.click();
+    steps.push({
+      step: stepName,
+      status: "clicked",
+      label: label || value
+    });
+    return true;
+  }
+
+  steps.push({
+    step: stepName,
+    status: "missing"
+  });
+  return false;
+}
+
+function answerQuestionnaire(steps) {
+  let answeredAny = false;
+  const containers = getQuestionContainers();
+
+  for (const container of containers) {
+    const text = normalizeText(container.innerText || "").toLowerCase();
+
+    if (/\blegally authorized\b|\bauthorized to work\b|\bwork in the united states\b/.test(text)) {
+      answeredAny = clickAnswerInContainer(container, /\byes\b/, "Answer work authorization", steps) || answeredAny;
+      continue;
+    }
+
+    if (/\bvisa sponsorship\b|\brequire sponsorship\b|\bsponsorship for employment\b/.test(text)) {
+      answeredAny = clickAnswerInContainer(container, /\byes\b/, "Answer visa sponsorship", steps) || answeredAny;
+    }
+  }
+
+  return answeredAny;
+}
+
+async function runApplicationWorkflow() {
+  const steps = [];
+
+  await clickAction(/^submit resume$/i, "Open application flow", steps, {
+    timeoutMs: 6000
+  });
+
+  await clickAction(/^continue$/i, "Continue from resume step", steps);
+  clickSponsorshipAnswer(steps);
+
+  await clickAction(/^continue$/i, "Continue from profile source step", steps);
+  clickSponsorshipAnswer(steps);
+
+  await clickAction(/^continue$/i, "Continue from profile information step", steps, {
+    scrollBottom: true
+  });
+  clickSponsorshipAnswer(steps);
+
+  const submitted = await clickAction(/^submit$/i, "Submit application", steps, {
+    scrollBottom: true,
+    afterClickDelayMs: 2500
+  });
+
+  return {
+    url: window.location.href,
+    title: document.title,
+    submitted,
+    steps,
+    summary: submitted
+      ? "Application workflow submitted. The tab can be closed."
+      : "Workflow did not find the final Submit button."
+  };
+}
+
+async function runApplicationWorkflowStep() {
+  const steps = [];
+  const isDetailPage = /\/details\//i.test(window.location.pathname);
+
+  if (isDetailPage) {
+    const submittedSignal = getSubmittedSignal();
+
+    if (submittedSignal) {
+      return {
+        clicked: true,
+        done: true,
+        alreadySubmitted: true,
+        steps: [
+          {
+            step: "Detect already submitted",
+            status: "detected",
+            label: submittedSignal.text
+          }
+        ],
+        url: window.location.href,
+        title: document.title,
+        heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+        visibleActions: getVisibleActionLabels(),
+        summary: "Job already shows Submitted."
+      };
+    }
+
+    const submitResume = await waitForClickable(/^submit resume$/i, 6000);
+
+    if (!submitResume) {
+      const lateSubmittedSignal = getSubmittedSignal();
+
+      if (lateSubmittedSignal) {
+        return {
+          clicked: true,
+          done: true,
+          alreadySubmitted: true,
+          steps: [
+            {
+              step: "Detect already submitted after waiting",
+              status: "detected",
+              label: lateSubmittedSignal.text
+            }
+          ],
+          url: window.location.href,
+          title: document.title,
+          heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+          visibleActions: getVisibleActionLabels(),
+          summary: "Job already shows Submitted."
+        };
+      }
+    }
+
+    if (!submitResume && !hasSubmitResumeAction()) {
+      return {
+        clicked: false,
+        done: false,
+        steps: [
+          {
+            step: "Open application flow",
+            status: "missing"
+          }
+        ],
+        url: window.location.href,
+        title: document.title,
+        heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+        visibleActions: getVisibleActionLabels(),
+        summary: "Submit Resume was not found and no Submitted state was detected."
+      };
+    }
+
+    submitResume.scrollIntoView({
+      block: "center"
+    });
+    await delay(200);
+    submitResume.click();
+    steps.push({
+      step: "Open application flow",
+      status: "clicked",
+      label: getActionLabel(submitResume)
+    });
+    await delay(WORKFLOW_STEP_DELAY_MS);
+
+    return {
+      clicked: true,
+      done: false,
+      steps,
+      url: window.location.href,
+      title: document.title,
+      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+      visibleActions: getVisibleActionLabels(),
+      summary: "Clicked Submit Resume."
+    };
+
+  }
+
+  const answeredQuestionnaire = answerQuestionnaire(steps);
+  const answeredSponsorship = answeredQuestionnaire ? false : clickSponsorshipAnswer(steps);
+
+  if (answeredQuestionnaire || answeredSponsorship) {
+    await delay(500);
+  }
+
+  const loadingSignal = getLoadingSignal();
+  if (loadingSignal && !findClickableByText(/^submit$/i) && !findClickableByText(/^continue$/i)) {
+    steps.push({
+      step: "Wait for application page",
+      status: "loading",
+      label: loadingSignal
+    });
+    return {
+      clicked: true,
+      done: false,
+      steps,
+      url: window.location.href,
+      title: document.title,
+      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+      visibleActions: getVisibleActionLabels(),
+      summary: "Application page is still loading."
+    };
+  }
+
+  const submitResult = await clickFinalSubmit(steps);
+
+  if (submitResult.done) {
+    return {
+      clicked: true,
+      done: true,
+      steps,
+      url: window.location.href,
+      title: document.title,
+      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+      visibleActions: getVisibleActionLabels(),
+      summary: submitResult.summary
+    };
+  }
+
+  if (submitResult.pending) {
+    return {
+      clicked: true,
+      done: false,
+      steps,
+      url: window.location.href,
+      title: document.title,
+      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+      visibleActions: getVisibleActionLabels(),
+      summary: submitResult.summary
+    };
+  }
+
+  const continued = await clickAction(/^continue$/i, "Continue application step", steps, {
+    scrollBottom: true,
+    timeoutMs: 5000
+  });
+
+  return {
+    clicked: continued || answeredQuestionnaire || answeredSponsorship,
+    done: false,
+    steps,
+    url: window.location.href,
+    title: document.title,
+    heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+    visibleActions: getVisibleActionLabels(),
+    summary: continued
+      ? "Clicked Continue."
+      : answeredQuestionnaire || answeredSponsorship
+        ? "Answered questionnaire."
+        : "No Continue or Submit action was found on this application step."
+  };
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "APPLE_CAREERS_EXTRACT_JOB") {
+    sendResponse({
+      ok: true,
+      data: extractJobDetails({
+        userYearsOfExperience: message.userYearsOfExperience
+      })
+    });
+
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_ANALYZE_APPLICATION_PAGE") {
+    sendResponse({
+      ok: true,
+      data: analyzeApplicationPage()
+    });
+
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
+    runApplicationWorkflow()
+      .then((data) => {
+        sendResponse({
+          ok: true,
+          data
+        });
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error?.message || "The application workflow failed."
+        });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP") {
+    runApplicationWorkflowStep()
+      .then((data) => {
+        sendResponse({
+          ok: true,
+          data
+        });
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error?.message || "The application workflow step failed."
+        });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
+    const links = collectJobLinks();
+
+    sendResponse({
+      ok: true,
+      data: {
+        url: window.location.href,
+        currentPage: getCurrentResultsPage(),
+        links,
+        listStats: getJobListStats(links),
+        hasNextPage: Boolean(getNextPageControl())
+      }
+    });
+
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") {
+    sendResponse(goToNextPage());
+    return true;
+  }
+
+  return false;
+});

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Career Peeler icon">
+  <rect width="128" height="128" rx="26" fill="#1d1d1f"/>
+  <path d="M33 66.1c0-19.4 12.8-35.3 29.8-35.3 8.5 0 15.4 3.2 20.1 8.6l-9.3 9.6c-2.6-3.2-5.9-5-10.6-5-9.3 0-15.2 8.8-15.2 21.8 0 13.5 6.4 22.1 15.7 22.1 5.2 0 8.9-2.1 12.3-5.9l9 9.6c-5.5 6.4-12.6 9.6-21.8 9.6-18 0-30-14.7-30-34.7z" fill="#fff"/>
+  <path d="M84.8 25.3h17.9V43H84.8z" fill="#00a86b"/>
+  <path d="M90.5 31h6.5v6.4h-6.5z" fill="#fff" opacity=".9"/>
+</svg>

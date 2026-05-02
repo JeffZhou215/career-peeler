@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Career Peeler</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <p class="eyebrow">For Apple Careers</p>
+        <h1>Career Peeler</h1>
+        <p class="muted">
+          Start from an Apple jobs list page. The extension scans roles across pages; auto-apply is available only when explicitly enabled.
+        </p>
+      </header>
+
+      <details class="settings">
+        <summary>Matching and application settings</summary>
+        <div class="settings-fields">
+          <label class="field-label" for="userYearsOfExperience">
+            <span>Years of experience</span>
+            <span class="help" tabindex="0" aria-label="Help: Used to skip roles whose required years of experience are above your profile.">?</span>
+          </label>
+          <input id="userYearsOfExperience" type="number" min="0" max="50" step="0.5" value="2" />
+
+          <label class="field-label" for="scanMode">
+            <span>Scan mode</span>
+            <span class="help" tabindex="0" aria-label="Help: Scan only records decisions without submitting applications. Auto apply submits likely matches and review jobs.">?</span>
+          </label>
+          <select id="scanMode">
+            <option value="scan_only">Scan only, do not apply</option>
+            <option value="auto_apply">Auto apply likely match and review jobs</option>
+          </select>
+
+          <label class="checkbox-row">
+            <input id="autoApplyConsent" type="checkbox" />
+            <span>I understand auto-apply can submit real applications</span>
+            <span class="help" tabindex="0" aria-label="Help: Required before auto-apply mode can submit matching jobs. Leave unchecked for scan-only use.">?</span>
+          </label>
+
+          <label class="checkbox-row">
+            <input id="llmEnabled" type="checkbox" />
+            <span>Use LLM-assisted matching</span>
+            <span class="help" tabindex="0" aria-label="Help: Sends the job text and your resume summary to OpenAI for a second opinion. Local matching is still used as the fallback.">?</span>
+          </label>
+
+          <label class="field-label" for="llmApiKey">
+            <span>OpenAI API key</span>
+            <span class="help" tabindex="0" aria-label="Help: Stored locally in Chrome storage and used only from this extension to call OpenAI when LLM matching is enabled.">?</span>
+          </label>
+          <input id="llmApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+
+          <label class="field-label" for="llmModel">
+            <span>LLM model</span>
+            <span class="help" tabindex="0" aria-label="Help: The OpenAI model used for matching. gpt-4o-mini is a good low-cost default.">?</span>
+          </label>
+          <input id="llmModel" type="text" value="gpt-4o-mini" />
+
+          <label class="field-label" for="resumeProfile">
+            <span>Resume/profile summary</span>
+            <span class="help" tabindex="0" aria-label="Help: A concise summary of your target roles, strongest skills, and domains to avoid. This improves LLM matching quality.">?</span>
+          </label>
+          <textarea id="resumeProfile" rows="5" placeholder="Paste a concise resume summary, target roles, and strongest skills."></textarea>
+          <p class="muted">LLM mode is optional. When enabled, job text and your profile summary are sent to OpenAI for matching. Local matching remains the fallback if this is off or fails.</p>
+        </div>
+      </details>
+
+      <div class="actions primary-actions">
+        <button id="scanButton" type="button" class="primary">Start Scan</button>
+        <button id="stopScanButton" type="button" class="danger hidden">Stop scan</button>
+        <button id="clearHistoryButton" type="button" class="secondary">Clear history</button>
+      </div>
+
+      <section id="status" class="status" aria-live="polite">
+        Open an Apple Careers jobs list page, then click Start Scan.
+      </section>
+
+      <section id="scanStatus" class="result">
+        <h2>Auto Apply Progress</h2>
+        <div class="summary-grid">
+          <span>Phase</span>
+          <strong id="scanPhase">Idle</strong>
+          <span>Applied</span>
+          <strong id="scanApplied">0</strong>
+          <span>Review</span>
+          <strong id="scanReview">0</strong>
+          <span>Errors</span>
+          <strong id="scanErrors">0</strong>
+        </div>
+        <p id="lastApplied" class="last-applied">No jobs applied yet.</p>
+        <p id="scanCurrent" class="muted">No scan running.</p>
+
+        <details class="progress-details">
+          <summary>Errors (<span id="scanErrorsSummary">0</span>)</summary>
+          <ul id="scanErrorLog"></ul>
+        </details>
+
+        <details class="progress-details">
+          <summary>Detailed stats and logs</summary>
+          <div class="scan-grid">
+            <span>Pages</span>
+            <strong id="scanPages">0</strong>
+            <span>Scanned</span>
+            <strong id="scanScanned">0</strong>
+            <span>Queued</span>
+            <strong id="scanQueued">0</strong>
+            <span>Page total</span>
+            <strong id="scanPageTotal">0</strong>
+            <span>Page unapplied</span>
+            <strong id="scanPageUnapplied">0</strong>
+            <span>Page applied</span>
+            <strong id="scanPageApplied">0</strong>
+            <span>Submitted</span>
+            <strong id="scanSubmitted">0</strong>
+            <span>Likely match</span>
+            <strong id="scanLikelyMatch">0</strong>
+            <span>Likely skip</span>
+            <strong id="scanLikelySkip">0</strong>
+            <span>Unknown</span>
+            <strong id="scanUnknown">0</strong>
+            <span>Apply failed</span>
+            <strong id="scanApplyFailed">0</strong>
+          </div>
+          <h2>Recent Failures</h2>
+          <ul id="scanFailures"></ul>
+          <h2>Recent Jobs</h2>
+          <ul id="scanRecent"></ul>
+        </details>
+      </section>
+
+      <details class="advanced">
+        <summary>Advanced tools</summary>
+        <div class="actions">
+          <button id="extractButton" type="button" class="secondary">Extract current page</button>
+          <button id="analyzeApplicationButton" type="button" class="secondary">
+            Analyze application page
+          </button>
+          <button id="runApplicationWorkflowButton" type="button" class="secondary">
+            Run current job workflow
+          </button>
+        </div>
+      </details>
+
+      <section id="result" class="result hidden">
+        <div class="row">
+          <span>Decision</span>
+          <strong id="decision">Unknown</strong>
+        </div>
+        <div class="row">
+          <span>Required YOE</span>
+          <strong id="requiredYears">Unknown</strong>
+        </div>
+        <div class="row">
+          <span>Job ID</span>
+          <strong id="jobId">Unknown</strong>
+        </div>
+        <div class="row">
+          <span>Local fit score</span>
+          <strong id="resumeMatchScore">Unknown</strong>
+        </div>
+        <div class="row stacked">
+          <span>Matched keywords</span>
+          <strong id="resumeKeywords">None</strong>
+        </div>
+        <div class="row stacked">
+          <span>Scoring reasons</span>
+          <strong id="matchReasons">None</strong>
+        </div>
+
+        <h2>Matched Sentences</h2>
+        <ul id="matches"></ul>
+
+        <h2>Requirement Preview</h2>
+        <pre id="preview"></pre>
+      </section>
+
+      <section id="applicationAnalysis" class="result hidden">
+        <h2>Application Page Analysis</h2>
+        <div class="scan-grid">
+          <span>Fields</span>
+          <strong id="applicationFieldCount">0</strong>
+          <span>Required</span>
+          <strong id="applicationRequiredCount">0</strong>
+          <span>Unsupported/unknown</span>
+          <strong id="applicationUnsupportedCount">0</strong>
+          <span>Forms</span>
+          <strong id="applicationFormCount">0</strong>
+        </div>
+        <p id="applicationSummary" class="muted">No application page analyzed yet.</p>
+        <h2>Detected Fields</h2>
+        <ul id="applicationFields"></ul>
+        <h2>Visible Buttons</h2>
+        <ul id="applicationButtons"></ul>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

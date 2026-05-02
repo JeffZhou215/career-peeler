@@ -1,0 +1,9 @@
+{
+  "name": "career-peeler",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node tests/content.test.js",
+    "check": "node --check content.js && node --check background.js && node --check popup.js"
+  }
+}
