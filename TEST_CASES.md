@@ -54,6 +54,7 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 | A-07 | Session expired/sign-in | Application redirects to sign-in or page lacks workflow buttons. | Scan logs error with page heading and visible buttons; no infinite loop. |
 | A-08 | Missing final Submit | Review page does not expose final `Submit`. | Error log records last page heading, last step, and visible buttons. |
 | A-09 | Repeated no-progress flow | Same step repeats until max attempts. | Workflow stops at max attempts and logs attempts instead of looping forever. |
+| A-10 | Manual workflow diagnostic | Click `Run current job workflow (can submit)` from Advanced tools. | Popup shows a browser confirmation before any workflow clicks happen. Cancelling leaves the page unchanged. |
 
 ## 5. Popup UI
 
@@ -65,6 +66,7 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 | U-04 | Error detail | Inspect an error entry. | Entry includes role id/title, message, stopped page heading, last step, and visible buttons if available. |
 | U-05 | Detailed stats dropdown | Open `Detailed stats and logs`. | Shows pages, scanned, queued, submitted, match counts, recent failures, and recent jobs. |
 | U-06 | Clean titles | Inspect recent jobs/failures. | Titles do not include `- Jobs - Careers at Apple`. |
+| U-07 | Settings help text | Hover or focus each `?` icon in settings. | A tooltip explains what that setting does. |
 
 ## 6. Data And Privacy
 
@@ -76,6 +78,7 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 | P-04 | Local storage | Inspect extension storage after scan. | Job records, settings, and scan state are stored locally. |
 | P-05 | Clear state | Clear extension storage and reload popup. | Popup handles missing state cleanly. |
 | P-06 | Permission review | Review `manifest.json`. | Permissions are limited to storage, tabs, scripting, Apple Careers hosts, and optional OpenAI access. |
+| P-07 | Clear job history | Click `Clear job history` after a scan. | Job records and scan history clear, while matching settings remain available. |
 
 ## 7. Chrome Store Readiness
 
@@ -86,3 +89,4 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 | C-03 | Privacy copy | Store listing states that local matching is default and OpenAI matching is optional. |
 | C-04 | Trademark language | Listing does not imply Apple affiliation and does not use Apple logos. |
 | C-05 | Dry-run mode | Confirm scan-only mode is the default so users can preview decisions before submit. |
+| C-06 | Hosted privacy policy | Publish `PRIVACY.md` as a public URL and add it to the Chrome Web Store listing. |

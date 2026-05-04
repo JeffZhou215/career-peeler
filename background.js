@@ -508,21 +508,8 @@ async function getLlmMatch(job) {
   }
 
   if (skipReasons.length) {
-    console.info("[Career Peeler] LLM matcher skipped", {
-      jobId: job.jobId,
-      title: job.title,
-      reasons: skipReasons
-    });
     return null;
   }
-
-  console.info("[Career Peeler] Calling OpenAI LLM matcher", {
-    jobId: job.jobId,
-    title: job.title,
-    model: userProfile.llmModel,
-    jobTextLength: (job.jobText || job.preview || "").length,
-    resumeProfileLength: userProfile.resumeProfile.length
-  });
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -550,18 +537,7 @@ async function getLlmMatch(job) {
   }
 
   const data = await response.json();
-  console.log("[Career Peeler] OpenAI LLM raw JSON response", {
-    jobId: job.jobId,
-    title: job.title,
-    response: data
-  });
-
   const parsed = parseLlmJson(data.choices?.[0]?.message?.content);
-  console.log("[Career Peeler] OpenAI LLM parsed match", {
-    jobId: job.jobId,
-    title: job.title,
-    parsed
-  });
 
   return {
     decision: decisionFromLlmResult(parsed),

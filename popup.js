@@ -336,7 +336,7 @@ async function analyzeApplicationPage() {
 
 async function runApplicationWorkflow() {
   runApplicationWorkflowButton.disabled = true;
-  setStatus("Running Apple application workflow. This will submit the application if the final Submit button is found.");
+  setStatus("Checking the current Apple application page before running the workflow.");
 
   try {
     const tab = await getActiveTab();
@@ -345,6 +345,17 @@ async function runApplicationWorkflow() {
       setStatus("Open an Apple Careers job or application page, then try again.");
       return;
     }
+
+    const confirmed = window.confirm(
+      "This diagnostic workflow can click through the application and submit it if the final Submit button is found. Continue?"
+    );
+
+    if (!confirmed) {
+      setStatus("Application workflow cancelled.");
+      return;
+    }
+
+    setStatus("Running Apple application workflow. This can submit the application if the final Submit button is found.");
 
     const response = await chrome.runtime.sendMessage({
       type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
