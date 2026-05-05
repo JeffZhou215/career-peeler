@@ -37,6 +37,7 @@ Unofficial Chrome extension for scanning Apple Careers job lists, matching roles
 ## Publishing Checklist
 
 - Verify extension icons render correctly in Chrome and add Chrome Web Store screenshots.
+- Use the generated Chrome Web Store images in `store-assets/`: three `1280x800` screenshots, `promo-small-440x280.png`, `promo-marquee-1400x560.png`, and `store-icon-128x128.png`.
 - Host a public privacy policy based on `PRIVACY.md` and link it from the Chrome Web Store Developer Dashboard.
 - Keep scan-only as the default so users can preview decisions without submitting.
 - Ensure listing copy clearly states that OpenAI matching is optional and sends job/profile text externally only when enabled.
