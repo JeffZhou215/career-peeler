@@ -144,6 +144,21 @@ const APPLE_JOBS_ORIGIN = "https://jobs.apple.com";
 const WORKFLOW_STEP_DELAY_MS = 1800;
 const WORKFLOW_WAIT_TIMEOUT_MS = 12000;
 const DEFAULT_USER_YOE = 2;
+const TEXT_NODE_TYPE = 3;
+const HIGH_YOE_HARD_SKIP_FLOOR = 8;
+const HIGH_YOE_HARD_SKIP_BUFFER = 3;
+
+const REQUIRED_SECTION_PATTERN =
+  /\b(minimum qualifications?|basic qualifications?|required qualifications?|requirements?|required experience|education (?:&|and) experience|key qualifications?)\b/i;
+const PREFERRED_SECTION_PATTERN =
+  /\b(preferred qualifications?|preferred experience|nice to have|bonus qualifications?)\b/i;
+const SECTION_HEADING_TERMS =
+  "Description|Responsibilities|Minimum Qualifications?|Basic Qualifications?|Required Qualifications?|Requirements?|Required Experience|Education (?:&|and) Experience|Key Qualifications?|Preferred Qualifications?|Preferred Experience|Nice to Have|Bonus Qualifications?";
+const EXACT_SECTION_HEADING_PATTERN = new RegExp(`^(${SECTION_HEADING_TERMS})$`, "i");
+
+function createSectionHeadingPattern() {
+  return new RegExp(`\\b(${SECTION_HEADING_TERMS})\\b`, "gi");
+}
 
 function normalizeText(text) {
   return text
@@ -153,8 +168,60 @@ function normalizeText(text) {
     .trim();
 }
 
+function getElementOwnText(element) {
+  return Array.from(element.childNodes || [])
+    .filter((node) => node.nodeType === TEXT_NODE_TYPE)
+    .map((node) => node.textContent)
+    .join(" ");
+}
+
+function findSectionContainer(element) {
+  let current = element.parentElement;
+
+  for (let depth = 0; current && depth < 6; depth += 1) {
+    const text = normalizeText(current.innerText || "");
+
+    if (text.length > 80 && /\b(years?|yrs?|experience|qualifications?|responsibilities)\b/i.test(text)) {
+      return current;
+    }
+
+    current = current.parentElement;
+  }
+
+  return element.parentElement;
+}
+
+function getStructuredJobSectionText() {
+  const sections = [];
+  const seen = new Set();
+
+  for (const element of document.querySelectorAll("h2, h3, h4, [class*='section'], [class*='qualification'], div, span")) {
+    if (!isElementVisible(element)) {
+      continue;
+    }
+
+    const heading = normalizeText(getElementOwnText(element) || element.innerText || "");
+
+    if (!EXACT_SECTION_HEADING_PATTERN.test(heading)) {
+      continue;
+    }
+
+    const container = findSectionContainer(element);
+    const containerText = normalizeText(container?.innerText || "");
+
+    if (!containerText || seen.has(containerText)) {
+      continue;
+    }
+
+    seen.add(containerText);
+    sections.push(containerText);
+  }
+
+  return sections.join("\n");
+}
+
 function getVisiblePageText() {
-  return normalizeText(document.body?.innerText || "");
+  return normalizeText(`${getStructuredJobSectionText()}\n${document.body?.innerText || ""}`);
 }
 
 function getJobId() {
@@ -245,15 +312,98 @@ function classifyMatchType(sentence) {
   return "mentioned";
 }
 
+function classifyRequirementSection(line) {
+  const lower = line.toLowerCase();
+
+  if (PREFERRED_SECTION_PATTERN.test(lower)) {
+    return "preferred";
+  }
+
+  if (REQUIRED_SECTION_PATTERN.test(lower)) {
+    return "required";
+  }
+
+  return null;
+}
+
+function splitRequirementSections(text) {
+  const sections = [];
+  const sectionPattern = createSectionHeadingPattern();
+  let currentType = null;
+  let currentStart = 0;
+  let match = sectionPattern.exec(text);
+
+  while (match) {
+    if (match.index > currentStart) {
+      sections.push({
+        type: currentType,
+        text: text.slice(currentStart, match.index)
+      });
+    }
+
+    currentType = classifyRequirementSection(match[0]);
+    currentStart = match.index + match[0].length;
+    match = sectionPattern.exec(text);
+  }
+
+  sections.push({
+    type: currentType,
+    text: text.slice(currentStart)
+  });
+
+  return sections.filter((section) => section.text.trim());
+}
+
+function getMaxYears(matches, predicate = () => true) {
+  const years = matches.filter(predicate).flatMap((match) => match.years);
+
+  return years.length ? Math.max(...years) : null;
+}
+
+function getEffectiveMatchType(sentence, sectionType) {
+  const sentenceType = classifyMatchType(sentence);
+
+  return sentenceType === "mentioned" && sectionType ? sectionType : sentenceType;
+}
+
 function extractExperienceMatches(text) {
-  return splitSentences(text)
-    .filter(sentenceMentionsRequirement)
-    .map((sentence) => ({
-      sentence,
-      years: parseYears(sentence),
-      type: classifyMatchType(sentence)
-    }))
-    .filter((match) => match.years.length > 0);
+  const matches = [];
+  let sectionType = null;
+
+  for (const line of normalizeText(text).split("\n")) {
+    const trimmedLine = line.trim();
+
+    if (!trimmedLine) {
+      continue;
+    }
+
+    const lineSectionType = classifyRequirementSection(trimmedLine);
+    sectionType = lineSectionType || sectionType;
+
+    for (const section of splitRequirementSections(trimmedLine)) {
+      const effectiveSectionType = section.type || sectionType;
+
+      for (const sentence of splitSentences(section.text)) {
+        if (!sentenceMentionsRequirement(sentence)) {
+          continue;
+        }
+
+        const years = parseYears(sentence);
+
+        if (years.length === 0) {
+          continue;
+        }
+
+        matches.push({
+          sentence,
+          years,
+          type: getEffectiveMatchType(sentence, effectiveSectionType)
+        });
+      }
+    }
+  }
+
+  return matches;
 }
 
 function extractRequirementPreview(text) {
@@ -372,13 +522,9 @@ function normalizeUserYearsOfExperience(value) {
 
 function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAULT_USER_YOE) {
   const maxAcceptableRequiredYears = normalizeUserYearsOfExperience(userYearsOfExperience);
-  const requiredYears = matches
-    .filter((match) => match.type === "required")
-    .flatMap((match) => match.years);
-
-  const mentionedYears = matches.flatMap((match) => match.years);
-  const maxRequiredYears = requiredYears.length ? Math.max(...requiredYears) : null;
-  const maxMentionedYears = mentionedYears.length ? Math.max(...mentionedYears) : null;
+  const maxRequiredYears = getMaxYears(matches, (match) => match.type === "required");
+  const maxMentionedYears = getMaxYears(matches);
+  const maxNonPreferredYears = getMaxYears(matches, (match) => match.type !== "preferred");
 
   if (hasHardSeniorityMismatch(title)) {
     return {
@@ -393,6 +539,18 @@ function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAUL
       decision: "Likely skip",
       requiredYears: maxRequiredYears,
       reason: `A required experience sentence appears to exceed your ${maxAcceptableRequiredYears} years of experience.`
+    };
+  }
+
+  if (
+    maxNonPreferredYears !== null &&
+    maxNonPreferredYears >= Math.max(HIGH_YOE_HARD_SKIP_FLOOR, maxAcceptableRequiredYears + HIGH_YOE_HARD_SKIP_BUFFER) &&
+    maxNonPreferredYears > maxAcceptableRequiredYears
+  ) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxNonPreferredYears,
+      reason: `A high years-of-experience signal (${maxNonPreferredYears}+ years) appears to exceed your ${maxAcceptableRequiredYears} years of experience.`
     };
   }
 

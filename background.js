@@ -7,6 +7,8 @@ const DEFAULT_LLM_MODEL = "gpt-4o-mini";
 const DEFAULT_SCAN_MODE = "scan_only";
 const MAX_STORED_JOB_RECORDS = 100;
 const MAX_TEXT_FIELD_LENGTH = 500;
+const HIGH_YOE_HARD_SKIP_FLOOR = 8;
+const HIGH_YOE_HARD_SKIP_BUFFER = 3;
 
 const processedUrls = new Set();
 const visitedListPages = new Set();
@@ -373,7 +375,11 @@ function incrementStatsForStatus(status) {
   scanState.stats.unknown += 1;
 }
 
-function shouldAutoApply(status) {
+function shouldAutoApply(status, job) {
+  if (getYoeHardSkip(job, scanState.userProfile)) {
+    return false;
+  }
+
   return (
     scanState.userProfile?.scanMode === "auto_apply" &&
     scanState.userProfile?.autoApplyConsent &&
@@ -401,6 +407,74 @@ function isLocalHardSkip(job) {
     job.decision === "Likely skip" &&
     /senior-level|required experience sentence appears to exceed|strong domain mismatch/i.test(job.reason || "")
   );
+}
+
+function getMaxMatchYears(match) {
+  return Array.isArray(match?.years) && match.years.length ? Math.max(...match.years) : null;
+}
+
+function getYoeHardSkip(job, userProfile) {
+  if (!job) {
+    return null;
+  }
+
+  const userYearsOfExperience = normalizeUserYearsOfExperience(userProfile?.userYearsOfExperience);
+  const requiredYearsFromSummary = Number(job.requiredYears);
+
+  if (Number.isFinite(requiredYearsFromSummary) && requiredYearsFromSummary > userYearsOfExperience) {
+    return {
+      requiredYears: requiredYearsFromSummary,
+      reason: `Required YOE is ${requiredYearsFromSummary}, above your ${userYearsOfExperience} years of experience.`
+    };
+  }
+
+  const blockingMatch = (job.matches || []).find(
+    (match) => match.type === "required" && getMaxMatchYears(match) > userYearsOfExperience
+  );
+
+  if (blockingMatch) {
+    const requiredYears = getMaxMatchYears(blockingMatch);
+    return {
+      requiredYears,
+      reason: `Required YOE is ${requiredYears}, above your ${userYearsOfExperience} years of experience.`
+    };
+  }
+
+  const highNonPreferredMatch = (job.matches || []).find((match) => {
+    const maxYears = getMaxMatchYears(match);
+    return (
+      match.type !== "preferred" &&
+      maxYears !== null &&
+      maxYears >= Math.max(HIGH_YOE_HARD_SKIP_FLOOR, userYearsOfExperience + HIGH_YOE_HARD_SKIP_BUFFER) &&
+      maxYears > userYearsOfExperience
+    );
+  });
+
+  if (highNonPreferredMatch) {
+    const requiredYears = getMaxMatchYears(highNonPreferredMatch);
+    return {
+      requiredYears,
+      reason: `High YOE signal is ${requiredYears}, above your ${userYearsOfExperience} years of experience.`
+    };
+  }
+
+  return null;
+}
+
+function applyRequiredYoeHardSkip(job, userProfile) {
+  const hardSkip = getYoeHardSkip(job, userProfile);
+
+  if (!hardSkip) {
+    return job;
+  }
+
+  return {
+    ...job,
+    decision: "Likely skip",
+    requiredYears: hardSkip.requiredYears,
+    reason: `Hard skip: ${hardSkip.reason}`,
+    matchSource: job.matchSource || "local"
+  };
 }
 
 function normalizeLlmDecision(decision) {
@@ -445,24 +519,38 @@ function decisionFromLlmResult(parsed) {
   return normalizeLlmDecision(parsed.decision);
 }
 
+function getExperienceRequirementsForLlm(job) {
+  return (job.matches || []).slice(0, 12).map((match) => ({
+    type: match.type,
+    years: match.years,
+    sentence: truncateText(match.sentence, 280)
+  }));
+}
+
 function buildLlmPrompt(job, userProfile) {
   return [
     {
       role: "system",
       content:
-        "You are a cautious job matching assistant. Return only strict JSON. If a role requires more years of experience than user_years_of_experience, yoe_assessment must be too_high and decision must be Likely skip. Prefer Review when uncertain. Do not recommend applying to manager, senior, staff, principal, lead, iOS, firmware, or high-YOE roles unless the provided evidence clearly says otherwise."
+        "You are a cautious job matching assistant. Return only strict JSON. Hard rule: if any required or non-preferred detected experience requirement is greater than user_years_of_experience, yoe_assessment must be too_high and decision must be Likely skip. Do not treat that role as a candidate. Prefer Review when uncertain. Do not recommend applying to manager, senior, staff, principal, lead, iOS, firmware, or high-YOE roles unless the provided evidence clearly says otherwise."
     },
     {
       role: "user",
       content: JSON.stringify({
         resume_profile: userProfile.resumeProfile,
         user_years_of_experience: userProfile.userYearsOfExperience,
+        hard_constraints: {
+          reject_if_required_yoe_above_user_years: true,
+          reject_if_high_non_preferred_yoe_above_user_years: true,
+          candidate_role_requires_yoe_lte_user_years: true
+        },
         local_decision: job.decision,
         local_reason: job.reason,
         job: {
           title: job.title,
           url: job.url,
           required_years: job.requiredYears,
+          detected_experience_requirements: getExperienceRequirementsForLlm(job),
           local_keywords: job.matchScore?.keywords || [],
           text: (job.jobText || job.preview || "").slice(0, 12000)
         },
@@ -471,7 +559,7 @@ function buildLlmPrompt(job, userProfile) {
           confidence: "number from 0 to 100",
           matched_skills: ["string"],
           missing_skills: ["string"],
-          yoe_assessment: "acceptable | too_high | unclear. Use too_high when required YOE is greater than user_years_of_experience.",
+          yoe_assessment: "acceptable | too_high | unclear. Use too_high when required/non-preferred YOE is greater than user_years_of_experience.",
           reason: "one short sentence"
         }
       })
@@ -550,35 +638,45 @@ async function getLlmMatch(job) {
 }
 
 async function applyLlmMatch(job) {
+  const userProfile = normalizeUserProfile(scanState.userProfile);
+  const locallyGuardedJob = applyRequiredYoeHardSkip(job, userProfile);
+
+  if (locallyGuardedJob.decision === "Likely skip") {
+    return locallyGuardedJob;
+  }
+
   try {
-    const llmMatch = await getLlmMatch(job);
+    const llmMatch = await getLlmMatch(locallyGuardedJob);
 
     if (!llmMatch) {
-      return job;
+      return locallyGuardedJob;
     }
 
-    return {
-      ...job,
-      decision: llmMatch.decision,
-      reason:
-        llmMatch.yoeAssessment === "too_high"
-          ? `LLM hard skip: required YOE exceeds your profile. ${llmMatch.reason}`
-          : `LLM match (${llmMatch.confidence}%): ${llmMatch.reason}`,
-      matchSource: "llm",
-      llmMatch
-    };
+    return applyRequiredYoeHardSkip(
+      {
+        ...locallyGuardedJob,
+        decision: llmMatch.decision,
+        reason:
+          llmMatch.yoeAssessment === "too_high"
+            ? `LLM hard skip: required YOE exceeds your profile. ${llmMatch.reason}`
+            : `LLM match (${llmMatch.confidence}%): ${llmMatch.reason}`,
+        matchSource: "llm",
+        llmMatch
+      },
+      userProfile
+    );
   } catch (error) {
     rememberError({
       type: "llm_match_failed",
-      jobId: job.jobId,
-      title: job.title,
-      url: job.url,
+      jobId: locallyGuardedJob.jobId,
+      title: locallyGuardedJob.title,
+      url: locallyGuardedJob.url,
       status: "error",
       message: error?.message || "LLM matcher failed."
     });
 
     return {
-      ...job,
+      ...locallyGuardedJob,
       matchSource: "local",
       llmError: error?.message || "LLM matcher failed."
     };
@@ -724,13 +822,14 @@ async function scanJobLink(link) {
       throw new Error("Could not extract the job detail page.");
     }
 
-    const job = await applyLlmMatch(response.data);
+    let job = await applyLlmMatch(response.data);
+    job = applyRequiredYoeHardSkip(job, scanState.userProfile);
     const status = job.alreadySubmitted ? "submitted" : statusFromDecision(job.decision);
     let finalStatus = status;
     let applicationResult = null;
     let failureReason = null;
 
-    if (shouldAutoApply(status)) {
+    if (shouldAutoApply(status, job)) {
       await updateScanState({
         phase: "Auto-applying",
         currentJob: {

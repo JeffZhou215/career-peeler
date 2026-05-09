@@ -193,6 +193,44 @@ test("skips high required years of experience", () => {
   assert.match(result.reason, /exceed your 2 years/i);
 });
 
+test("skips high YOE bullets under minimum qualification headings", () => {
+  const result = classify(
+    "Software Engineer",
+    "Minimum Qualifications\n10+ years of industry experience building large-scale software systems.\nExperience building backend APIs and distributed services."
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.equal(result.requiredYears, 10);
+  assert.match(result.reason, /exceed your 2 years/i);
+});
+
+test("skips high YOE when qualification headings are flattened into one block", () => {
+  const result = classify(
+    "ML Infrastructure Engineer",
+    [
+      "Description Architect scalable ML serving infrastructure supporting dynamic model sharding, load balancing, and fault tolerance.",
+      "Minimum Qualifications 10+ years of experience in GPU programming CUDA ROCm and high-performance computing, successfully optimizing large-scale parallel workloads.",
+      "Strong experience with inter-node communication technologies InfiniBand RDMA NCCL in the context of ML training/inference.",
+      "Preferred Qualifications Python is a plus."
+    ].join(" ")
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.equal(result.requiredYears, 10);
+  assert.match(result.reason, /exceed your 2 years/i);
+});
+
+test("skips very high non-preferred YOE even if section context is lost", () => {
+  const result = classify(
+    "ML Infrastructure Engineer",
+    "10+ years of experience in GPU programming CUDA ROCm and high-performance computing. Build distributed inference systems with PyTorch and large-scale ML infrastructure."
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.equal(result.requiredYears, 10);
+  assert.match(result.reason, /high years-of-experience signal/i);
+});
+
 test("uses user-provided years of experience for required YOE", () => {
   const result = classify(
     "Software Engineer",
@@ -206,7 +244,16 @@ test("uses user-provided years of experience for required YOE", () => {
 test("does not hard-skip preferred years alone", () => {
   const result = classify(
     "Backend Software Engineer",
-    "Preferred qualifications include 5+ years of experience. Build APIs, services, queues, AWS systems, and DynamoDB-backed microservices."
+    "Preferred Qualifications\n5+ years of experience.\nBuild APIs, services, queues, AWS systems, and DynamoDB-backed microservices."
+  );
+
+  assert.notEqual(result.decision, "Likely skip");
+});
+
+test("does not hard-skip high preferred years alone", () => {
+  const result = classify(
+    "Backend Software Engineer",
+    "Preferred Qualifications\n10+ years of experience.\nBuild APIs, services, queues, AWS systems, and DynamoDB-backed microservices."
   );
 
   assert.notEqual(result.decision, "Likely skip");
