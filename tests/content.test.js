@@ -52,6 +52,10 @@ globalThis.__contentTestApi = {
   cleanTitle,
   extractExperienceMatches,
   getJobIdFromUrl,
+  isSupportedJobDetailUrl,
+  isVisaSponsorshipQuestion,
+  isWorkAuthorizationQuestion,
+  isYesAnswerText,
   parseYears,
   textIncludesTerm
 };`,
@@ -65,6 +69,10 @@ const {
   cleanTitle,
   extractExperienceMatches,
   getJobIdFromUrl,
+  isSupportedJobDetailUrl,
+  isVisaSponsorshipQuestion,
+  isWorkAuthorizationQuestion,
+  isYesAnswerText,
   parseYears,
   textIncludesTerm
 } = sandbox.__contentTestApi;
@@ -111,6 +119,58 @@ test("extracts Apple role id from details URL", () => {
     getJobIdFromUrl("https://jobs.apple.com/en-us/details/200637724-0836/software-qa-engineer?team=SFTWR"),
     "200637724-0836"
   );
+});
+
+test("extracts TikTok and ByteDance role ids from details URLs", () => {
+  assert.equal(
+    getJobIdFromUrl("https://careers.tiktok.com/position/7391234567890123456/detail"),
+    "7391234567890123456"
+  );
+  assert.equal(
+    getJobIdFromUrl("https://jobs.bytedance.com/en/position/7391234567890123456/detail"),
+    "7391234567890123456"
+  );
+  assert.equal(
+    getJobIdFromUrl("https://lifeattiktok.com/resume/7538573630772726034/apply"),
+    "7538573630772726034"
+  );
+  assert.equal(
+    getJobIdFromUrl("https://lifeattiktok.com/search/7278068779270408508"),
+    "7278068779270408508"
+  );
+});
+
+test("extracts generic career role ids from query parameters", () => {
+  assert.equal(
+    getJobIdFromUrl("https://careers.tiktok.com/search?job_id=ABC-123"),
+    "ABC-123"
+  );
+});
+
+test("recognizes TikTok search detail links but not application links as result cards", () => {
+  assert.equal(isSupportedJobDetailUrl(new URL("https://lifeattiktok.com/search/7278068779270408508")), true);
+  assert.equal(isSupportedJobDetailUrl(new URL("https://lifeattiktok.com/search?keyword=ml")), false);
+  assert.equal(isSupportedJobDetailUrl(new URL("https://lifeattiktok.com/resume/7278068779270408508/apply")), false);
+  assert.equal(isSupportedJobDetailUrl(new URL("https://careers.tiktok.com/position/application")), false);
+  assert.equal(isSupportedJobDetailUrl(new URL("https://careers.tiktok.com/position/7278068779270408508/detail")), true);
+});
+
+test("recognizes TikTok work authorization and sponsorship questions", () => {
+  assert.equal(
+    isWorkAuthorizationQuestion("Are you legally authorized to work in the US without restriction?"),
+    true
+  );
+  assert.equal(
+    isVisaSponsorshipQuestion("Will you now or in the future require visa sponsorship or a visa transfer?"),
+    true
+  );
+});
+
+test("selects only affirmative yes answer labels", () => {
+  assert.equal(isYesAnswerText("Yes"), true);
+  assert.equal(isYesAnswerText("Yes, I am authorized"), true);
+  assert.equal(isYesAnswerText("No"), false);
+  assert.equal(isYesAnswerText("Prefer not to answer"), false);
 });
 
 test("hard-skips senior titles even with strong technical overlap", () => {
@@ -171,6 +231,17 @@ test("keeps Gen AI software engineer roles eligible", () => {
 
   assert.ok(["Likely match", "Review"].includes(result.decision));
   assert.ok(result.matchScore.keywords.includes("AI Product Experiences"));
+});
+
+test("keeps LLM AIOps and data center networking roles eligible", () => {
+  const result = classify(
+    "LLM AIOps Development Engineer - Data Center Networking",
+    "Build an AIOps observability platform with Python, machine learning, LLM agents, RAG, APIs, microservices, distributed data pipelines, monitoring, and automated remediation."
+  );
+
+  assert.ok(["Likely match", "Review"].includes(result.decision));
+  assert.ok(result.matchScore.keywords.includes("LLMs"));
+  assert.ok(result.matchScore.keywords.includes("Cloud Infrastructure"));
 });
 
 test("keeps QA automation roles eligible", () => {

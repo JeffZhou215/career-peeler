@@ -23,10 +23,10 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 ## 2. Job List Scanning
 
 - [ ] **S-01: Start from first results page**
-  - Steps: Open Apple Careers list page and click `Start Scan`.
+  - Steps: Open Apple Careers list page and click `Scan visible job list`.
   - Expected: Scan starts, phase changes, queued count appears in details.
 - [ ] **S-02: Start from later results page**
-  - Steps: Manually go to page 3+, then click `Start Scan`.
+  - Steps: Manually go to page 3+, then click `Scan visible job list`.
   - Expected: Detailed `Pages` counter reflects the current page if Apple exposes it in URL/UI.
 - [ ] **S-03: End of page pagination**
   - Steps: Let scan finish all visible jobs on a page.
@@ -37,6 +37,9 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 - [ ] **S-05: Duplicate links**
   - Steps: Start scan on a list with repeated job links.
   - Expected: Same URL is processed only once per scan run.
+- [ ] **S-05b: Cross-session duplicate skip**
+  - Steps: Scan a list once, stop, then scan the same list again without clearing history.
+  - Expected: Previously stored jobs are skipped without reopening detail tabs; `Skipped (stored)` increases in detailed stats.
 - [ ] **S-06: Stop scan**
   - Steps: Click `Stop scan` while scan is running.
   - Expected: Scan stops after current safe point; popup shows stopped state.
@@ -47,7 +50,7 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
   - Steps: Install fresh extension and open the popup.
   - Expected: Scan mode defaults to `Scan only, do not apply`.
 - [ ] **S-09: Auto-apply acknowledgement**
-  - Steps: Select auto-apply mode but leave the acknowledgement unchecked, then click `Start Scan`.
+  - Steps: Select auto-apply mode but leave the acknowledgement unchecked, then click `Scan visible job list`.
   - Expected: Scan does not start and the popup asks for acknowledgement.
 
 ## 3. Local Matching
@@ -91,6 +94,9 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 - [ ] **A-02: Already submitted on detail page**
   - Steps: Detail page shows `Submitted`.
   - Expected: Job is marked `submitted`; tab closes; no apply failure.
+- [ ] **A-02b: TikTok already-applied dialog**
+  - Steps: Submit a TikTok application that has already been submitted and shows `Application Failed` / `You've already applied for this job`.
+  - Expected: Application tab closes, job is marked `submitted`, exported log includes `errorType: already_applied`, and no apply failure is counted.
 - [ ] **A-03: Already submitted but no Submit Resume**
   - Steps: Detail page lacks `Submit Resume` and shows submitted state.
   - Expected: Job is marked `submitted`, not `*_apply_failed`.
@@ -100,18 +106,24 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 - [ ] **A-05: Questionnaire present**
   - Steps: Questionnaire asks work authorization and visa sponsorship.
   - Expected: Selects `Yes` for both, continues, then submits.
+- [ ] **A-05b: Questionnaire incomplete**
+  - Steps: Make one known TikTok authorization dropdown fail selection or verification.
+  - Expected: Final Submit is not clicked; error log/export include `errorType: questionnaire_incomplete`, page heading, last step, visible buttons, and manual recovery URL.
 - [ ] **A-06: Questionnaire with unexpected extra question**
   - Steps: Additional radio question appears.
   - Expected: Known questions are answered; workflow logs error if required unknown question blocks progress.
 - [ ] **A-07: Session expired/sign-in**
   - Steps: Application redirects to sign-in or page lacks workflow buttons.
-  - Expected: Scan logs error with page heading and visible buttons; no infinite loop.
+  - Expected: Scan logs `errorType: session_or_login_required` with page heading and visible buttons; no infinite loop.
 - [ ] **A-08: Missing final Submit**
   - Steps: Review page does not expose final `Submit`.
   - Expected: Error log records last page heading, last step, and visible buttons.
 - [ ] **A-09: Repeated no-progress flow**
   - Steps: Same step repeats until max attempts.
-  - Expected: Workflow stops at max attempts and logs attempts instead of looping forever.
+  - Expected: Workflow stops at max attempts and logs `errorType: workflow_timeout` with recent attempts instead of looping forever.
+- [ ] **A-09b: Application tab cleanup**
+  - Steps: Let a TikTok application open a separate `/resume/.../apply` tab, then force a workflow stop on a personal-info/questionnaire step.
+  - Expected: The extension closes workflow-owned application tabs before moving to the next job; the next application does not interrupt a previous leftover tab.
 - [ ] **A-10: Manual workflow diagnostic**
   - Steps: Click `Run current job workflow (can submit)` from Advanced tools.
   - Expected: Popup shows a browser confirmation before any workflow clicks happen. Cancelling leaves the page unchanged.
@@ -163,6 +175,12 @@ Use this checklist before publishing or sharing the extension. Prefer testing in
 - [ ] **P-07: Clear job history**
   - Steps: Click `Clear job history` after a scan.
   - Expected: Job records and scan history clear, while matching settings remain available.
+- [ ] **P-08: Export job logs**
+  - Steps: Click `Export job logs` after a scan.
+  - Expected: A local JSON file downloads with `persistence: chrome_storage_local`, `storedRecordCount`, job IDs, URLs, YOE evidence, tech stack, decisions, decision sources, workflow attempts, error types, and manual recovery URLs when available.
+- [ ] **P-09: Clear persisted logs**
+  - Steps: Click `Clear job history` after a scan, then export logs.
+  - Expected: Stored detailed logs and compact job records are cleared, while matching settings remain available.
 
 ## 7. Chrome Store Readiness
 

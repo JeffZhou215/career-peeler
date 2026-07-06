@@ -9,10 +9,10 @@
   <body>
     <main class="app">
       <header>
-        <p class="eyebrow">For Apple Careers</p>
+        <p class="eyebrow">For supported career sites</p>
         <h1>Career Peeler</h1>
         <p class="muted">
-          Start from an Apple jobs list page. The extension scans roles across pages; auto-apply is available only when explicitly enabled.
+          Start from an Apple, TikTok, or ByteDance jobs list page. The extension scans roles across pages; auto-apply is available only when explicitly enabled.
         </p>
       </header>
 
@@ -68,23 +68,24 @@
       </details>
 
       <div class="actions primary-actions">
-        <button id="scanButton" type="button" class="primary">Start Scan</button>
+        <button id="scanButton" type="button" class="primary">Scan visible job list</button>
         <button id="stopScanButton" type="button" class="danger hidden">Stop scan</button>
+        <button id="exportLogsButton" type="button" class="secondary">Export job logs</button>
         <button id="clearHistoryButton" type="button" class="secondary">Clear job history</button>
       </div>
 
       <section id="status" class="status" aria-live="polite">
-        Open an Apple Careers jobs list page, then click Start Scan.
+        Open a supported careers jobs list page, then click Scan visible job list.
       </section>
 
       <section id="scanStatus" class="result">
-        <h2>Auto Apply Progress</h2>
+        <h2>Scan Progress</h2>
         <div class="summary-grid">
           <span>Phase</span>
           <strong id="scanPhase">Idle</strong>
           <span>Applied</span>
           <strong id="scanApplied">0</strong>
-          <span>Review</span>
+          <span>Reviewed</span>
           <strong id="scanReview">0</strong>
           <span>Errors</span>
           <strong id="scanErrors">0</strong>
@@ -118,8 +119,10 @@
             <strong id="scanLikelyMatch">0</strong>
             <span>Likely skip</span>
             <strong id="scanLikelySkip">0</strong>
-            <span>Unknown</span>
+            <span>Seen</span>
             <strong id="scanUnknown">0</strong>
+            <span>Skipped (stored)</span>
+            <strong id="scanSkippedStored">0</strong>
             <span>Apply failed</span>
             <strong id="scanApplyFailed">0</strong>
           </div>

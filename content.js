@@ -140,7 +140,44 @@ const MISMATCH_OVERRIDES = [
   "test automation"
 ];
 
-const APPLE_JOBS_ORIGIN = "https://jobs.apple.com";
+const SITE_CONFIGS = {
+  apple: {
+    id: "apple",
+    label: "Apple Careers",
+    isSupportedUrl: (url) =>
+      url?.origin === "https://jobs.apple.com" ||
+      (url?.origin === "https://www.apple.com" && /^\/careers(?:\/|$)/i.test(url.pathname)),
+    isJobDetailUrl: (url) => url?.origin === "https://jobs.apple.com" && /\/details\//i.test(url.pathname),
+    isApplicationUrl: () => false,
+    applyPattern: /^submit resume$/i,
+    continuePattern: /^continue$/i,
+    finalSubmitPattern: /^submit$/i,
+    titleSuffixPattern: /\s+-\s+(?:Jobs\s+-\s+)?Careers at Apple\.?$/i
+  },
+  tiktok: {
+    id: "tiktok",
+    label: "TikTok/ByteDance Careers",
+    isSupportedUrl: (url) =>
+      ["careers.tiktok.com", "lifeattiktok.com", "jobs.bytedance.com", "careers.bytedance.com"].includes(
+        url?.hostname || ""
+      ),
+    isJobDetailUrl: (url) => {
+      const pathname = url?.pathname || "";
+
+      return (
+        /^\/(?:[^/]+\/)?position\/\d+(?:\/|$)/i.test(pathname) ||
+        /^\/(?:[^/]+\/)?jobs?\/\d+(?:\/|$)/i.test(pathname) ||
+        (url?.hostname === "lifeattiktok.com" && /^\/search\/\d+$/i.test(pathname))
+      );
+    },
+    isApplicationUrl: (url) => /\/resume\/[^/?#]+\/apply(?:\/|$)?/i.test(url?.pathname || ""),
+    applyPattern: /^(apply|apply now|apply for this job|apply to this job|submit application)$/i,
+    continuePattern: /^(continue|next|save and continue|save & continue)$/i,
+    finalSubmitPattern: /^(submit|submit application|send application)$/i,
+    titleSuffixPattern: /\s+-\s+(?:TikTok|ByteDance)\s*(?:Careers|Jobs)?\.?$/i
+  }
+};
+
 const WORKFLOW_STEP_DELAY_MS = 1800;
 const WORKFLOW_WAIT_TIMEOUT_MS = 12000;
 const DEFAULT_USER_YOE = 2;
@@ -166,6 +203,26 @@ function normalizeText(text) {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function getCurrentUrl() {
+  return new URL(window.location.href);
+}
+
+function getSiteConfig(url = getCurrentUrl()) {
+  return Object.values(SITE_CONFIGS).find((site) => site.isSupportedUrl(url)) || null;
+}
+
+function getSiteId(url = getCurrentUrl()) {
+  return getSiteConfig(url)?.id || "unknown";
+}
+
+function getSiteLabel(url = getCurrentUrl()) {
+  return getSiteConfig(url)?.label || "Unsupported site";
+}
+
+function isSupportedJobDetailUrl(url) {
+  return Boolean(getSiteConfig(url)?.isJobDetailUrl(url));
 }
 
 function getElementOwnText(element) {
@@ -225,24 +282,47 @@ function getVisiblePageText() {
 }
 
 function getJobId() {
-  const match = window.location.pathname.match(/\/details\/([^/?#]+)/i);
-  return match?.[1] || "unknown";
+  return getJobIdFromUrl(window.location.href);
 }
 
 function getJobIdFromUrl(url) {
   try {
     const parsedUrl = new URL(url);
-    const match = parsedUrl.pathname.match(/\/details\/([^/?#]+)/i);
-    return match?.[1] || parsedUrl.href;
+    const pathPatterns = [
+      /\/details\/([^/?#]+)/i,
+      /\/position\/([^/?#]+)/i,
+      /\/resume\/([^/?#]+)/i,
+      /\/search\/([^/?#]+)/i,
+      /\/job\/([^/?#]+)/i,
+      /\/jobs\/([^/?#]+)/i
+    ];
+
+    for (const pattern of pathPatterns) {
+      const match = parsedUrl.pathname.match(pattern);
+      if (match?.[1]) {
+        return decodeURIComponent(match[1]);
+      }
+    }
+
+    for (const param of ["job_id", "jobId", "id", "position_id", "positionId", "req_id", "reqId"]) {
+      const value = parsedUrl.searchParams.get(param);
+      if (value) {
+        return value;
+      }
+    }
+
+    return parsedUrl.href;
   } catch (_error) {
     return url;
   }
 }
 
 function cleanTitle(title) {
+  const siteConfig = getSiteConfig();
   return normalizeText(title || "")
-    .replace(/\s+-\s+Jobs\s+-\s+Careers at Apple\.?$/i, "")
-    .replace(/\s+-\s+Careers at Apple\.?$/i, "")
+    .replace(SITE_CONFIGS.apple.titleSuffixPattern, "")
+    .replace(SITE_CONFIGS.tiktok.titleSuffixPattern, "")
+    .replace(siteConfig?.titleSuffixPattern || /$^/, "")
     .replace(/\s*[>›»]\s*$/u, "")
     .trim();
 }
@@ -655,8 +735,39 @@ function getSubmittedSignal() {
   return null;
 }
 
+function isAlreadyAppliedDialogText(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+
+  return (
+    /\b(application failed|unable to apply|already applied)\b/.test(lower) &&
+    /\b(already applied|unable to apply again|apply again)\b/.test(lower)
+  );
+}
+
+function getAlreadyAppliedDialog() {
+  const dialogs = Array.from(
+    document.querySelectorAll("[role='dialog'], .uddialogwrap, .uddialogcontent, .udconfirm")
+  ).filter((element) => isElementVisible(element));
+
+  for (const dialog of dialogs) {
+    const text = normalizeText(dialog.innerText || "");
+
+    if (isAlreadyAppliedDialogText(text)) {
+      return {
+        element: dialog,
+        text: text.slice(0, 240),
+        title: normalizeText(dialog.querySelector(".udconfirmtitleContent, [class*='confirmtitle']")?.innerText || ""),
+        body: normalizeText(dialog.querySelector(".udconfirmbody, [class*='confirmbody']")?.innerText || "")
+      };
+    }
+  }
+
+  return null;
+}
+
 function hasSubmitResumeAction() {
-  return Boolean(findClickableByText(/^submit resume$/i));
+  const siteConfig = getSiteConfig();
+  return Boolean(findClickableByText(siteConfig?.applyPattern || /^submit resume$/i));
 }
 
 function extractJobDetails(options = {}) {
@@ -669,6 +780,8 @@ function extractJobDetails(options = {}) {
   const submittedSignal = getSubmittedSignal();
 
   return {
+    site: getSiteId(),
+    siteLabel: getSiteLabel(),
     url: window.location.href,
     title,
     jobId: getJobId(),
@@ -690,6 +803,7 @@ function extractJobDetails(options = {}) {
 
 function collectJobLinks() {
   const linksByUrl = new Map();
+  const siteConfig = getSiteConfig();
 
   for (const anchor of document.querySelectorAll("a[href]")) {
     if (!isElementVisible(anchor)) {
@@ -697,15 +811,17 @@ function collectJobLinks() {
     }
 
     const url = new URL(anchor.href, window.location.href);
-    const isAppleJobDetail = url.origin === APPLE_JOBS_ORIGIN && /\/details\//i.test(url.pathname);
+    const isSupportedJobDetail = siteConfig?.isSupportedUrl(url) && siteConfig?.isJobDetailUrl(url);
 
-    if (!isAppleJobDetail || linksByUrl.has(url.href)) {
+    if (!isSupportedJobDetail || linksByUrl.has(url.href)) {
       continue;
     }
 
     const jobId = getJobIdFromUrl(url.href);
 
     linksByUrl.set(url.href, {
+      site: siteConfig.id,
+      siteLabel: siteConfig.label,
       url: url.href,
       jobId,
       title: cleanTitle(anchor.innerText || anchor.getAttribute("aria-label") || "Untitled job"),
@@ -913,6 +1029,15 @@ function getCurrentResultsPage() {
 }
 
 function getNextPageControl() {
+  const siteConfig = getSiteConfig();
+
+  if (siteConfig?.id === "tiktok" && getTikTokNextPageButton()) {
+    return {
+      action: "click",
+      source: "tiktok_pagination"
+    };
+  }
+
   const candidates = document.querySelectorAll("a[href], button, [role='button']");
 
   for (const candidate of candidates) {
@@ -947,6 +1072,38 @@ function getNextPageControl() {
   return null;
 }
 
+function getTikTokNextPageButton() {
+  const pagination = document.querySelector("[data-testid='pagination']");
+  if (!pagination || !isElementVisible(pagination)) {
+    return null;
+  }
+
+  const arrowButtons = Array.from(pagination.querySelectorAll("button"))
+    .filter((button) => isElementVisible(button))
+    .filter((button) => button.querySelector("svg"))
+    .filter((button) => {
+      const label = normalizeText(
+        `${button.innerText || ""} ${button.textContent || ""} ${button.getAttribute("aria-label") || ""}`
+      );
+      return !/\d+|\.\.\./.test(label);
+    });
+
+  for (const button of arrowButtons.toReversed()) {
+    const classes = button.getAttribute("class") || "";
+    const isDisabled =
+      button.disabled ||
+      button.getAttribute("aria-disabled") === "true" ||
+      button.getAttribute("disabled") !== null ||
+      /\b(cursor-not-allowed|pointer-events-none)\b/.test(classes);
+
+    if (!isDisabled) {
+      return button;
+    }
+  }
+
+  return null;
+}
+
 function goToNextPage() {
   const nextPageControl = getNextPageControl();
 
@@ -964,6 +1121,18 @@ function goToNextPage() {
       action: "navigate",
       url: nextPageControl.url
     };
+  }
+
+  if (nextPageControl.source === "tiktok_pagination") {
+    const nextButton = getTikTokNextPageButton();
+    if (nextButton) {
+      nextButton.click();
+      return {
+        ok: true,
+        action: "click",
+        source: "tiktok_pagination"
+      };
+    }
   }
 
   const candidates = document.querySelectorAll("a[href], button, [role='button']");
@@ -1183,8 +1352,72 @@ function getVisibleActionLabels() {
     .slice(0, 12);
 }
 
+function getSessionRequiredSignal() {
+  const url = getCurrentUrl();
+  const heading = normalizeText(document.querySelector("h1, h2")?.innerText || "");
+  const bodyText = getVisiblePageText().slice(0, 5000);
+
+  if (/\/(?:login|sign-?in|auth|authenticate)(?:\/|$)/i.test(url.pathname)) {
+    return heading || "Login page";
+  }
+
+  if (/\b(session expired|authentication required|access denied|please sign in to continue|please log in to continue)\b/i.test(bodyText)) {
+    return RegExp.lastMatch || "Login or session action required";
+  }
+
+  if (/^(sign in|sign-in|log in|login|authenticate)$/i.test(heading)) {
+    return heading;
+  }
+
+  return null;
+}
+
 function findClickableByText(pattern) {
   return getClickableCandidates().find((element) => pattern.test(getActionLabel(element)));
+}
+
+function findJobSpecificApplyAction(siteConfig, jobId) {
+  if (siteConfig?.id !== "tiktok") {
+    return findClickableByText(siteConfig?.applyPattern || /^submit resume$/i);
+  }
+
+  const jobApplySelectors = [
+    `a[href*="/resume/${jobId}/apply"]`,
+    `button[data-tracking="job-apply-button"][tracking-value="${jobId}"]`,
+    `button[tracking-value="${jobId}"]`,
+    'button[data-tracking="job-apply-button"]'
+  ];
+
+  for (const selector of jobApplySelectors) {
+    const candidate = document.querySelector(selector);
+
+    if (candidate && isElementVisible(candidate) && !isActionDisabled(candidate)) {
+      return candidate;
+    }
+
+    const nestedButton = candidate?.querySelector?.("button, [role='button']");
+    if (nestedButton && isElementVisible(nestedButton) && !isActionDisabled(nestedButton)) {
+      return nestedButton;
+    }
+  }
+
+  return getClickableCandidates().find((element) => /^apply to this job$/i.test(getActionLabel(element)));
+}
+
+async function waitForJobSpecificApplyAction(siteConfig, jobId, timeoutMs = 6000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const element = findJobSpecificApplyAction(siteConfig, jobId);
+
+    if (element) {
+      return element;
+    }
+
+    await delay(300);
+  }
+
+  return null;
 }
 
 function getLoadingSignal() {
@@ -1260,7 +1493,8 @@ async function clickFinalSubmit(steps) {
   window.scrollTo(0, document.body.scrollHeight);
   await delay(500);
 
-  const element = await waitForClickable(/^submit$/i, 2500);
+  const siteConfig = getSiteConfig();
+  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 2500);
 
   if (!element) {
     steps.push({
@@ -1300,6 +1534,23 @@ async function clickFinalSubmit(steps) {
       done: true,
       pending: false,
       summary: "Clicked final Submit and detected Submitted confirmation."
+    };
+  }
+
+  const alreadyAppliedDialog = getAlreadyAppliedDialog();
+  if (alreadyAppliedDialog) {
+    steps.push({
+      step: "Detect already applied dialog",
+      status: "detected",
+      label: alreadyAppliedDialog.body || alreadyAppliedDialog.text
+    });
+    return {
+      clicked: true,
+      done: true,
+      pending: false,
+      alreadySubmitted: true,
+      errorType: "already_applied",
+      summary: alreadyAppliedDialog.body || "You've already applied for this job. Unable to apply again."
     };
   }
 
@@ -1378,11 +1629,83 @@ function clickSponsorshipAnswer(steps) {
   return false;
 }
 
+function isYesAnswerText(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return /\byes\b/.test(lower) && !/\bno\b/.test(lower);
+}
+
+function isWorkAuthorizationQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return (
+    /\blegally authorized\b/.test(lower) ||
+    /\bauthorized to work\b/.test(lower) ||
+    /\bwork in the (?:us|u\.s\.|united states)\b/.test(lower)
+  );
+}
+
+function isVisaSponsorshipQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return (
+    /\bvisa sponsorship\b/.test(lower) ||
+    /\brequire sponsorship\b/.test(lower) ||
+    /\bsponsorship for employment\b/.test(lower) ||
+    /\bvisa transfer\b/.test(lower) ||
+    /\bnow or in the future\b.*\b(?:sponsorship|visa)\b/.test(lower)
+  );
+}
+
 function getQuestionContainers() {
   return Array.from(document.querySelectorAll("fieldset, section, div, li"))
     .filter((element) => isElementVisible(element))
-    .filter((element) => element.querySelector("input[type='radio'], [role='radio']"))
+    .filter((element) => {
+      const text = normalizeText(element.innerText || "");
+      const hasKnownQuestion = isWorkAuthorizationQuestion(text) || isVisaSponsorshipQuestion(text);
+      const hasAnswerControl = element.querySelector(
+        [
+          "select",
+          "input[type='radio']",
+          "[role='radio']",
+          "[role='combobox']",
+          "[aria-haspopup='listbox']",
+          "[aria-haspopup='menu']",
+          ".ud__select",
+          ".ud__select__selector",
+          "button",
+          "[role='button']"
+        ].join(", ")
+      );
+
+      return hasKnownQuestion && hasAnswerControl;
+    })
     .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
+}
+
+function selectNativeYesAnswer(container, stepName, steps) {
+  const selects = Array.from(container.querySelectorAll("select"))
+    .filter((element) => isElementVisible(element))
+    .filter((element) => !isActionDisabled(element));
+
+  for (const select of selects) {
+    const option = Array.from(select.options).find((candidate) =>
+      isYesAnswerText(`${candidate.textContent || ""} ${candidate.value || ""}`)
+    );
+
+    if (!option) {
+      continue;
+    }
+
+    select.value = option.value;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    steps.push({
+      step: stepName,
+      status: "selected",
+      label: normalizeText(option.textContent || option.value || "Yes")
+    });
+    return true;
+  }
+
+  return false;
 }
 
 function clickAnswerInContainer(container, answerPattern, stepName, steps) {
@@ -1418,45 +1741,233 @@ function clickAnswerInContainer(container, answerPattern, stepName, steps) {
   return false;
 }
 
-function answerQuestionnaire(steps) {
-  let answeredAny = false;
-  const containers = getQuestionContainers();
+async function clickDropdownYesAnswer(container, stepName, steps) {
+  const controls = Array.from(
+    container.querySelectorAll(
+      [
+        ".ud__select__selector",
+        ".ud__select",
+        "[role='combobox']",
+        "[aria-haspopup='listbox']",
+        "[aria-haspopup='menu']",
+        "button",
+        "[role='button']",
+        "input[readonly]",
+        "input[type='text']"
+      ].join(", ")
+    )
+  )
+    .filter((element) => isElementVisible(element))
+    .filter((element) => !isActionDisabled(element));
 
-  for (const container of containers) {
-    const text = normalizeText(container.innerText || "").toLowerCase();
+  for (const control of controls) {
+    const label = `${getActionLabel(control)} ${getElementLabel(control)}`.toLowerCase();
 
-    if (/\blegally authorized\b|\bauthorized to work\b|\bwork in the united states\b/.test(text)) {
-      answeredAny = clickAnswerInContainer(container, /\byes\b/, "Answer work authorization", steps) || answeredAny;
+    if (/\b(continue|submit|apply|cancel|close|back|next)\b/.test(label)) {
       continue;
     }
 
-    if (/\bvisa sponsorship\b|\brequire sponsorship\b|\bsponsorship for employment\b/.test(text)) {
-      answeredAny = clickAnswerInContainer(container, /\byes\b/, "Answer visa sponsorship", steps) || answeredAny;
+    control.scrollIntoView({
+      block: "center"
+    });
+    await delay(150);
+    control.click();
+    await delay(300);
+
+    const yesOption = Array.from(
+      document.querySelectorAll(".ud__select__list__item, [role='option'], [role='menuitem'], li, button, div, span")
+    )
+      .filter((element) => isElementVisible(element))
+      .find((element) => {
+        const text = normalizeText(
+          `${element.innerText || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`
+        );
+        return text.length <= 40 && isYesAnswerText(text) && !isActionDisabled(element);
+      });
+
+    if (!yesOption) {
+      continue;
     }
+
+    yesOption.scrollIntoView({
+      block: "center"
+    });
+    await delay(100);
+    yesOption.click();
+    steps.push({
+      step: stepName,
+      status: "selected",
+      label: "Yes"
+    });
+    await delay(300);
+    return true;
   }
 
-  return answeredAny;
+  return false;
+}
+
+function getSelectedDropdownText(container) {
+  const selector = container.querySelector(".ud__select__selector, [role='combobox'], [aria-haspopup='listbox']");
+  const input = container.querySelector("input[role='combobox'], input[readonly]");
+
+  return normalizeText(
+    `${selector?.innerText || ""} ${input?.value || ""} ${selector?.getAttribute("aria-label") || ""}`
+  );
+}
+
+async function selectTikTokYesAnswer(field, stepName, steps) {
+  if (isYesAnswerText(getSelectedDropdownText(field))) {
+    steps.push({
+      step: stepName,
+      status: "already selected",
+      label: "Yes"
+    });
+    return true;
+  }
+
+  if (selectNativeYesAnswer(field, stepName, steps)) {
+    return true;
+  }
+
+  const selector = field.querySelector(
+    ".ud__select__selector, [role='combobox'], [aria-haspopup='listbox'], [aria-haspopup='menu']"
+  );
+
+  if (!selector || !isElementVisible(selector) || isActionDisabled(selector)) {
+    steps.push({
+      step: stepName,
+      status: "missing",
+      label: "TikTok dropdown selector was not available"
+    });
+    return false;
+  }
+
+  selector.scrollIntoView({ block: "center" });
+  await delay(150);
+  selector.click();
+  await delay(400);
+
+  const localOptions = Array.from(field.querySelectorAll(".ud__select__list__item, [role='option']"));
+  const globalOptions = Array.from(document.querySelectorAll(".ud__select__list__item, [role='option']"));
+  const yesOption = [...localOptions, ...globalOptions]
+    .filter((element, index, options) => options.indexOf(element) === index)
+    .filter((element) => isElementVisible(element) && !isActionDisabled(element))
+    .find((element) => isYesAnswerText(element.innerText || element.textContent || ""));
+
+  if (!yesOption) {
+    const visibleOptions = globalOptions
+      .filter((element) => isElementVisible(element))
+      .map((element) => normalizeText(element.innerText || element.textContent || ""))
+      .filter(Boolean)
+      .slice(0, 8);
+    steps.push({
+      step: stepName,
+      status: "missing",
+      label: visibleOptions.length ? `Visible options: ${visibleOptions.join(", ")}` : "No visible dropdown options"
+    });
+    return false;
+  }
+
+  yesOption.scrollIntoView({ block: "nearest" });
+  await delay(100);
+  yesOption.click();
+  await delay(400);
+
+  const selectedText = getSelectedDropdownText(field);
+  const selected = isYesAnswerText(selectedText);
+  steps.push({
+    step: stepName,
+    status: selected ? "selected" : "unverified",
+    label: selected ? "Yes" : `Displayed value: ${selectedText || "empty"}`
+  });
+  return selected;
+}
+
+async function answerYesQuestion(container, stepName, steps) {
+  if (selectNativeYesAnswer(container, stepName, steps)) {
+    return true;
+  }
+
+  if (clickAnswerInContainer(container, /\byes\b/, stepName, steps)) {
+    return true;
+  }
+
+  return clickDropdownYesAnswer(container, stepName, steps);
+}
+
+async function answerQuestionnaire(steps) {
+  const tikTokFields = Array.from(document.querySelectorAll("[data-form-field-i18n-name]"))
+    .filter((element) => isElementVisible(element))
+    .map((element) => ({
+      element,
+      question: normalizeText(element.getAttribute("data-form-field-i18n-name") || element.innerText || "")
+    }))
+    .filter(({ question }) => isWorkAuthorizationQuestion(question) || isVisaSponsorshipQuestion(question));
+
+  if (tikTokFields.length) {
+    let answeredCount = 0;
+
+    for (const { element, question } of tikTokFields) {
+      const stepName = isWorkAuthorizationQuestion(question)
+        ? "Answer work authorization"
+        : "Answer visa sponsorship";
+
+      if (await selectTikTokYesAnswer(element, stepName, steps)) {
+        answeredCount += 1;
+      }
+    }
+
+    return {
+      answeredAny: answeredCount > 0,
+      requiredCount: tikTokFields.length,
+      answeredCount
+    };
+  }
+
+  let answeredCount = 0;
+  const containers = getQuestionContainers();
+  const workAuthorization = containers.find((container) =>
+    isWorkAuthorizationQuestion(normalizeText(container.innerText || ""))
+  );
+  const sponsorship = containers.find((container) =>
+    isVisaSponsorshipQuestion(normalizeText(container.innerText || ""))
+  );
+
+  if (workAuthorization && (await answerYesQuestion(workAuthorization, "Answer work authorization", steps))) {
+    answeredCount += 1;
+  }
+
+  if (sponsorship && (await answerYesQuestion(sponsorship, "Answer visa sponsorship", steps))) {
+    answeredCount += 1;
+  }
+
+  return {
+    answeredAny: answeredCount > 0,
+    requiredCount: Number(Boolean(workAuthorization)) + Number(Boolean(sponsorship)),
+    answeredCount
+  };
 }
 
 async function runApplicationWorkflow() {
   const steps = [];
+  const siteConfig = getSiteConfig() || SITE_CONFIGS.apple;
 
-  await clickAction(/^submit resume$/i, "Open application flow", steps, {
+  await clickAction(siteConfig.applyPattern, "Open application flow", steps, {
     timeoutMs: 6000
   });
 
-  await clickAction(/^continue$/i, "Continue from resume step", steps);
+  await clickAction(siteConfig.continuePattern, "Continue from resume step", steps);
   clickSponsorshipAnswer(steps);
 
-  await clickAction(/^continue$/i, "Continue from profile source step", steps);
+  await clickAction(siteConfig.continuePattern, "Continue from profile source step", steps);
   clickSponsorshipAnswer(steps);
 
-  await clickAction(/^continue$/i, "Continue from profile information step", steps, {
+  await clickAction(siteConfig.continuePattern, "Continue from profile information step", steps, {
     scrollBottom: true
   });
   clickSponsorshipAnswer(steps);
 
-  const submitted = await clickAction(/^submit$/i, "Submit application", steps, {
+  const submitted = await clickAction(siteConfig.finalSubmitPattern, "Submit application", steps, {
     scrollBottom: true,
     afterClickDelayMs: 2500
   });
@@ -1474,7 +1985,29 @@ async function runApplicationWorkflow() {
 
 async function runApplicationWorkflowStep() {
   const steps = [];
-  const isDetailPage = /\/details\//i.test(window.location.pathname);
+  const siteConfig = getSiteConfig();
+  const currentUrl = getCurrentUrl();
+  const isDetailPage = Boolean(siteConfig?.isJobDetailUrl(currentUrl) && !siteConfig?.isApplicationUrl(currentUrl));
+  const sessionSignal = getSessionRequiredSignal();
+
+  if (sessionSignal) {
+    steps.push({
+      step: "Detect login or session requirement",
+      status: "detected",
+      label: sessionSignal
+    });
+    return {
+      clicked: false,
+      done: false,
+      errorType: "session_or_login_required",
+      steps,
+      url: window.location.href,
+      title: document.title,
+      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+      visibleActions: getVisibleActionLabels(),
+      summary: `Login or session action appears required: ${sessionSignal}`
+    };
+  }
 
   if (isDetailPage) {
     const submittedSignal = getSubmittedSignal();
@@ -1499,7 +2032,8 @@ async function runApplicationWorkflowStep() {
       };
     }
 
-    const submitResume = await waitForClickable(/^submit resume$/i, 6000);
+    const jobId = getJobId();
+    const submitResume = await waitForJobSpecificApplyAction(siteConfig, jobId, 6000);
 
     if (!submitResume) {
       const lateSubmittedSignal = getSubmittedSignal();
@@ -1525,7 +2059,7 @@ async function runApplicationWorkflowStep() {
       }
     }
 
-    if (!submitResume && !hasSubmitResumeAction()) {
+    if (!submitResume) {
       return {
         clicked: false,
         done: false,
@@ -1539,7 +2073,7 @@ async function runApplicationWorkflowStep() {
         title: document.title,
         heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
         visibleActions: getVisibleActionLabels(),
-        summary: "Submit Resume was not found and no Submitted state was detected."
+        summary: `${siteConfig.label} apply action was not found and no Submitted state was detected.`
       };
     }
 
@@ -1563,20 +2097,42 @@ async function runApplicationWorkflowStep() {
       title: document.title,
       heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
       visibleActions: getVisibleActionLabels(),
-      summary: "Clicked Submit Resume."
+      summary: `Clicked ${getActionLabel(submitResume) || "apply action"}.`
     };
 
   }
 
-  const answeredQuestionnaire = answerQuestionnaire(steps);
+  const questionnaireResult = await answerQuestionnaire(steps);
+  const answeredQuestionnaire = questionnaireResult.answeredAny;
   const answeredSponsorship = answeredQuestionnaire ? false : clickSponsorshipAnswer(steps);
 
   if (answeredQuestionnaire || answeredSponsorship) {
     await delay(500);
   }
 
+  if (
+    questionnaireResult.requiredCount > 0 &&
+    questionnaireResult.answeredCount < questionnaireResult.requiredCount
+  ) {
+    return {
+      clicked: answeredQuestionnaire,
+      done: false,
+      steps,
+      url: window.location.href,
+      title: document.title,
+      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+      visibleActions: getVisibleActionLabels(),
+      errorType: "questionnaire_incomplete",
+      summary: `Answered ${questionnaireResult.answeredCount} of ${questionnaireResult.requiredCount} required authorization questions; Submit was not clicked.`
+    };
+  }
+
   const loadingSignal = getLoadingSignal();
-  if (loadingSignal && !findClickableByText(/^submit$/i) && !findClickableByText(/^continue$/i)) {
+  if (
+    loadingSignal &&
+    !findClickableByText(siteConfig?.finalSubmitPattern || /^submit$/i) &&
+    !findClickableByText(siteConfig?.continuePattern || /^continue$/i)
+  ) {
     steps.push({
       step: "Wait for application page",
       status: "loading",
@@ -1600,6 +2156,8 @@ async function runApplicationWorkflowStep() {
     return {
       clicked: true,
       done: true,
+      alreadySubmitted: Boolean(submitResult.alreadySubmitted),
+      errorType: submitResult.errorType || null,
       steps,
       url: window.location.href,
       title: document.title,
@@ -1622,7 +2180,7 @@ async function runApplicationWorkflowStep() {
     };
   }
 
-  const continued = await clickAction(/^continue$/i, "Continue application step", steps, {
+  const continued = await clickAction(siteConfig?.continuePattern || /^continue$/i, "Continue application step", steps, {
     scrollBottom: true,
     timeoutMs: 5000
   });
@@ -1702,12 +2260,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
     const links = collectJobLinks();
+    const siteConfig = getSiteConfig();
+    const currentUrl = getCurrentUrl();
+    const currentJob = siteConfig?.isJobDetailUrl(currentUrl) || siteConfig?.isApplicationUrl(currentUrl)
+      ? {
+          site: siteConfig.id,
+          siteLabel: siteConfig.label,
+          url: window.location.href,
+          jobId: getJobId(),
+          title: getJobTitle(),
+          alreadyAppliedFromList: Boolean(getSubmittedSignal()),
+          isCurrentPage: true
+        }
+      : null;
 
     sendResponse({
       ok: true,
       data: {
+        site: siteConfig?.id || "unknown",
+        siteLabel: siteConfig?.label || "Unsupported site",
         url: window.location.href,
         currentPage: getCurrentResultsPage(),
+        currentJob,
         links,
         listStats: getJobListStats(links),
         hasNextPage: Boolean(getNextPageControl())

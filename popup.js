@@ -3,6 +3,7 @@ const scanButton = document.querySelector("#scanButton");
 const analyzeApplicationButton = document.querySelector("#analyzeApplicationButton");
 const runApplicationWorkflowButton = document.querySelector("#runApplicationWorkflowButton");
 const stopScanButton = document.querySelector("#stopScanButton");
+const exportLogsButton = document.querySelector("#exportLogsButton");
 const clearHistoryButton = document.querySelector("#clearHistoryButton");
 const statusEl = document.querySelector("#status");
 const resultEl = document.querySelector("#result");
@@ -28,6 +29,7 @@ const scanLikelyMatchEl = document.querySelector("#scanLikelyMatch");
 const scanLikelySkipEl = document.querySelector("#scanLikelySkip");
 const scanReviewEl = document.querySelector("#scanReview");
 const scanUnknownEl = document.querySelector("#scanUnknown");
+const scanSkippedStoredEl = document.querySelector("#scanSkippedStored");
 const scanApplyFailedEl = document.querySelector("#scanApplyFailed");
 const scanErrorsEl = document.querySelector("#scanErrors");
 const scanErrorsSummaryEl = document.querySelector("#scanErrorsSummary");
@@ -60,15 +62,42 @@ const DEFAULT_SCAN_MODE = "scan_only";
 
 let scanPollId = null;
 
-function isAppleCareersUrl(url) {
-  return (
-    url?.startsWith("https://jobs.apple.com/") ||
-    url?.startsWith("https://www.apple.com/careers/")
-  );
+function isSupportedCareersUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+    return (
+      parsedUrl.origin === "https://jobs.apple.com" ||
+      (parsedUrl.origin === "https://www.apple.com" && /^\/careers(?:\/|$)/i.test(parsedUrl.pathname)) ||
+      ["careers.tiktok.com", "lifeattiktok.com", "jobs.bytedance.com", "careers.bytedance.com"].includes(
+        parsedUrl.hostname
+      )
+    );
+  } catch (_error) {
+    return false;
+  }
 }
 
 function setStatus(message) {
   statusEl.textContent = message;
+}
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json"
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatDateForFilename(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, "-");
 }
 
 function normalizeUserYearsOfExperience(value) {
@@ -203,9 +232,9 @@ async function extractCurrentPage() {
   try {
     const tab = await getActiveTab();
 
-    if (!tab?.id || !isAppleCareersUrl(tab.url)) {
+    if (!tab?.id || !isSupportedCareersUrl(tab.url)) {
       resultEl.classList.add("hidden");
-      setStatus("Open an Apple Careers page, then try again.");
+      setStatus("Open an Apple, TikTok, or ByteDance careers page, then try again.");
       return;
     }
 
@@ -309,9 +338,9 @@ async function analyzeApplicationPage() {
   try {
     const tab = await getActiveTab();
 
-    if (!tab?.id || !isAppleCareersUrl(tab.url)) {
+    if (!tab?.id || !isSupportedCareersUrl(tab.url)) {
       applicationAnalysisEl.classList.add("hidden");
-      setStatus("Open an Apple Careers application page, then try again.");
+      setStatus("Open a supported careers application page, then try again.");
       return;
     }
 
@@ -336,13 +365,13 @@ async function analyzeApplicationPage() {
 
 async function runApplicationWorkflow() {
   runApplicationWorkflowButton.disabled = true;
-  setStatus("Checking the current Apple application page before running the workflow.");
+  setStatus("Checking the current careers application page before running the workflow.");
 
   try {
     const tab = await getActiveTab();
 
-    if (!tab?.id || !isAppleCareersUrl(tab.url)) {
-      setStatus("Open an Apple Careers job or application page, then try again.");
+    if (!tab?.id || !isSupportedCareersUrl(tab.url)) {
+      setStatus("Open an Apple, TikTok, or ByteDance careers job or application page, then try again.");
       return;
     }
 
@@ -355,7 +384,7 @@ async function runApplicationWorkflow() {
       return;
     }
 
-    setStatus("Running Apple application workflow. This can submit the application if the final Submit button is found.");
+    setStatus("Running the site-specific application workflow. This can submit the application if the final Submit button is found.");
 
     const response = await chrome.runtime.sendMessage({
       type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
@@ -460,14 +489,16 @@ function renderScanErrors(errors) {
   for (const error of errors) {
     const item = document.createElement("li");
     const attempt = error.lastAttempt || error.workflow?.attempts?.at(-1);
+    const site = error.siteLabel ? ` ${error.siteLabel}.` : "";
+    const errorType = error.errorType || error.type || "error";
     const heading = attempt?.heading ? ` Page: ${attempt.heading}.` : "";
     const summary = attempt?.summary ? ` Last step: ${attempt.summary}.` : "";
     const buttons = attempt?.visibleActions?.length
       ? ` Visible buttons: ${attempt.visibleActions.join(", ")}.`
       : "";
     const when = error.happenedAt ? ` (${formatRelativeTime(error.happenedAt)})` : "";
-    item.append(`${error.type || "error"}: `);
-    item.append(createJobLink(error.jobId, error.title, error.url));
+    item.append(`${errorType}:${site} `);
+    item.append(createJobLink(error.jobId, error.title, error.manualReviewUrl || error.url));
     item.append(` - ${error.message}.${heading}${summary}${buttons}${when}`);
     scanErrorLogEl.append(item);
   }
@@ -486,8 +517,9 @@ function renderScanStatus(status) {
   scanAppliedEl.textContent = status.stats?.applied || 0;
   scanLikelyMatchEl.textContent = status.stats?.likelyMatch || 0;
   scanLikelySkipEl.textContent = status.stats?.likelySkip || 0;
-  scanReviewEl.textContent = status.stats?.review || 0;
-  scanUnknownEl.textContent = status.stats?.unknown || 0;
+  scanReviewEl.textContent = status.stats?.reviewed ?? status.stats?.review ?? 0;
+  scanUnknownEl.textContent = status.stats?.seen ?? status.stats?.unknown ?? 0;
+  scanSkippedStoredEl.textContent = status.stats?.skippedStored || 0;
   scanApplyFailedEl.textContent = status.stats?.applyFailed || 0;
   scanErrorsEl.textContent = status.stats?.errors || 0;
   scanErrorsSummaryEl.textContent = status.stats?.errors || 0;
@@ -502,9 +534,10 @@ function renderScanStatus(status) {
   renderScanRecent(status.recent || []);
 
   scanButton.disabled = Boolean(status.running);
-  scanButton.textContent = status.running ? "Scan Running" : "Start Scan";
+  scanButton.textContent = status.running ? "Scan Running" : "Scan visible job list";
   stopScanButton.classList.toggle("hidden", !status.running);
   clearHistoryButton.disabled = Boolean(status.running);
+  exportLogsButton.disabled = Boolean(status.running);
 
   if (status.running && !scanPollId) {
     startPollingScanStatus();
@@ -569,7 +602,7 @@ async function startListScan() {
     );
   } catch (error) {
     scanButton.disabled = false;
-    scanButton.textContent = "Start Scan";
+    scanButton.textContent = "Scan visible job list";
     setStatus(error?.message || "Could not start the list scan.");
   }
 }
@@ -612,11 +645,35 @@ async function clearHistory() {
   }
 }
 
+async function exportJobLogs() {
+  exportLogsButton.disabled = true;
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "APPLE_CAREERS_EXPORT_JOB_LOGS"
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error || "Could not export job logs.");
+    }
+
+    downloadJson(`career-peeler-job-logs-${formatDateForFilename()}.json`, response);
+    setStatus(
+      `Exported ${response.recordCount || 0} job log records, including ${response.storedRecordCount || 0} persisted records.`
+    );
+  } catch (error) {
+    setStatus(error?.message || "Could not export job logs.");
+  } finally {
+    exportLogsButton.disabled = false;
+  }
+}
+
 extractButton.addEventListener("click", extractCurrentPage);
 scanButton.addEventListener("click", startListScan);
 analyzeApplicationButton.addEventListener("click", analyzeApplicationPage);
 runApplicationWorkflowButton.addEventListener("click", runApplicationWorkflow);
 stopScanButton.addEventListener("click", stopListScan);
+exportLogsButton.addEventListener("click", exportJobLogs);
 clearHistoryButton.addEventListener("click", clearHistory);
 userYearsOfExperienceEl.addEventListener("change", saveUserProfile);
 scanModeEl.addEventListener("change", saveUserProfile);

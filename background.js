@@ -1,4 +1,5 @@
 const JOB_RECORDS_KEY = "appleCareersJobRecords";
+const JOB_LOGS_KEY = "appleCareersDetailedJobLogs";
 const SCAN_STATUS_KEY = "appleCareersScanStatus";
 const PAGE_SETTLE_DELAY_MS = 1500;
 const TAB_LOAD_TIMEOUT_MS = 25000;
@@ -6,20 +7,96 @@ const DEFAULT_USER_YOE = 2;
 const DEFAULT_LLM_MODEL = "gpt-4o-mini";
 const DEFAULT_SCAN_MODE = "scan_only";
 const MAX_STORED_JOB_RECORDS = 100;
+const MAX_STORED_JOB_LOGS = 200;
 const MAX_TEXT_FIELD_LENGTH = 500;
 const HIGH_YOE_HARD_SKIP_FLOOR = 8;
 const HIGH_YOE_HARD_SKIP_BUFFER = 3;
+const MAX_IN_MEMORY_JOB_LOGS = 300;
 
 const processedUrls = new Set();
+const processedJobIds = new Set();
+const storedIdentifiersAtScanStart = new Set();
 const visitedListPages = new Set();
+const ownedWorkflowTabIds = new Set();
 
 let scanState = createIdleState();
+let inMemoryJobLogs = [];
 
-function isAppleCareersUrl(url) {
-  return (
-    url?.startsWith("https://jobs.apple.com/") ||
-    url?.startsWith("https://www.apple.com/careers/")
-  );
+const SITE_CONFIGS = {
+  apple: {
+    id: "apple",
+    label: "Apple Careers",
+    isSupportedUrl: (url) =>
+      url?.origin === "https://jobs.apple.com" ||
+      (url?.origin === "https://www.apple.com" && /^\/careers(?:\/|$)/i.test(url.pathname))
+  },
+  tiktok: {
+    id: "tiktok",
+    label: "TikTok/ByteDance Careers",
+    isSupportedUrl: (url) =>
+      ["careers.tiktok.com", "lifeattiktok.com", "jobs.bytedance.com", "careers.bytedance.com"].includes(
+        url?.hostname || ""
+      ),
+    isApplicationUrl: (url) => /\/resume\/[^/?#]+\/apply(?:\/|$)?/i.test(url?.pathname || "")
+  }
+};
+
+function parseUrl(url) {
+  try {
+    return new URL(url);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getSiteConfig(url) {
+  const parsedUrl = parseUrl(url);
+  return Object.values(SITE_CONFIGS).find((site) => site.isSupportedUrl(parsedUrl)) || null;
+}
+
+function isSupportedCareersUrl(url) {
+  return Boolean(getSiteConfig(url));
+}
+
+function getSiteLabel(urlOrSite) {
+  if (SITE_CONFIGS[urlOrSite]) {
+    return SITE_CONFIGS[urlOrSite].label;
+  }
+
+  return getSiteConfig(urlOrSite)?.label || "Unknown site";
+}
+
+function getJobIdFromUrl(url) {
+  const parsedUrl = parseUrl(url);
+
+  if (!parsedUrl) {
+    return null;
+  }
+
+  const pathPatterns = [
+    /\/details\/([^/?#]+)/i,
+    /\/position\/([^/?#]+)/i,
+    /\/resume\/([^/?#]+)/i,
+    /\/search\/([^/?#]+)/i,
+    /\/job\/([^/?#]+)/i,
+    /\/jobs\/([^/?#]+)/i
+  ];
+
+  for (const pattern of pathPatterns) {
+    const match = parsedUrl.pathname.match(pattern);
+    if (match?.[1]) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
+  for (const param of ["job_id", "jobId", "id", "position_id", "positionId", "req_id", "reqId"]) {
+    const value = parsedUrl.searchParams.get(param);
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function createIdleState() {
@@ -33,6 +110,8 @@ function createIdleState() {
     pageCount: 0,
     currentJob: null,
     currentPageStats: null,
+    site: null,
+    siteLabel: null,
     lastError: null,
     completedAt: null,
     stats: {
@@ -41,8 +120,9 @@ function createIdleState() {
       applyFailed: 0,
       likelyMatch: 0,
       likelySkip: 0,
-      review: 0,
-      unknown: 0,
+      reviewed: 0,
+      seen: 0,
+      skippedStored: 0,
       errors: 0
     },
     recent: [],
@@ -100,6 +180,7 @@ function compactAttempt(attempt) {
     title: truncateText(attempt.title, 160),
     heading: truncateText(attempt.heading, 160),
     summary: truncateText(attempt.summary, 240),
+    errorType: attempt.errorType || null,
     visibleActions: (attempt.visibleActions || []).slice(0, 10).map((action) => truncateText(action, 80))
   };
 }
@@ -123,6 +204,18 @@ function compactWorkflow(workflow) {
   };
 }
 
+function getLastWorkflowAttempt(workflow) {
+  return workflow?.attempts?.at(-1) || null;
+}
+
+function getLastWorkflowStep(workflow) {
+  return workflow?.steps?.at(-1) || null;
+}
+
+function getManualReviewUrl(source = {}) {
+  return source.manualReviewUrl || source.applicationUrl || source.url || source.lastAttempt?.url || source.workflow?.attempts?.at(-1)?.url || null;
+}
+
 function compactLlmMatch(llmMatch) {
   if (!llmMatch) {
     return null;
@@ -138,9 +231,46 @@ function compactLlmMatch(llmMatch) {
   };
 }
 
+function compactYoeEvidence(job) {
+  const evidence = job.matches || job.yoeEvidence || [];
+
+  return evidence.slice(0, 12).map((match) => ({
+    type: match.type,
+    years: Array.isArray(match.years) ? match.years.slice(0, 4) : [],
+    sentence: truncateText(match.sentence, 260)
+  }));
+}
+
+function getTechStack(job) {
+  return Array.from(
+    new Set([
+      ...(job.matchScore?.keywords || []),
+      ...(job.resumeMatch?.keywords || []),
+      ...(job.llmMatch?.matchedSkills || [])
+    ])
+  )
+    .filter(Boolean)
+    .slice(0, 30)
+    .map((item) => truncateText(item, 80));
+}
+
+function getDecisionSource(job) {
+  if (job.matchSource === "llm") {
+    return "llm";
+  }
+
+  if (job.llmError) {
+    return "local_fallback_after_llm_error";
+  }
+
+  return "local_scoring";
+}
+
 function compactJobRecord(job, status) {
   return {
     jobId: job.jobId,
+    site: job.site || getSiteConfig(job.url)?.id || null,
+    siteLabel: job.siteLabel || getSiteLabel(job.site || job.url),
     title: truncateText(job.title, 220),
     url: job.url,
     status,
@@ -175,9 +305,80 @@ function compactJobRecord(job, status) {
   };
 }
 
+function createJobLogRecord(job, status) {
+  const workflow = compactWorkflow(job.applicationResult || job.workflow);
+  const lastAttempt = compactAttempt(job.lastAttempt || getLastWorkflowAttempt(job.applicationResult || job.workflow));
+  const lastStep = getLastWorkflowStep(job.applicationResult || job.workflow);
+
+  return {
+    jobId: job.jobId,
+    site: job.site || getSiteConfig(job.url)?.id || null,
+    siteLabel: job.siteLabel || getSiteLabel(job.site || job.url),
+    title: truncateText(job.title, 220),
+    url: job.url,
+    status,
+    errorType: job.errorType || null,
+    decision: job.decision,
+    decisionSource: getDecisionSource(job),
+    requiredYears: job.requiredYears,
+    reason: truncateText(job.reason, 500),
+    failureReason: truncateText(job.failureReason, 500),
+    alreadySubmitted: Boolean(job.alreadySubmitted),
+    descriptionPreview: truncateText(job.preview || job.jobText, 1600),
+    yoeEvidence: compactYoeEvidence(job),
+    techStack: getTechStack(job),
+    localScoring: job.matchScore || null,
+    llmMatch: compactLlmMatch(job.llmMatch),
+    llmError: truncateText(job.llmError, 300),
+    workflow,
+    lastAttempt,
+    lastStep: lastStep
+      ? {
+          attempt: lastStep.attempt,
+          step: truncateText(lastStep.step, 120),
+          status: lastStep.status,
+          label: truncateText(lastStep.label, 120)
+        }
+      : null,
+    manualReviewUrl: getManualReviewUrl({
+      ...job,
+      workflow: job.applicationResult || job.workflow,
+      lastAttempt
+    }),
+    updatedAt: job.updatedAt || new Date().toISOString()
+  };
+}
+
+async function rememberJobLog(job, status) {
+  const record = createJobLogRecord(job, status);
+  inMemoryJobLogs = [record, ...inMemoryJobLogs].slice(0, MAX_IN_MEMORY_JOB_LOGS);
+
+  const stored = await chrome.storage.local.get(JOB_LOGS_KEY);
+  const records = Array.isArray(stored[JOB_LOGS_KEY]) ? stored[JOB_LOGS_KEY] : [];
+  const compactedLogs = [record, ...records]
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .slice(0, MAX_STORED_JOB_LOGS);
+
+  try {
+    await chrome.storage.local.set({
+      [JOB_LOGS_KEY]: compactedLogs
+    });
+  } catch (error) {
+    if (!isStorageQuotaError(error)) {
+      throw error;
+    }
+
+    await chrome.storage.local.set({
+      [JOB_LOGS_KEY]: compactedLogs.slice(0, 50)
+    });
+  }
+}
+
 function compactFailure(failure) {
   return {
     jobId: failure.jobId,
+    site: failure.site || getSiteConfig(failure.url)?.id || null,
+    siteLabel: failure.siteLabel || getSiteLabel(failure.site || failure.url),
     title: truncateText(failure.title, 220),
     url: failure.url,
     decision: failure.decision,
@@ -194,15 +395,25 @@ function compactFailure(failure) {
 }
 
 function compactError(error) {
+  const errorType = error.errorType || error.type || "error";
+  const lastAttempt = error.lastAttempt || getLastWorkflowAttempt(error.workflow);
+
   return {
     type: error.type,
+    errorType,
     jobId: error.jobId,
+    site: error.site || getSiteConfig(error.url)?.id || null,
+    siteLabel: error.siteLabel || getSiteLabel(error.site || error.url),
     title: truncateText(error.title, 220),
     url: error.url,
+    manualReviewUrl: getManualReviewUrl({
+      ...error,
+      lastAttempt
+    }),
     status: error.status,
     message: truncateText(error.message, 300),
     workflow: compactWorkflow(error.workflow),
-    lastAttempt: compactAttempt(error.lastAttempt),
+    lastAttempt: compactAttempt(lastAttempt),
     happenedAt: error.happenedAt
   };
 }
@@ -230,6 +441,8 @@ function rememberRecent(record) {
   scanState.recent = [
     {
       jobId: record.jobId,
+      site: record.site || null,
+      siteLabel: record.siteLabel || getSiteLabel(record.site || record.url),
       title: record.title,
       status: record.status,
       decision: record.decision,
@@ -268,6 +481,7 @@ async function saveJobRecord(job, status) {
   const key = job.jobId || job.url;
   const record = compactJobRecord(job, status);
 
+  await rememberJobLog(job, status);
   records[key] = record;
   const compactedRecords = Object.fromEntries(
     Object.entries(records)
@@ -325,6 +539,33 @@ async function compactStoredJobRecords() {
   }
 }
 
+async function getExportedJobLogs() {
+  const stored = await chrome.storage.local.get(JOB_LOGS_KEY);
+  const storedLogs = Array.isArray(stored[JOB_LOGS_KEY]) ? stored[JOB_LOGS_KEY] : [];
+  const recordsByKey = new Map();
+
+  for (const record of [...inMemoryJobLogs, ...storedLogs]) {
+    const key = `${record.jobId || record.url || "unknown"}::${record.status || "unknown"}::${record.updatedAt || ""}`;
+    recordsByKey.set(key, record);
+  }
+
+  const records = Array.from(recordsByKey.values())
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+    .slice(0, MAX_STORED_JOB_LOGS + MAX_IN_MEMORY_JOB_LOGS);
+
+  return {
+    ok: true,
+    exportedAt: new Date().toISOString(),
+    appName: "Career Peeler",
+    persistence: "chrome_storage_local",
+    note: "Detailed job logs are persisted locally in Chrome storage and merged with the current scan buffer at export time.",
+    storedRecordCount: storedLogs.length,
+    inMemoryRecordCount: inMemoryJobLogs.length,
+    recordCount: records.length,
+    records
+  };
+}
+
 function statusFromDecision(decision) {
   if (decision === "Likely match") {
     return "likely_match";
@@ -335,10 +576,94 @@ function statusFromDecision(decision) {
   }
 
   if (decision === "Review") {
-    return "review";
+    return "reviewed";
   }
 
-  return "unknown";
+  return "seen";
+}
+
+async function loadStoredJobIdentifiers() {
+  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const records = stored[JOB_RECORDS_KEY] || {};
+  const urls = new Set();
+  const jobIds = new Set();
+
+  for (const [key, record] of Object.entries(records)) {
+    if (record?.url) {
+      urls.add(record.url);
+    }
+
+    if (record?.jobId) {
+      jobIds.add(record.jobId);
+    } else if (key && !/^https?:\/\//i.test(key)) {
+      jobIds.add(key);
+    }
+  }
+
+  return { urls, jobIds, records };
+}
+
+function isLinkProcessed(link) {
+  return processedUrls.has(link.url) || (link.jobId ? processedJobIds.has(link.jobId) : false);
+}
+
+function markLinkProcessed(link) {
+  processedUrls.add(link.url);
+
+  if (link.jobId) {
+    processedJobIds.add(link.jobId);
+  }
+}
+
+function wasStoredBeforeScan(link) {
+  return storedIdentifiersAtScanStart.has(link.url) || (link.jobId ? storedIdentifiersAtScanStart.has(link.jobId) : false);
+}
+
+async function hydrateProcessedFromStorage() {
+  const stored = await loadStoredJobIdentifiers();
+
+  storedIdentifiersAtScanStart.clear();
+
+  for (const url of stored.urls) {
+    processedUrls.add(url);
+    storedIdentifiersAtScanStart.add(url);
+  }
+
+  for (const jobId of stored.jobIds) {
+    processedJobIds.add(jobId);
+    storedIdentifiersAtScanStart.add(jobId);
+  }
+
+  return stored;
+}
+
+function classifyWorkflowError(errorMessage, workflow) {
+  const message = String(errorMessage || workflow?.summary || "").toLowerCase();
+  const lastAttempt = getLastWorkflowAttempt(workflow);
+  const attemptText = `${lastAttempt?.heading || ""} ${lastAttempt?.summary || ""} ${(lastAttempt?.visibleActions || []).join(" ")}`.toLowerCase();
+  const combined = `${message} ${attemptText}`;
+
+  if (workflow?.errorType) {
+    return workflow.errorType;
+  }
+
+  if (/already applied|unable to apply again/.test(combined)) {
+    return "already_applied";
+  }
+
+  if (/authorization questions|questionnaire|submit was not clicked|answered \d+ of \d+/.test(combined)) {
+    return "questionnaire_incomplete";
+  }
+
+  if (/sign in|log in|login|session|authenticate|authentication|access denied/.test(combined)) {
+    return "session_or_login_required";
+  }
+
+  if (/maximum number of steps|timeout|timed out|no progress/.test(combined)) {
+    return "workflow_timeout";
+  }
+
+  return "apply_failed";
 }
 
 function incrementStatsForStatus(status) {
@@ -367,12 +692,15 @@ function incrementStatsForStatus(status) {
     return;
   }
 
-  if (status === "review") {
-    scanState.stats.review += 1;
+  if (status === "reviewed" || status === "review") {
+    scanState.stats.reviewed += 1;
     return;
   }
 
-  scanState.stats.unknown += 1;
+  if (status === "seen" || status === "unknown") {
+    scanState.stats.seen += 1;
+    return;
+  }
 }
 
 function shouldAutoApply(status, job) {
@@ -383,7 +711,7 @@ function shouldAutoApply(status, job) {
   return (
     scanState.userProfile?.scanMode === "auto_apply" &&
     scanState.userProfile?.autoApplyConsent &&
-    (status === "likely_match" || status === "review")
+    (status === "likely_match" || status === "reviewed" || status === "review")
   );
 }
 
@@ -652,14 +980,24 @@ async function applyLlmMatch(job) {
       return locallyGuardedJob;
     }
 
+    const llmDecision =
+      locallyGuardedJob.decision === "Likely match" &&
+      llmMatch.decision === "Likely skip" &&
+      llmMatch.yoeAssessment !== "too_high"
+        ? "Review"
+        : llmMatch.decision;
+    const llmReason =
+      llmDecision === "Review" && llmMatch.decision === "Likely skip"
+        ? `LLM review (${llmMatch.confidence}%): local matching found strong relevant overlap, but the LLM identified uncertainty. ${llmMatch.reason}`
+        : llmMatch.yoeAssessment === "too_high"
+          ? `LLM hard skip: required YOE exceeds your profile. ${llmMatch.reason}`
+          : `LLM match (${llmMatch.confidence}%): ${llmMatch.reason}`;
+
     return applyRequiredYoeHardSkip(
       {
         ...locallyGuardedJob,
-        decision: llmMatch.decision,
-        reason:
-          llmMatch.yoeAssessment === "too_high"
-            ? `LLM hard skip: required YOE exceeds your profile. ${llmMatch.reason}`
-            : `LLM match (${llmMatch.confidence}%): ${llmMatch.reason}`,
+        decision: llmDecision,
+        reason: llmReason,
         matchSource: "llm",
         llmMatch
       },
@@ -716,6 +1054,82 @@ async function waitForTabComplete(tabId, timeoutMs = TAB_LOAD_TIMEOUT_MS) {
   });
 }
 
+async function getOpenTabIds() {
+  const tabs = await chrome.tabs.query({});
+  return new Set(tabs.map((tab) => tab.id).filter((id) => id !== undefined));
+}
+
+async function closeOwnedWorkflowTabs(options = {}) {
+  const preserveTabIds = new Set((options.preserveTabIds || []).filter((id) => id !== undefined && id !== null));
+  const tabIds = Array.from(ownedWorkflowTabIds).filter((tabId) => !preserveTabIds.has(tabId));
+
+  for (const tabId of tabIds) {
+    await chrome.tabs.remove(tabId).catch(() => {});
+    ownedWorkflowTabIds.delete(tabId);
+  }
+}
+
+async function closeInactiveApplicationTabs(siteConfig, options = {}) {
+  const preserveTabIds = new Set((options.preserveTabIds || []).filter((id) => id !== undefined && id !== null));
+
+  if (!siteConfig?.isApplicationUrl) {
+    return;
+  }
+
+  const tabs = await chrome.tabs.query({});
+  const staleTabs = tabs.filter((tab) => {
+    const parsedUrl = parseUrl(tab.url);
+    return (
+      tab.id !== undefined &&
+      !tab.active &&
+      !preserveTabIds.has(tab.id) &&
+      parsedUrl &&
+      siteConfig.isSupportedUrl(parsedUrl) &&
+      siteConfig.isApplicationUrl(parsedUrl)
+    );
+  });
+
+  for (const tab of staleTabs) {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+    ownedWorkflowTabIds.delete(tab.id);
+  }
+}
+
+function tabMatchesApplication(tab, siteConfig, jobId) {
+  const parsedUrl = parseUrl(tab?.url);
+
+  if (!parsedUrl || !siteConfig?.isSupportedUrl(parsedUrl)) {
+    return false;
+  }
+
+  if (siteConfig.isApplicationUrl?.(parsedUrl)) {
+    return !jobId || parsedUrl.href.includes(jobId);
+  }
+
+  return false;
+}
+
+async function waitForApplicationTab(previousTabIds, siteConfig, jobId, timeoutMs = 8000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const tabs = await chrome.tabs.query({});
+    const applicationTab = tabs.find(
+      (tab) => !previousTabIds.has(tab.id) && tabMatchesApplication(tab, siteConfig, jobId)
+    );
+
+    if (applicationTab?.id) {
+      await waitForTabComplete(applicationTab.id).catch(() => {});
+      ownedWorkflowTabIds.add(applicationTab.id);
+      return applicationTab;
+    }
+
+    await delay(300);
+  }
+
+  return null;
+}
+
 async function sendMessageWithFallback(tabId, message) {
   try {
     return await chrome.tabs.sendMessage(tabId, message);
@@ -761,11 +1175,23 @@ async function advanceListPage() {
 
 async function scanJobLink(link) {
   let detailTab;
+  const siteConfig = SITE_CONFIGS[link.site] || getSiteConfig(link.url);
+  const site = siteConfig?.id || link.site || "unknown";
+  const siteLabel = siteConfig?.label || link.siteLabel || getSiteLabel(link.url);
 
   try {
+    await closeOwnedWorkflowTabs();
+    if (scanState.userProfile?.scanMode === "auto_apply" && scanState.userProfile?.autoApplyConsent) {
+      await closeInactiveApplicationTabs(siteConfig, {
+        preserveTabIds: [scanState.listTabId]
+      });
+    }
+
     if (link.alreadyAppliedFromList) {
       await saveJobRecord(
         {
+          site,
+          siteLabel,
           jobId: link.jobId,
           title: link.title,
           url: link.url,
@@ -785,6 +1211,8 @@ async function scanJobLink(link) {
     if (titleHardSkipReason) {
       await saveJobRecord(
         {
+          site,
+          siteLabel,
           jobId: link.jobId,
           title: link.title,
           url: link.url,
@@ -823,6 +1251,11 @@ async function scanJobLink(link) {
     }
 
     let job = await applyLlmMatch(response.data);
+    job = {
+      ...job,
+      site: job.site || site,
+      siteLabel: job.siteLabel || siteLabel
+    };
     job = applyRequiredYoeHardSkip(job, scanState.userProfile);
     const status = job.alreadySubmitted ? "submitted" : statusFromDecision(job.decision);
     let finalStatus = status;
@@ -845,22 +1278,27 @@ async function scanJobLink(link) {
         finalStatus = "applied";
         scanState.lastApplied = {
           jobId: job.jobId,
+          site: job.site,
+          siteLabel: job.siteLabel,
           title: job.title,
           url: job.url,
           appliedAt: new Date().toISOString()
         };
-        detailTab = null;
       } else if (workflowResponse.ok && workflowResponse.data?.alreadySubmitted) {
         finalStatus = "submitted";
-        detailTab = null;
+        job.errorType = workflowResponse.data.errorType || null;
       } else {
         finalStatus = `${status}_apply_failed`;
         failureReason = workflowResponse.error || "Auto-apply workflow did not finish.";
+        const errorType = classifyWorkflowError(failureReason, applicationResult);
         scanState.stats.errors += 1;
         scanState.lastError = failureReason;
         rememberError({
-          type: "apply_failed",
+          type: errorType,
+          errorType,
           jobId: job.jobId,
+          site: job.site,
+          siteLabel: job.siteLabel,
           title: job.title,
           url: job.url || link.url,
           status: finalStatus,
@@ -870,6 +1308,8 @@ async function scanJobLink(link) {
         });
         rememberFailure({
           jobId: job.jobId,
+          site: job.site,
+          siteLabel: job.siteLabel,
           title: job.title,
           url: job.url,
           decision: job.decision,
@@ -878,6 +1318,7 @@ async function scanJobLink(link) {
           reason: failureReason,
           workflow: applicationResult
         });
+        job.errorType = errorType;
       }
     }
 
@@ -885,7 +1326,8 @@ async function scanJobLink(link) {
       {
         ...job,
         applicationResult,
-        failureReason
+        failureReason,
+        errorType: job.errorType || null
       },
       finalStatus
     );
@@ -899,7 +1341,10 @@ async function scanJobLink(link) {
     scanState.lastError = message;
     rememberError({
       type: "scan_job_failed",
+      errorType: "scan_job_failed",
       jobId: link.jobId || "unknown",
+      site,
+      siteLabel,
       title: link.title,
       url: link.url || detailTab?.url || null,
       status: "error",
@@ -907,10 +1352,136 @@ async function scanJobLink(link) {
     });
     await saveScanState();
   } finally {
+    await closeOwnedWorkflowTabs();
+
     if (detailTab?.id) {
       await chrome.tabs.remove(detailTab.id).catch(() => {});
+      ownedWorkflowTabIds.delete(detailTab.id);
     }
 
+    scanState.currentJob = null;
+    await saveScanState();
+  }
+}
+
+async function scanCurrentApplicationPage(link) {
+  const siteConfig = SITE_CONFIGS[link.site] || getSiteConfig(link.url);
+  const site = siteConfig?.id || link.site || "unknown";
+  const siteLabel = siteConfig?.label || link.siteLabel || getSiteLabel(link.url);
+  let job = {
+    site,
+    siteLabel,
+    jobId: link.jobId,
+    title: link.title,
+    url: link.url,
+    decision: "Review",
+    reason: "Started from the current job/application page.",
+    matchSource: "current_page"
+  };
+  let finalStatus = "review";
+  let applicationResult = null;
+  let failureReason = null;
+
+  try {
+    await updateScanState({
+      phase: "Running current application page",
+      currentJob: link,
+      lastError: null
+    });
+
+    const response = await sendMessageWithFallback(scanState.listTabId, {
+      type: "APPLE_CAREERS_EXTRACT_JOB",
+      userYearsOfExperience: scanState.userProfile?.userYearsOfExperience
+    }).catch(() => null);
+
+    if (response?.ok) {
+      job = {
+        ...response.data,
+        site: response.data.site || site,
+        siteLabel: response.data.siteLabel || siteLabel,
+        decision: response.data.decision || "Review",
+        reason: response.data.reason || "Started from the current job/application page.",
+        matchSource: response.data.matchSource || "current_page"
+      };
+    }
+
+    if (scanState.userProfile?.scanMode !== "auto_apply" || !scanState.userProfile?.autoApplyConsent) {
+      await saveJobRecord(job, finalStatus);
+      incrementStatsForStatus(finalStatus);
+      scanState.scanned += 1;
+      await saveScanState();
+      return;
+    }
+
+    const workflowResponse = await runApplicationWorkflow({ id: scanState.listTabId }, { closeOnDone: false });
+    applicationResult = workflowResponse.data || null;
+
+    if (workflowResponse.ok && workflowResponse.data?.submitted) {
+      finalStatus = "applied";
+      scanState.lastApplied = {
+        jobId: job.jobId,
+        site: job.site,
+        siteLabel: job.siteLabel,
+        title: job.title,
+        url: job.url,
+        appliedAt: new Date().toISOString()
+      };
+    } else if (workflowResponse.ok && workflowResponse.data?.alreadySubmitted) {
+      finalStatus = "submitted";
+      job.errorType = workflowResponse.data.errorType || null;
+    } else {
+      finalStatus = "review_apply_failed";
+      failureReason = workflowResponse.error || "Current application page workflow did not finish.";
+      const errorType = classifyWorkflowError(failureReason, applicationResult);
+      scanState.stats.errors += 1;
+      scanState.lastError = failureReason;
+      rememberError({
+        type: errorType,
+        errorType,
+        jobId: job.jobId,
+        site: job.site,
+        siteLabel: job.siteLabel,
+        title: job.title,
+        url: job.url,
+        status: finalStatus,
+        message: failureReason,
+        workflow: applicationResult,
+        lastAttempt: applicationResult?.attempts?.at(-1) || null
+      });
+      job.errorType = errorType;
+    }
+
+    await saveJobRecord(
+      {
+        ...job,
+        applicationResult,
+        failureReason,
+        errorType: job.errorType || null
+      },
+      finalStatus
+    );
+    incrementStatsForStatus(finalStatus);
+    scanState.scanned += 1;
+    await saveScanState();
+  } catch (error) {
+    const message = error?.message || "Could not run workflow on the current application page.";
+    scanState.stats.errors += 1;
+    scanState.lastError = message;
+    rememberError({
+      type: "current_page_scan_failed",
+      errorType: "current_page_scan_failed",
+      jobId: job.jobId || link.jobId || "unknown",
+      site,
+      siteLabel,
+      title: job.title || link.title,
+      url: job.url || link.url,
+      status: "error",
+      message,
+      workflow: applicationResult,
+      lastAttempt: applicationResult?.attempts?.at(-1) || null
+    });
+    await saveScanState();
+  } finally {
     scanState.currentJob = null;
     await saveScanState();
   }
@@ -924,14 +1495,42 @@ async function runScanLoop() {
       });
 
       const collection = await collectLinksFromListTab();
-      const newLinks = collection.links.filter((link) => !processedUrls.has(link.url));
+      const newLinks = [];
+      let skippedStored = 0;
+
+      for (const link of collection.links) {
+        if (isLinkProcessed(link)) {
+          if (wasStoredBeforeScan(link)) {
+            skippedStored += 1;
+          }
+          continue;
+        }
+
+        newLinks.push(link);
+      }
+
+      scanState.stats.skippedStored += skippedStored;
       const hasAlreadyVisitedListPage = visitedListPages.has(collection.url);
 
       scanState.listPageUrl = collection.url;
+      scanState.site = collection.site || scanState.site;
+      scanState.siteLabel = collection.siteLabel || scanState.siteLabel;
       scanState.pageCount = collection.currentPage || scanState.pageCount;
       scanState.currentPageStats = collection.listStats || null;
       scanState.queued = newLinks.length;
       await saveScanState();
+
+      if (newLinks.length === 0 && collection.currentJob) {
+        await scanCurrentApplicationPage(collection.currentJob);
+        await updateScanState({
+          running: false,
+          phase: "Complete",
+          queued: 0,
+          currentJob: null,
+          completedAt: new Date().toISOString()
+        });
+        break;
+      }
 
       if (newLinks.length === 0 && hasAlreadyVisitedListPage) {
         await updateScanState({
@@ -949,7 +1548,7 @@ async function runScanLoop() {
           break;
         }
 
-        processedUrls.add(link.url);
+        markLinkProcessed(link);
         scanState.queued = Math.max(0, scanState.queued - 1);
         await scanJobLink(link);
       }
@@ -998,11 +1597,16 @@ async function runScanLoop() {
     });
     rememberError({
       type: "scan_loop_failed",
+      errorType: "scan_loop_failed",
+      site: scanState.site,
+      siteLabel: scanState.siteLabel,
       status: "error",
       message
     });
     await saveScanState();
   }
+
+  await closeOwnedWorkflowTabs();
 }
 
 async function startScan(tab, userProfile) {
@@ -1013,25 +1617,34 @@ async function startScan(tab, userProfile) {
     };
   }
 
-  if (!tab?.id || !isAppleCareersUrl(tab.url)) {
+  const siteConfig = getSiteConfig(tab?.url);
+
+  if (!tab?.id || !siteConfig) {
     return {
       ok: false,
-      error: "Open an Apple Careers list page before starting a scan."
+      error: "Open an Apple, TikTok, or ByteDance careers list page before starting a scan."
     };
   }
 
   const normalizedProfile = normalizeUserProfile(userProfile);
 
+  await closeOwnedWorkflowTabs();
   await compactStoredJobRecords();
 
   processedUrls.clear();
+  processedJobIds.clear();
+  storedIdentifiersAtScanStart.clear();
   visitedListPages.clear();
+  inMemoryJobLogs = [];
+  await hydrateProcessedFromStorage();
   scanState = {
     ...createIdleState(),
     running: true,
     phase: "Starting scan",
     listTabId: tab.id,
     listPageUrl: tab.url,
+    site: siteConfig.id,
+    siteLabel: siteConfig.label,
     pageCount: 1,
     userProfile: normalizedProfile
   };
@@ -1046,6 +1659,8 @@ async function startScan(tab, userProfile) {
 }
 
 async function stopScan() {
+  await closeOwnedWorkflowTabs();
+
   await updateScanState({
     running: false,
     phase: "Stopped",
@@ -1069,13 +1684,16 @@ async function clearHistory() {
 
   const userProfile = scanState.userProfile;
   processedUrls.clear();
+  processedJobIds.clear();
+  storedIdentifiersAtScanStart.clear();
   visitedListPages.clear();
+  inMemoryJobLogs = [];
   scanState = {
     ...createIdleState(),
     userProfile
   };
 
-  await chrome.storage.local.remove(JOB_RECORDS_KEY);
+  await chrome.storage.local.remove([JOB_RECORDS_KEY, JOB_LOGS_KEY]);
   await saveScanState();
 
   return {
@@ -1084,104 +1702,160 @@ async function clearHistory() {
   };
 }
 
-async function runApplicationWorkflow(tab) {
-  if (!tab?.id) {
+async function runApplicationWorkflow(tab, options = {}) {
+  const closeOnDone = options.closeOnDone !== false;
+  const originalWorkflowTabId = tab?.id;
+  let workflowTabId = tab?.id;
+
+  if (!workflowTabId) {
     return {
       ok: false,
       error: "No job tab was available for the application workflow."
     };
   }
 
-  const liveTab = await chrome.tabs.get(tab.id).catch(() => null);
+  const liveTab = await chrome.tabs.get(workflowTabId).catch(() => null);
 
-  if (!isAppleCareersUrl(liveTab?.url)) {
+  const siteConfig = getSiteConfig(liveTab?.url);
+  const jobId = liveTab?.url ? getJobIdFromUrl(liveTab.url) : null;
+
+  if (!siteConfig) {
     return {
       ok: false,
-      error: `Expected an Apple Careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`
+      error: `Expected an Apple, TikTok, or ByteDance careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`
     };
   }
 
   const steps = [];
   const attempts = [];
-
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
-    await waitForTabComplete(tab.id).catch(() => {});
-    await delay(PAGE_SETTLE_DELAY_MS);
-
-    const response = await sendMessageWithFallback(tab.id, {
-      type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP"
-    });
-
-    if (!response?.ok) {
-      throw new Error(response?.error || "The application workflow step failed.");
+  const cleanupWorkflowTabs = async () => {
+    if (!closeOnDone) {
+      return;
     }
 
-    attempts.push({
-      attempt,
-      url: response.data.url,
-      title: response.data.title,
-      heading: response.data.heading,
-      summary: response.data.summary,
-      visibleActions: response.data.visibleActions || []
+    await closeOwnedWorkflowTabs({
+      preserveTabIds: [originalWorkflowTabId]
     });
+  };
 
-    steps.push(
-      ...response.data.steps.map((step) => ({
-        ...step,
-        attempt
-      }))
-    );
+  try {
+    for (let attempt = 1; attempt <= 12; attempt += 1) {
+      await waitForTabComplete(workflowTabId).catch(() => {});
+      await delay(PAGE_SETTLE_DELAY_MS);
 
-    if (response.data.done) {
-      await delay(2500);
-      await chrome.tabs.remove(tab.id).catch(() => {});
+      const previousTabIds = await getOpenTabIds();
+      const response = await sendMessageWithFallback(workflowTabId, {
+        type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP"
+      });
 
-      if (response.data.alreadySubmitted) {
+      if (!response?.ok) {
+        throw new Error(response?.error || "The application workflow step failed.");
+      }
+
+      attempts.push({
+        attempt,
+        url: response.data.url,
+        title: response.data.title,
+        heading: response.data.heading,
+        summary: response.data.summary,
+        errorType: response.data.errorType || null,
+        visibleActions: response.data.visibleActions || []
+      });
+
+      steps.push(
+        ...response.data.steps.map((step) => ({
+          ...step,
+          attempt
+        }))
+      );
+
+      const openedApplication =
+        response.data.clicked &&
+        response.data.steps.some(
+          (step) => step.step === "Open application flow" && step.status === "clicked"
+        );
+
+      if (openedApplication) {
+        const applicationTab = await waitForApplicationTab(previousTabIds, siteConfig, jobId);
+        if (applicationTab?.id) {
+          workflowTabId = applicationTab.id;
+          attempts.push({
+            attempt,
+            url: applicationTab.url,
+            title: applicationTab.title,
+            heading: "",
+            summary: "Detected newly opened application tab.",
+            visibleActions: []
+          });
+        }
+      }
+
+      if (response.data.done) {
+        await delay(2500);
+        if (closeOnDone) {
+          await chrome.tabs.remove(workflowTabId).catch(() => {});
+          ownedWorkflowTabIds.delete(workflowTabId);
+        }
+
+        if (response.data.alreadySubmitted) {
+          return {
+            ok: true,
+            data: {
+              submitted: false,
+              alreadySubmitted: true,
+              errorType: response.data.errorType || "already_applied",
+              attempts,
+              steps,
+              summary: closeOnDone
+                ? "Job was already submitted and the job tab was closed."
+                : "Job was already submitted."
+            }
+          };
+        }
+
         return {
           ok: true,
           data: {
-            submitted: false,
-            alreadySubmitted: true,
+            submitted: true,
             attempts,
             steps,
-            summary: "Job was already submitted and the job tab was closed."
+            summary: closeOnDone ? "Application submitted and the job tab was closed." : "Application submitted."
           }
         };
       }
 
-      return {
-        ok: true,
-        data: {
-          submitted: true,
-          attempts,
-          steps,
-          summary: "Application submitted and the job tab was closed."
-        }
-      };
+      if (!response.data.clicked) {
+        await cleanupWorkflowTabs();
+        return {
+          ok: false,
+          error: response.data.summary || "The workflow could not find the next action.",
+          data: {
+            submitted: false,
+            errorType: response.data.errorType || classifyWorkflowError(response.data.summary, { attempts, steps }),
+            summary: response.data.summary,
+            attempts,
+            steps
+          }
+        };
+      }
     }
 
-    if (!response.data.clicked) {
-      return {
-        ok: false,
-        error: response.data.summary || "The workflow could not find the next action.",
-        data: {
-          submitted: false,
-          attempts,
-          steps
-        }
-      };
-    }
+    await cleanupWorkflowTabs();
+    return {
+      ok: false,
+      error: "The workflow hit the maximum number of steps before submission.",
+      data: {
+        submitted: false,
+        errorType: "workflow_timeout",
+        summary: "The workflow hit the maximum number of steps before submission.",
+        attempts,
+        steps
+      }
+    };
+  } catch (error) {
+    await cleanupWorkflowTabs();
+    throw error;
   }
-
-  return {
-    ok: false,
-    error: "The workflow hit the maximum number of steps before submission.",
-    data: {
-      submitted: false,
-      attempts,
-      steps
-    }
-  };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1197,6 +1871,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "APPLE_CAREERS_CLEAR_HISTORY") {
     clearHistory().then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_EXPORT_JOB_LOGS") {
+    getExportedJobLogs().then(sendResponse);
     return true;
   }
 

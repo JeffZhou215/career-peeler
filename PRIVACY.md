@@ -10,7 +10,7 @@ Career Peeler is an unofficial browser extension for scanning Apple Careers page
 
 ## Local Storage
 
-Career Peeler stores scan state, recent job records, matching decisions, workflow errors, settings, and the optional OpenAI API key in Chrome local extension storage on your device. Use `Clear job history` in the popup to remove stored job records and scan history. Matching settings, including the optional OpenAI API key and resume/profile summary, are kept so you do not need to re-enter them after clearing job history.
+Career Peeler stores scan state, recent compact job records, matching decisions, workflow errors, settings, and the optional OpenAI API key in Chrome local extension storage on your device. Detailed debug job logs containing scanned job IDs, URLs, decision source, YOE evidence, compact job-description previews, and detected tech stack are kept in memory only during the current scanner session and can be downloaded to your machine with `Export job logs`. Use `Clear job history` in the popup to remove stored job records and scan history. Matching settings, including the optional OpenAI API key and resume/profile summary, are kept so you do not need to re-enter them after clearing job history.
 
 ## Optional OpenAI Matching
 

@@ -2,14 +2,22 @@
   "manifest_version": 3,
   "name": "Career Peeler",
   "version": "0.1.0",
-  "description": "Unofficial matching and application assistant for Apple Careers job listings.",
+  "description": "Unofficial matching and application assistant for career job listings.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "permissions": ["storage", "scripting", "tabs"],
-  "host_permissions": ["https://jobs.apple.com/*", "https://www.apple.com/careers/*", "https://api.openai.com/*"],
+  "host_permissions": [
+    "https://jobs.apple.com/*",
+    "https://www.apple.com/careers/*",
+    "https://careers.tiktok.com/*",
+    "https://lifeattiktok.com/*",
+    "https://jobs.bytedance.com/*",
+    "https://careers.bytedance.com/*",
+    "https://api.openai.com/*"
+  ],
   "action": {
     "default_popup": "popup.html"
   },
@@ -18,7 +26,14 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://jobs.apple.com/*", "https://www.apple.com/careers/*"],
+      "matches": [
+        "https://jobs.apple.com/*",
+        "https://www.apple.com/careers/*",
+        "https://careers.tiktok.com/*",
+        "https://lifeattiktok.com/*",
+        "https://jobs.bytedance.com/*",
+        "https://careers.bytedance.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
