@@ -52,6 +52,13 @@ globalThis.__contentTestApi = {
   cleanTitle,
   extractExperienceMatches,
   getJobIdFromUrl,
+  isAgeEligibilityQuestion,
+  isAnswerControlElement,
+  isInternshipTitle,
+  isNonAnswerAction,
+  isNoAnswerText,
+  isPriorAppleContractorQuestion,
+  isPriorAppleEmploymentQuestion,
   isSupportedJobDetailUrl,
   isVisaSponsorshipQuestion,
   isWorkAuthorizationQuestion,
@@ -69,6 +76,13 @@ const {
   cleanTitle,
   extractExperienceMatches,
   getJobIdFromUrl,
+  isAgeEligibilityQuestion,
+  isAnswerControlElement,
+  isInternshipTitle,
+  isNonAnswerAction,
+  isNoAnswerText,
+  isPriorAppleContractorQuestion,
+  isPriorAppleEmploymentQuestion,
   isSupportedJobDetailUrl,
   isVisaSponsorshipQuestion,
   isWorkAuthorizationQuestion,
@@ -77,10 +91,10 @@ const {
   textIncludesTerm
 } = sandbox.__contentTestApi;
 
-function classify(title, description, userYearsOfExperience) {
+function classify(title, description, userYearsOfExperience, noMatchKeywords) {
   const combinedText = `${title}\n${description}`;
   const matches = extractExperienceMatches(combinedText);
-  const matchScore = analyzeLocalMatch(combinedText);
+  const matchScore = analyzeLocalMatch(combinedText, noMatchKeywords);
   return {
     ...classifyRole(matches, matchScore, title, userYearsOfExperience),
     matchScore
@@ -173,6 +187,29 @@ test("selects only affirmative yes answer labels", () => {
   assert.equal(isYesAnswerText("Prefer not to answer"), false);
 });
 
+test("selects only negative no answer labels", () => {
+  assert.equal(isNoAnswerText("No"), true);
+  assert.equal(isNoAnswerText("No, I have not"), true);
+  assert.equal(isNoAnswerText("Yes"), false);
+  assert.equal(isNoAnswerText("Prefer not to answer"), false);
+});
+
+test("recognizes Apple age eligibility and prior employment screening questions", () => {
+  assert.equal(isAgeEligibilityQuestion("Are you 18 years of age or older?"), true);
+  assert.equal(
+    isPriorAppleEmploymentQuestion("Have you ever been employed by Apple?"),
+    true
+  );
+  assert.equal(
+    isPriorAppleContractorQuestion(
+      "Have you ever worked for Apple as a temporary agency worker, consultant, or an independent contractor?"
+    ),
+    true
+  );
+  assert.equal(isAgeEligibilityQuestion("Will you now or in the future require visa sponsorship?"), false);
+  assert.equal(isPriorAppleEmploymentQuestion("Are you legally authorized to work in the United States?"), false);
+});
+
 test("hard-skips senior titles even with strong technical overlap", () => {
   const result = classify(
     "Senior Software Engineer",
@@ -193,6 +230,61 @@ test("hard-skips manager titles even with strong technical overlap", () => {
   assert.match(result.reason, /senior-level/i);
 });
 
+test("hard-skips internship titles even with strong technical overlap", () => {
+  const result = classify(
+    "Software Engineering Internship, 2026",
+    "Build backend APIs, microservices, AWS systems, DynamoDB, queues, and distributed services."
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.match(result.reason, /internship/i);
+
+  const pluralResult = classify(
+    "AIML - Summer Intern",
+    "Build backend APIs, microservices, AWS systems, DynamoDB, queues, and distributed services."
+  );
+
+  assert.equal(pluralResult.decision, "Likely skip");
+  assert.match(pluralResult.reason, /internship/i);
+});
+
+test("recognizes internship titles without matching substrings like 'International'", () => {
+  assert.equal(isInternshipTitle("Software Engineering Internship, 2026"), true);
+  assert.equal(isInternshipTitle("AIML - Summer Intern"), true);
+  assert.equal(isInternshipTitle("Interns Program Coordinator"), true);
+  assert.equal(isInternshipTitle("International Software Engineer"), false);
+  assert.equal(isInternshipTitle("Internal Tools Engineer"), false);
+});
+
+test("hard-skips jobs matching user-defined no-match keywords, before any other scoring", () => {
+  const result = classify(
+    "Software Development Engineer",
+    "Build backend APIs and microservices using machine learning, AWS, DynamoDB, and full-stack services.",
+    2,
+    ["machine learning", "embedded"]
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.match(result.reason, /no-match keyword list/i);
+  assert.deepEqual(result.matchScore.noMatchKeywordHits, ["machine learning"]);
+});
+
+test("does not hard-skip on no-match keywords when none are configured or none match", () => {
+  const withoutKeywords = classify(
+    "Software Development Engineer",
+    "Build backend APIs and microservices using machine learning, AWS, DynamoDB, and full-stack services."
+  );
+  assert.notEqual(withoutKeywords.decision, "Likely skip");
+
+  const withNonMatchingKeywords = classify(
+    "Software Development Engineer",
+    "Build backend APIs and microservices using machine learning, AWS, DynamoDB, and full-stack services.",
+    2,
+    ["embedded", "firmware"]
+  );
+  assert.notEqual(withNonMatchingKeywords.decision, "Likely skip");
+});
+
 test("skips iOS app roles with Swift/UIKit/Xcode mismatch", () => {
   const result = classify(
     "iOS Software Engineer",
@@ -201,6 +293,27 @@ test("skips iOS app roles with Swift/UIKit/Xcode mismatch", () => {
 
   assert.equal(result.decision, "Likely skip");
   assert.match(result.reason, /domain mismatch|senior-level/i);
+});
+
+test("does not penalize bare Swift/macOS mentions without app-framework signals", () => {
+  const result = classify(
+    "Software Development Engineer",
+    "Designing, programming, debugging and modifying software related to a cloud-based macOS application. Coding in Swift to develop the back-end for a testing tool, using SQL to query Postgres databases, and applying machine learning for data insights."
+  );
+
+  assert.notEqual(result.decision, "Likely skip");
+  assert.equal(result.matchScore.domainMismatches.length, 0);
+});
+
+test("treats a missing years-of-experience requirement as satisfied when local fit score is strong", () => {
+  const result = classify(
+    "Software Development Engineer",
+    "Designing, programming, debugging and modifying software related to a cloud-based macOS application. Coding in Swift to develop the back-end for a testing tool, using SQL to query Postgres databases, and applying machine learning for data insights. Master's degree in Computer Science or a related field."
+  );
+
+  assert.equal(result.decision, "Likely match");
+  assert.equal(result.requiredYears, null);
+  assert.match(result.reason, /treated as met/i);
 });
 
 test("keeps backend and full-stack roles eligible", () => {
@@ -337,4 +450,81 @@ test("leaves weak generic jobs unknown", () => {
   );
 
   assert.equal(result.decision, "Unknown");
+});
+
+function makeStubElement(tagName, text, role = null, id = "") {
+  return {
+    tagName,
+    innerText: text,
+    textContent: text,
+    value: "",
+    name: "",
+    id,
+    labels: [],
+    closest: () => null,
+    getAttribute: (attr) => {
+      if (attr === "role") return role;
+      if (attr === "id") return id;
+      return null;
+    }
+  };
+}
+
+test("does not treat a review card's 'Edit' button as an answer control", () => {
+  const editButton = makeStubElement("BUTTON", "Edit");
+  const submitButton = makeStubElement("BUTTON", "Submit");
+  const yesRadioLabel = makeStubElement("LABEL", "Yes");
+  const customDropdownButton = makeStubElement("BUTTON", "Select an option", "button");
+
+  assert.equal(isAnswerControlElement(editButton), false);
+  assert.equal(isAnswerControlElement(submitButton), false);
+  assert.equal(isAnswerControlElement(yesRadioLabel), true);
+  assert.equal(isAnswerControlElement(customDropdownButton), true);
+});
+
+test("does not treat a 'Download Resume' button as an answer control", () => {
+  const downloadResumeButton = makeStubElement("BUTTON", "Download Resume");
+  const viewResumeButton = makeStubElement("BUTTON", "View Resume");
+  const printButton = makeStubElement("BUTTON", "Print");
+
+  assert.equal(isAnswerControlElement(downloadResumeButton), false);
+  assert.equal(isAnswerControlElement(viewResumeButton), false);
+  assert.equal(isAnswerControlElement(printButton), false);
+});
+
+test("excludes Apple's saved-file download buttons by id, even when the label is just the filename", () => {
+  // Apple's Review & Submit page labels these buttons with the uploaded filename itself
+  // (e.g. "Yifu_Zhou_Resume.pdf"), which the text denylist can't reliably catch, so the id
+  // ("...downloadfile...") is what has to exclude them.
+  const resumeDownloadButton = makeStubElement("BUTTON", "Yifu_Zhou_Resume.pdf", null, "apply-resume-downloadfile");
+  const coverLetterDownloadButton = makeStubElement(
+    "BUTTON",
+    "Cover_letter.pdf",
+    null,
+    "apply-links-downloadfile-9d607e9f-5da0-40ec-9451-594ffa6eaf47"
+  );
+
+  assert.equal(isNonAnswerAction(resumeDownloadButton), true);
+  assert.equal(isAnswerControlElement(resumeDownloadButton), false);
+  assert.equal(isNonAnswerAction(coverLetterDownloadButton), true);
+  assert.equal(isAnswerControlElement(coverLetterDownloadButton), false);
+});
+
+test("excludes every section's Edit button by its '-edit-button' id suffix", () => {
+  const sectionIds = [
+    "apply-contact-edit-button",
+    "apply-resume-edit-button",
+    "apply-educationDegrees-edit-button",
+    "apply-employments-edit-button",
+    "apply-skills-edit-button",
+    "apply-languages-edit-button",
+    "apply-links-edit-button",
+    "apply-selfdisclosure-edit-button",
+    "apply-questionnaire-edit-button"
+  ];
+
+  for (const id of sectionIds) {
+    const editButton = makeStubElement("BUTTON", "Edit", null, id);
+    assert.equal(isAnswerControlElement(editButton), false, id);
+  }
 });

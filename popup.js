@@ -3,7 +3,6 @@ const scanButton = document.querySelector("#scanButton");
 const analyzeApplicationButton = document.querySelector("#analyzeApplicationButton");
 const runApplicationWorkflowButton = document.querySelector("#runApplicationWorkflowButton");
 const stopScanButton = document.querySelector("#stopScanButton");
-const exportLogsButton = document.querySelector("#exportLogsButton");
 const clearHistoryButton = document.querySelector("#clearHistoryButton");
 const statusEl = document.querySelector("#status");
 const resultEl = document.querySelector("#result");
@@ -30,6 +29,7 @@ const scanLikelySkipEl = document.querySelector("#scanLikelySkip");
 const scanReviewEl = document.querySelector("#scanReview");
 const scanUnknownEl = document.querySelector("#scanUnknown");
 const scanSkippedStoredEl = document.querySelector("#scanSkippedStored");
+const scanSkippedUnqualifiedEl = document.querySelector("#scanSkippedUnqualified");
 const scanApplyFailedEl = document.querySelector("#scanApplyFailed");
 const scanErrorsEl = document.querySelector("#scanErrors");
 const scanErrorsSummaryEl = document.querySelector("#scanErrorsSummary");
@@ -37,6 +37,7 @@ const scanErrorLogEl = document.querySelector("#scanErrorLog");
 const scanCurrentEl = document.querySelector("#scanCurrent");
 const scanRecentEl = document.querySelector("#scanRecent");
 const scanFailuresEl = document.querySelector("#scanFailures");
+const scanSkippedUnqualifiedLogEl = document.querySelector("#scanSkippedUnqualifiedLog");
 const lastAppliedEl = document.querySelector("#lastApplied");
 const applicationAnalysisEl = document.querySelector("#applicationAnalysis");
 const applicationFieldCountEl = document.querySelector("#applicationFieldCount");
@@ -53,6 +54,9 @@ const llmEnabledEl = document.querySelector("#llmEnabled");
 const llmApiKeyEl = document.querySelector("#llmApiKey");
 const llmModelEl = document.querySelector("#llmModel");
 const resumeProfileEl = document.querySelector("#resumeProfile");
+const noMatchKeywordsTagsEl = document.querySelector("#noMatchKeywordsTags");
+const noMatchKeywordsInputEl = document.querySelector("#noMatchKeywordsInput");
+const noMatchKeywordsSuggestionsEl = document.querySelector("#noMatchKeywordsSuggestions");
 
 const SCAN_STATUS_KEY = "appleCareersScanStatus";
 const USER_PROFILE_KEY = "appleCareersUserProfile";
@@ -60,7 +64,64 @@ const DEFAULT_USER_YOE = 2;
 const DEFAULT_LLM_MODEL = "gpt-4o-mini";
 const DEFAULT_SCAN_MODE = "scan_only";
 
+const TECH_KEYWORD_SUGGESTIONS = [
+  "Android",
+  "AppKit",
+  "AR/VR",
+  "ASIC",
+  "ASP.NET",
+  "Blockchain",
+  "COBOL",
+  "Cocoa",
+  "Cocoa Touch",
+  "Core Data",
+  "Cordova",
+  "Device Drivers",
+  "Drupal",
+  "Embedded Systems",
+  "Firmware",
+  "Flutter",
+  "Fortran",
+  "FPGA",
+  "Game Development",
+  "Hardware Engineering",
+  "IoT",
+  "iOS",
+  "jQuery",
+  "Kernel",
+  "Kotlin",
+  "Mainframe",
+  "macOS",
+  "Networking",
+  "Objective-C",
+  "Perl",
+  "PHP",
+  "React Native",
+  "Robotics",
+  "RTOS",
+  "Ruby",
+  "Ruby on Rails",
+  "Salesforce",
+  "SAP",
+  "Swift",
+  "SwiftUI",
+  "Telecom",
+  "tvOS",
+  "UIKit",
+  "Unity",
+  "Unreal Engine",
+  "VB.NET",
+  "Verilog",
+  "VHDL",
+  "watchOS",
+  "Web3",
+  "WordPress",
+  "Xcode"
+].sort((a, b) => a.localeCompare(b));
+
 let scanPollId = null;
+let noMatchKeywords = [];
+let activeSuggestionIndex = -1;
 
 function isSupportedCareersUrl(url) {
   try {
@@ -81,25 +142,6 @@ function setStatus(message) {
   statusEl.textContent = message;
 }
 
-function downloadJson(filename, data) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], {
-    type: "application/json"
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function formatDateForFilename(date = new Date()) {
-  return date.toISOString().replace(/[:.]/g, "-");
-}
-
 function normalizeUserYearsOfExperience(value) {
   const years = Number(value);
 
@@ -114,6 +156,30 @@ function normalizeScanMode(value) {
   return ["scan_only", "auto_apply"].includes(value) ? value : DEFAULT_SCAN_MODE;
 }
 
+function normalizeNoMatchKeywords(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+  const seen = new Set();
+  const result = [];
+
+  for (const rawTerm of list) {
+    const term = String(rawTerm || "").trim();
+    const key = term.toLowerCase();
+
+    if (!term || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(term);
+
+    if (result.length >= 50) {
+      break;
+    }
+  }
+
+  return result;
+}
+
 async function getUserProfile() {
   const stored = await chrome.storage.local.get(USER_PROFILE_KEY);
   return {
@@ -124,6 +190,7 @@ async function getUserProfile() {
     llmApiKey: String(stored[USER_PROFILE_KEY]?.llmApiKey ?? llmApiKeyEl.value).trim(),
     llmModel: String(stored[USER_PROFILE_KEY]?.llmModel ?? llmModelEl.value ?? DEFAULT_LLM_MODEL).trim(),
     resumeProfile: String(stored[USER_PROFILE_KEY]?.resumeProfile ?? resumeProfileEl.value).trim(),
+    noMatchKeywords: normalizeNoMatchKeywords(stored[USER_PROFILE_KEY]?.noMatchKeywords ?? noMatchKeywords),
     scanMode: normalizeScanMode(stored[USER_PROFILE_KEY]?.scanMode ?? scanModeEl.value),
     autoApplyConsent: Boolean(stored[USER_PROFILE_KEY]?.autoApplyConsent ?? autoApplyConsentEl.checked)
   };
@@ -136,6 +203,7 @@ async function saveUserProfile() {
     llmApiKey: String(llmApiKeyEl.value || "").trim(),
     llmModel: String(llmModelEl.value || DEFAULT_LLM_MODEL).trim(),
     resumeProfile: String(resumeProfileEl.value || "").trim(),
+    noMatchKeywords: normalizeNoMatchKeywords(noMatchKeywords),
     scanMode: normalizeScanMode(scanModeEl.value),
     autoApplyConsent: Boolean(autoApplyConsentEl.checked)
   };
@@ -145,6 +213,8 @@ async function saveUserProfile() {
   llmApiKeyEl.value = userProfile.llmApiKey;
   llmModelEl.value = userProfile.llmModel;
   resumeProfileEl.value = userProfile.resumeProfile;
+  noMatchKeywords = userProfile.noMatchKeywords;
+  renderNoMatchKeywordTags();
   scanModeEl.value = userProfile.scanMode;
   autoApplyConsentEl.checked = userProfile.autoApplyConsent;
   await chrome.storage.local.set({
@@ -161,9 +231,162 @@ async function loadUserProfile() {
   llmApiKeyEl.value = userProfile.llmApiKey;
   llmModelEl.value = userProfile.llmModel;
   resumeProfileEl.value = userProfile.resumeProfile;
+  noMatchKeywords = userProfile.noMatchKeywords;
+  renderNoMatchKeywordTags();
   scanModeEl.value = userProfile.scanMode;
   autoApplyConsentEl.checked = userProfile.autoApplyConsent;
 }
+
+function renderNoMatchKeywordTags() {
+  noMatchKeywordsTagsEl.textContent = "";
+
+  for (const keyword of noMatchKeywords) {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+
+    const label = document.createElement("span");
+    label.textContent = keyword;
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "tag-chip-remove";
+    removeButton.textContent = "×";
+    removeButton.setAttribute("aria-label", `Remove ${keyword}`);
+    removeButton.addEventListener("click", () => {
+      removeNoMatchKeyword(keyword);
+    });
+
+    chip.append(label, removeButton);
+    noMatchKeywordsTagsEl.append(chip);
+  }
+}
+
+function addNoMatchKeyword(rawValue) {
+  const value = String(rawValue || "").trim();
+
+  if (!value) {
+    return;
+  }
+
+  noMatchKeywords = normalizeNoMatchKeywords([...noMatchKeywords, value]);
+  renderNoMatchKeywordTags();
+  saveUserProfile();
+}
+
+function removeNoMatchKeyword(value) {
+  const key = value.toLowerCase();
+  noMatchKeywords = noMatchKeywords.filter((keyword) => keyword.toLowerCase() !== key);
+  renderNoMatchKeywordTags();
+  saveUserProfile();
+}
+
+function getNoMatchKeywordSuggestions(query) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const selected = new Set(noMatchKeywords.map((keyword) => keyword.toLowerCase()));
+
+  return TECH_KEYWORD_SUGGESTIONS.filter(
+    (term) => !selected.has(term.toLowerCase()) && term.toLowerCase().includes(normalizedQuery)
+  ).slice(0, 8);
+}
+
+function setActiveSuggestion(items, index) {
+  activeSuggestionIndex = index;
+  items.forEach((item, itemIndex) => {
+    item.classList.toggle("active", itemIndex === index);
+  });
+}
+
+function hideNoMatchKeywordSuggestions() {
+  noMatchKeywordsSuggestionsEl.textContent = "";
+  noMatchKeywordsSuggestionsEl.classList.add("hidden");
+  activeSuggestionIndex = -1;
+}
+
+function renderNoMatchKeywordSuggestions() {
+  const suggestions = getNoMatchKeywordSuggestions(noMatchKeywordsInputEl.value);
+
+  if (!suggestions.length) {
+    hideNoMatchKeywordSuggestions();
+    return;
+  }
+
+  noMatchKeywordsSuggestionsEl.textContent = "";
+  activeSuggestionIndex = -1;
+
+  for (const term of suggestions) {
+    const item = document.createElement("li");
+    item.textContent = term;
+    item.dataset.value = term;
+    item.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      addNoMatchKeyword(term);
+      noMatchKeywordsInputEl.value = "";
+      hideNoMatchKeywordSuggestions();
+      noMatchKeywordsInputEl.focus();
+    });
+    noMatchKeywordsSuggestionsEl.append(item);
+  }
+
+  noMatchKeywordsSuggestionsEl.classList.remove("hidden");
+}
+
+function commitNoMatchKeywordInput() {
+  const items = Array.from(noMatchKeywordsSuggestionsEl.children);
+  const chosen =
+    activeSuggestionIndex >= 0 && items[activeSuggestionIndex]
+      ? items[activeSuggestionIndex].dataset.value
+      : noMatchKeywordsInputEl.value;
+
+  addNoMatchKeyword(chosen);
+  noMatchKeywordsInputEl.value = "";
+  hideNoMatchKeywordSuggestions();
+}
+
+noMatchKeywordsInputEl.addEventListener("input", renderNoMatchKeywordSuggestions);
+noMatchKeywordsInputEl.addEventListener("focus", renderNoMatchKeywordSuggestions);
+noMatchKeywordsInputEl.addEventListener("blur", () => {
+  setTimeout(hideNoMatchKeywordSuggestions, 100);
+});
+
+noMatchKeywordsInputEl.addEventListener("keydown", (event) => {
+  const items = Array.from(noMatchKeywordsSuggestionsEl.children);
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (items.length) {
+      setActiveSuggestion(items, (activeSuggestionIndex + 1) % items.length);
+    }
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    if (items.length) {
+      setActiveSuggestion(items, (activeSuggestionIndex - 1 + items.length) % items.length);
+    }
+    return;
+  }
+
+  if (event.key === "Enter" || event.key === ",") {
+    event.preventDefault();
+    commitNoMatchKeywordInput();
+    return;
+  }
+
+  if (event.key === "Backspace" && !noMatchKeywordsInputEl.value && noMatchKeywords.length) {
+    removeNoMatchKeyword(noMatchKeywords[noMatchKeywords.length - 1]);
+    return;
+  }
+
+  if (event.key === "Escape") {
+    hideNoMatchKeywordSuggestions();
+  }
+});
 
 function renderMatches(matches) {
   matchesEl.textContent = "";
@@ -241,7 +464,8 @@ async function extractCurrentPage() {
     const userProfile = await getUserProfile();
     const response = await sendMessageWithFallback(tab.id, {
       type: "APPLE_CAREERS_EXTRACT_JOB",
-      userYearsOfExperience: userProfile.userYearsOfExperience
+      userYearsOfExperience: userProfile.userYearsOfExperience,
+      noMatchKeywords: userProfile.noMatchKeywords
     });
 
     if (!response?.ok) {
@@ -258,7 +482,7 @@ async function extractCurrentPage() {
   }
 }
 
-function renderApplicationList(listEl, items, emptyMessage, renderItem) {
+function renderList(listEl, items, emptyMessage, renderItemNodes) {
   listEl.textContent = "";
 
   if (!items?.length) {
@@ -270,7 +494,7 @@ function renderApplicationList(listEl, items, emptyMessage, renderItem) {
 
   for (const data of items) {
     const item = document.createElement("li");
-    item.textContent = renderItem(data);
+    item.append(...renderItemNodes(data));
     listEl.append(item);
   }
 }
@@ -312,23 +536,13 @@ function renderApplicationAnalysis(data) {
   applicationFormCountEl.textContent = data.formCount;
   applicationSummaryEl.textContent = data.summary;
 
-  renderApplicationList(
-    applicationFieldsEl,
-    data.fields,
-    "No visible fields detected.",
-    (field) => {
-      const required = field.required ? "required" : "optional";
-      const options = field.options?.length ? ` options: ${field.options.join(", ")}` : "";
-      return `${field.index}. ${field.label} (${field.kind}, ${field.category}, ${required})${options}`;
-    }
-  );
+  renderList(applicationFieldsEl, data.fields, "No visible fields detected.", (field) => {
+    const required = field.required ? "required" : "optional";
+    const options = field.options?.length ? ` options: ${field.options.join(", ")}` : "";
+    return [`${field.index}. ${field.label} (${field.kind}, ${field.category}, ${required})${options}`];
+  });
 
-  renderApplicationList(
-    applicationButtonsEl,
-    data.buttons,
-    "No visible buttons detected.",
-    (button) => button
-  );
+  renderList(applicationButtonsEl, data.buttons, "No visible buttons detected.", (button) => [button]);
 }
 
 async function analyzeApplicationPage() {
@@ -408,17 +622,7 @@ async function runApplicationWorkflow() {
 }
 
 function renderScanRecent(recent) {
-  scanRecentEl.textContent = "";
-
-  if (!recent?.length) {
-    const item = document.createElement("li");
-    item.textContent = "No scanned jobs yet.";
-    scanRecentEl.append(item);
-    return;
-  }
-
-  for (const record of recent) {
-    const item = document.createElement("li");
+  renderList(scanRecentEl, recent, "No scanned jobs yet.", (record) => {
     const reason = record.failureReason ? ` - ${record.failureReason}` : "";
     const llmDetails =
       record.matchSource === "llm" && record.llmMatch
@@ -428,34 +632,30 @@ function renderScanRecent(recent) {
               : ""
           }`
         : "";
-    item.append(`${record.status}: `);
-    item.append(createJobLink(record.jobId, record.title, record.url));
-    item.append(`${llmDetails}${reason}`);
-    scanRecentEl.append(item);
-  }
+    return [`${record.status}: `, createJobLink(record.jobId, record.title, record.url), `${llmDetails}${reason}`];
+  });
 }
 
 function renderScanFailures(failures) {
-  scanFailuresEl.textContent = "";
-
-  if (!failures?.length) {
-    const item = document.createElement("li");
-    item.textContent = "No apply failures logged yet.";
-    scanFailuresEl.append(item);
-    return;
-  }
-
-  for (const failure of failures) {
-    const item = document.createElement("li");
+  renderList(scanFailuresEl, failures, "No apply failures logged yet.", (failure) => {
     const lastAttempt = failure.workflow?.attempts?.at(-1);
     const actions = lastAttempt?.visibleActions?.length
       ? ` Visible buttons at failure: ${lastAttempt.visibleActions.join(", ")}.`
       : "";
     const heading = lastAttempt?.heading ? ` Page: ${lastAttempt.heading}.` : "";
     const role = failure.jobId ? `Role ${failure.jobId}` : "Role unknown";
-    item.textContent = `${failure.status}: ${role} - ${cleanJobTitle(failure.title)}. ${failure.reason}.${heading}${actions}`;
-    scanFailuresEl.append(item);
-  }
+    return [
+      `${failure.status}: ${role} - ${cleanJobTitle(failure.title)}. ${failure.reason}.${heading}${actions}`
+    ];
+  });
+}
+
+function renderSkippedUnqualified(skippedUnqualified) {
+  renderList(scanSkippedUnqualifiedLogEl, skippedUnqualified, "No unqualified roles skipped yet.", (entry) => {
+    const site = entry.siteLabel ? ` ${entry.siteLabel}.` : "";
+    const when = entry.skippedAt ? ` (${formatRelativeTime(entry.skippedAt)})` : "";
+    return [`Skipped:${site} `, createJobLink(entry.jobId, entry.title, entry.url), ` - ${entry.reason}${when}`];
+  });
 }
 
 function createJobLink(jobId, title, url) {
@@ -477,17 +677,7 @@ function createJobLink(jobId, title, url) {
 }
 
 function renderScanErrors(errors) {
-  scanErrorLogEl.textContent = "";
-
-  if (!errors?.length) {
-    const item = document.createElement("li");
-    item.textContent = "No errors logged yet.";
-    scanErrorLogEl.append(item);
-    return;
-  }
-
-  for (const error of errors) {
-    const item = document.createElement("li");
+  renderList(scanErrorLogEl, errors, "No errors logged yet.", (error) => {
     const attempt = error.lastAttempt || error.workflow?.attempts?.at(-1);
     const site = error.siteLabel ? ` ${error.siteLabel}.` : "";
     const errorType = error.errorType || error.type || "error";
@@ -497,11 +687,12 @@ function renderScanErrors(errors) {
       ? ` Visible buttons: ${attempt.visibleActions.join(", ")}.`
       : "";
     const when = error.happenedAt ? ` (${formatRelativeTime(error.happenedAt)})` : "";
-    item.append(`${errorType}:${site} `);
-    item.append(createJobLink(error.jobId, error.title, error.manualReviewUrl || error.url));
-    item.append(` - ${error.message}.${heading}${summary}${buttons}${when}`);
-    scanErrorLogEl.append(item);
-  }
+    return [
+      `${errorType}:${site} `,
+      createJobLink(error.jobId, error.title, error.manualReviewUrl || error.url),
+      ` - ${error.message}.${heading}${summary}${buttons}${when}`
+    ];
+  });
 }
 
 function renderScanStatus(status) {
@@ -520,6 +711,7 @@ function renderScanStatus(status) {
   scanReviewEl.textContent = status.stats?.reviewed ?? status.stats?.review ?? 0;
   scanUnknownEl.textContent = status.stats?.seen ?? status.stats?.unknown ?? 0;
   scanSkippedStoredEl.textContent = status.stats?.skippedStored || 0;
+  scanSkippedUnqualifiedEl.textContent = status.stats?.skippedUnqualified || 0;
   scanApplyFailedEl.textContent = status.stats?.applyFailed || 0;
   scanErrorsEl.textContent = status.stats?.errors || 0;
   scanErrorsSummaryEl.textContent = status.stats?.errors || 0;
@@ -531,13 +723,13 @@ function renderScanStatus(status) {
     : "No jobs applied yet.";
   renderScanFailures(status.failures || []);
   renderScanErrors(status.errors || []);
+  renderSkippedUnqualified(status.skippedUnqualified || []);
   renderScanRecent(status.recent || []);
 
   scanButton.disabled = Boolean(status.running);
   scanButton.textContent = status.running ? "Scan Running" : "Scan visible job list";
   stopScanButton.classList.toggle("hidden", !status.running);
   clearHistoryButton.disabled = Boolean(status.running);
-  exportLogsButton.disabled = Boolean(status.running);
 
   if (status.running && !scanPollId) {
     startPollingScanStatus();
@@ -645,35 +837,11 @@ async function clearHistory() {
   }
 }
 
-async function exportJobLogs() {
-  exportLogsButton.disabled = true;
-
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: "APPLE_CAREERS_EXPORT_JOB_LOGS"
-    });
-
-    if (!response?.ok) {
-      throw new Error(response?.error || "Could not export job logs.");
-    }
-
-    downloadJson(`career-peeler-job-logs-${formatDateForFilename()}.json`, response);
-    setStatus(
-      `Exported ${response.recordCount || 0} job log records, including ${response.storedRecordCount || 0} persisted records.`
-    );
-  } catch (error) {
-    setStatus(error?.message || "Could not export job logs.");
-  } finally {
-    exportLogsButton.disabled = false;
-  }
-}
-
 extractButton.addEventListener("click", extractCurrentPage);
 scanButton.addEventListener("click", startListScan);
 analyzeApplicationButton.addEventListener("click", analyzeApplicationPage);
 runApplicationWorkflowButton.addEventListener("click", runApplicationWorkflow);
 stopScanButton.addEventListener("click", stopListScan);
-exportLogsButton.addEventListener("click", exportJobLogs);
 clearHistoryButton.addEventListener("click", clearHistory);
 userYearsOfExperienceEl.addEventListener("change", saveUserProfile);
 scanModeEl.addEventListener("change", saveUserProfile);

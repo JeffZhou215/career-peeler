@@ -64,13 +64,23 @@
           </label>
           <textarea id="resumeProfile" rows="5" placeholder="Paste a concise resume summary, target roles, and strongest skills."></textarea>
           <p class="muted">LLM mode is optional. When enabled, job text and your profile summary are sent to OpenAI for matching. Local matching remains the fallback if this is off or fails.</p>
+
+          <label class="field-label" for="noMatchKeywordsInput">
+            <span>No-matching keywords</span>
+            <span class="help" tabindex="0" aria-label="Help: Pick from common tech keywords or type your own and press Enter. If a job posting mentions any of these, it's treated as a local mismatch and skipped before the LLM is ever called.">?</span>
+          </label>
+          <div id="noMatchKeywordsField" class="tag-field">
+            <div id="noMatchKeywordsTags" class="tag-list"></div>
+            <input id="noMatchKeywordsInput" type="text" class="tag-input" placeholder="Type to search or add a keyword" autocomplete="off" />
+            <ul id="noMatchKeywordsSuggestions" class="tag-suggestions hidden"></ul>
+          </div>
+          <p class="muted">Jobs mentioning any of these are hard-skipped locally, before an LLM call is made, saving API cost.</p>
         </div>
       </details>
 
       <div class="actions primary-actions">
         <button id="scanButton" type="button" class="primary">Scan visible job list</button>
         <button id="stopScanButton" type="button" class="danger hidden">Stop scan</button>
-        <button id="exportLogsButton" type="button" class="secondary">Export job logs</button>
         <button id="clearHistoryButton" type="button" class="secondary">Clear job history</button>
       </div>
 
@@ -123,11 +133,15 @@
             <strong id="scanUnknown">0</strong>
             <span>Skipped (stored)</span>
             <strong id="scanSkippedStored">0</strong>
+            <span>Skipped (unqualified)</span>
+            <strong id="scanSkippedUnqualified">0</strong>
             <span>Apply failed</span>
             <strong id="scanApplyFailed">0</strong>
           </div>
           <h2>Recent Failures</h2>
           <ul id="scanFailures"></ul>
+          <h2>Recently Skipped (Unqualified)</h2>
+          <ul id="scanSkippedUnqualifiedLog"></ul>
           <h2>Recent Jobs</h2>
           <ul id="scanRecent"></ul>
         </details>

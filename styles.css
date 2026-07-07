@@ -357,3 +357,111 @@ pre {
 .hidden {
   display: none;
 }
+
+.tag-field {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: #fbfbfd;
+}
+
+.tag-field:focus-within {
+  border-color: #0071e3;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 4px 5px 4px 10px;
+  background: #e8f0fe;
+  color: #0071e3;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tag-chip-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  color: #0071e3;
+  background: rgba(0, 113, 227, 0.14);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.tag-chip-remove:hover {
+  background: rgba(0, 113, 227, 0.24);
+}
+
+.tag-input {
+  flex: 1 1 100px;
+  min-width: 90px;
+  border: 0;
+  padding: 6px 4px;
+  background: transparent;
+  color: #1d1d1f;
+  font: inherit;
+}
+
+.tag-input:focus {
+  outline: none;
+}
+
+.tag-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: block;
+  max-height: 160px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid #d2d2d7;
+  border-radius: 10px;
+  background: white;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  list-style: none;
+}
+
+.tag-suggestions.hidden {
+  display: none;
+}
+
+.tag-suggestions li {
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: #1d1d1f;
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.tag-suggestions li:hover,
+.tag-suggestions li.active {
+  background: #f0f0f5;
+}
+
+.tag-suggestions li.custom-value {
+  color: #6e6e73;
+}

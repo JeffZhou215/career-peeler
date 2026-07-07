@@ -7,11 +7,9 @@ const DEFAULT_USER_YOE = 2;
 const DEFAULT_LLM_MODEL = "gpt-4o-mini";
 const DEFAULT_SCAN_MODE = "scan_only";
 const MAX_STORED_JOB_RECORDS = 100;
-const MAX_STORED_JOB_LOGS = 200;
 const MAX_TEXT_FIELD_LENGTH = 500;
 const HIGH_YOE_HARD_SKIP_FLOOR = 8;
 const HIGH_YOE_HARD_SKIP_BUFFER = 3;
-const MAX_IN_MEMORY_JOB_LOGS = 300;
 
 const processedUrls = new Set();
 const processedJobIds = new Set();
@@ -20,7 +18,23 @@ const visitedListPages = new Set();
 const ownedWorkflowTabIds = new Set();
 
 let scanState = createIdleState();
-let inMemoryJobLogs = [];
+let storedJobRecordsAtScanStart = {};
+
+const scanStateReady = chrome.storage.local.get(SCAN_STATUS_KEY).then((stored) => {
+  const savedState = stored[SCAN_STATUS_KEY];
+
+  if (!savedState || typeof savedState !== "object") {
+    return;
+  }
+
+  scanState = {
+    ...createIdleState(),
+    ...savedState,
+    running: false,
+    currentJob: savedState.running ? null : savedState.currentJob,
+    phase: savedState.running ? "Stopped (extension restarted)" : savedState.phase
+  };
+});
 
 const SITE_CONFIGS = {
   apple: {
@@ -52,10 +66,6 @@ function parseUrl(url) {
 function getSiteConfig(url) {
   const parsedUrl = parseUrl(url);
   return Object.values(SITE_CONFIGS).find((site) => site.isSupportedUrl(parsedUrl)) || null;
-}
-
-function isSupportedCareersUrl(url) {
-  return Boolean(getSiteConfig(url));
 }
 
 function getSiteLabel(urlOrSite) {
@@ -123,11 +133,13 @@ function createIdleState() {
       reviewed: 0,
       seen: 0,
       skippedStored: 0,
+      skippedUnqualified: 0,
       errors: 0
     },
     recent: [],
     failures: [],
     errors: [],
+    skippedUnqualified: [],
     lastApplied: null,
     userProfile: {
       userYearsOfExperience: DEFAULT_USER_YOE,
@@ -135,6 +147,7 @@ function createIdleState() {
       llmApiKey: "",
       llmModel: DEFAULT_LLM_MODEL,
       resumeProfile: "",
+      noMatchKeywords: [],
       scanMode: DEFAULT_SCAN_MODE,
       autoApplyConsent: false
     }
@@ -151,6 +164,30 @@ function normalizeUserYearsOfExperience(value) {
   return Math.min(50, years);
 }
 
+function normalizeNoMatchKeywords(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+  const seen = new Set();
+  const result = [];
+
+  for (const rawTerm of list) {
+    const term = String(rawTerm || "").trim();
+    const key = term.toLowerCase();
+
+    if (!term || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(term);
+
+    if (result.length >= 50) {
+      break;
+    }
+  }
+
+  return result;
+}
+
 function normalizeUserProfile(profile = {}) {
   return {
     userYearsOfExperience: normalizeUserYearsOfExperience(profile.userYearsOfExperience),
@@ -158,6 +195,7 @@ function normalizeUserProfile(profile = {}) {
     llmApiKey: String(profile.llmApiKey || "").trim(),
     llmModel: String(profile.llmModel || DEFAULT_LLM_MODEL).trim() || DEFAULT_LLM_MODEL,
     resumeProfile: String(profile.resumeProfile || "").trim(),
+    noMatchKeywords: normalizeNoMatchKeywords(profile.noMatchKeywords),
     scanMode: ["scan_only", "auto_apply"].includes(profile.scanMode) ? profile.scanMode : DEFAULT_SCAN_MODE,
     autoApplyConsent: Boolean(profile.autoApplyConsent)
   };
@@ -208,10 +246,6 @@ function getLastWorkflowAttempt(workflow) {
   return workflow?.attempts?.at(-1) || null;
 }
 
-function getLastWorkflowStep(workflow) {
-  return workflow?.steps?.at(-1) || null;
-}
-
 function getManualReviewUrl(source = {}) {
   return source.manualReviewUrl || source.applicationUrl || source.url || source.lastAttempt?.url || source.workflow?.attempts?.at(-1)?.url || null;
 }
@@ -231,39 +265,12 @@ function compactLlmMatch(llmMatch) {
   };
 }
 
-function compactYoeEvidence(job) {
-  const evidence = job.matches || job.yoeEvidence || [];
-
-  return evidence.slice(0, 12).map((match) => ({
-    type: match.type,
-    years: Array.isArray(match.years) ? match.years.slice(0, 4) : [],
-    sentence: truncateText(match.sentence, 260)
-  }));
-}
-
-function getTechStack(job) {
-  return Array.from(
-    new Set([
-      ...(job.matchScore?.keywords || []),
-      ...(job.resumeMatch?.keywords || []),
-      ...(job.llmMatch?.matchedSkills || [])
-    ])
-  )
-    .filter(Boolean)
-    .slice(0, 30)
-    .map((item) => truncateText(item, 80));
-}
-
-function getDecisionSource(job) {
-  if (job.matchSource === "llm") {
-    return "llm";
-  }
-
-  if (job.llmError) {
-    return "local_fallback_after_llm_error";
-  }
-
-  return "local_scoring";
+function compactResumeMatch(resumeMatch) {
+  return {
+    score: resumeMatch?.score,
+    percentage: resumeMatch?.percentage,
+    keywords: (resumeMatch?.keywords || []).slice(0, 20)
+  };
 }
 
 function compactJobRecord(job, status) {
@@ -282,11 +289,7 @@ function compactJobRecord(job, status) {
     matchSource: job.matchSource || "local",
     llmMatch: compactLlmMatch(job.llmMatch),
     llmError: truncateText(job.llmError, 300),
-    resumeMatch: {
-      score: job.resumeMatch?.score,
-      percentage: job.resumeMatch?.percentage,
-      keywords: (job.resumeMatch?.keywords || []).slice(0, 20)
-    },
+    resumeMatch: compactResumeMatch(job.resumeMatch),
     matchScore: {
       score: job.matchScore?.score,
       percentage: job.matchScore?.percentage,
@@ -305,75 +308,6 @@ function compactJobRecord(job, status) {
   };
 }
 
-function createJobLogRecord(job, status) {
-  const workflow = compactWorkflow(job.applicationResult || job.workflow);
-  const lastAttempt = compactAttempt(job.lastAttempt || getLastWorkflowAttempt(job.applicationResult || job.workflow));
-  const lastStep = getLastWorkflowStep(job.applicationResult || job.workflow);
-
-  return {
-    jobId: job.jobId,
-    site: job.site || getSiteConfig(job.url)?.id || null,
-    siteLabel: job.siteLabel || getSiteLabel(job.site || job.url),
-    title: truncateText(job.title, 220),
-    url: job.url,
-    status,
-    errorType: job.errorType || null,
-    decision: job.decision,
-    decisionSource: getDecisionSource(job),
-    requiredYears: job.requiredYears,
-    reason: truncateText(job.reason, 500),
-    failureReason: truncateText(job.failureReason, 500),
-    alreadySubmitted: Boolean(job.alreadySubmitted),
-    descriptionPreview: truncateText(job.preview || job.jobText, 1600),
-    yoeEvidence: compactYoeEvidence(job),
-    techStack: getTechStack(job),
-    localScoring: job.matchScore || null,
-    llmMatch: compactLlmMatch(job.llmMatch),
-    llmError: truncateText(job.llmError, 300),
-    workflow,
-    lastAttempt,
-    lastStep: lastStep
-      ? {
-          attempt: lastStep.attempt,
-          step: truncateText(lastStep.step, 120),
-          status: lastStep.status,
-          label: truncateText(lastStep.label, 120)
-        }
-      : null,
-    manualReviewUrl: getManualReviewUrl({
-      ...job,
-      workflow: job.applicationResult || job.workflow,
-      lastAttempt
-    }),
-    updatedAt: job.updatedAt || new Date().toISOString()
-  };
-}
-
-async function rememberJobLog(job, status) {
-  const record = createJobLogRecord(job, status);
-  inMemoryJobLogs = [record, ...inMemoryJobLogs].slice(0, MAX_IN_MEMORY_JOB_LOGS);
-
-  const stored = await chrome.storage.local.get(JOB_LOGS_KEY);
-  const records = Array.isArray(stored[JOB_LOGS_KEY]) ? stored[JOB_LOGS_KEY] : [];
-  const compactedLogs = [record, ...records]
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
-    .slice(0, MAX_STORED_JOB_LOGS);
-
-  try {
-    await chrome.storage.local.set({
-      [JOB_LOGS_KEY]: compactedLogs
-    });
-  } catch (error) {
-    if (!isStorageQuotaError(error)) {
-      throw error;
-    }
-
-    await chrome.storage.local.set({
-      [JOB_LOGS_KEY]: compactedLogs.slice(0, 50)
-    });
-  }
-}
-
 function compactFailure(failure) {
   return {
     jobId: failure.jobId,
@@ -382,11 +316,7 @@ function compactFailure(failure) {
     title: truncateText(failure.title, 220),
     url: failure.url,
     decision: failure.decision,
-    resumeMatch: {
-      score: failure.resumeMatch?.score,
-      percentage: failure.resumeMatch?.percentage,
-      keywords: (failure.resumeMatch?.keywords || []).slice(0, 20)
-    },
+    resumeMatch: compactResumeMatch(failure.resumeMatch),
     status: failure.status,
     reason: truncateText(failure.reason, 300),
     workflow: compactWorkflow(failure.workflow),
@@ -472,7 +402,39 @@ function rememberError(error) {
       happenedAt: new Date().toISOString()
     }),
     ...scanState.errors
-  ].slice(0, 5);
+  ].slice(0, 50);
+}
+
+function rememberSkippedUnqualified(entry) {
+  scanState.skippedUnqualified = [
+    {
+      jobId: entry.jobId || null,
+      site: entry.site || getSiteConfig(entry.url)?.id || null,
+      siteLabel: entry.siteLabel || getSiteLabel(entry.site || entry.url),
+      title: truncateText(entry.title, 220),
+      url: entry.url,
+      reason: truncateText(entry.reason, 300),
+      skippedAt: new Date().toISOString()
+    },
+    ...scanState.skippedUnqualified
+  ].slice(0, 8);
+}
+
+async function recordAppliedCheckpoint(jobContext) {
+  if (!jobContext) {
+    return;
+  }
+
+  scanState.lastApplied = {
+    jobId: jobContext.jobId,
+    site: jobContext.site,
+    siteLabel: jobContext.siteLabel,
+    title: jobContext.title,
+    url: jobContext.url,
+    appliedAt: new Date().toISOString()
+  };
+  scanState.stats.applied += 1;
+  await saveScanState();
 }
 
 async function saveJobRecord(job, status) {
@@ -481,7 +443,6 @@ async function saveJobRecord(job, status) {
   const key = job.jobId || job.url;
   const record = compactJobRecord(job, status);
 
-  await rememberJobLog(job, status);
   records[key] = record;
   const compactedRecords = Object.fromEntries(
     Object.entries(records)
@@ -539,33 +500,6 @@ async function compactStoredJobRecords() {
   }
 }
 
-async function getExportedJobLogs() {
-  const stored = await chrome.storage.local.get(JOB_LOGS_KEY);
-  const storedLogs = Array.isArray(stored[JOB_LOGS_KEY]) ? stored[JOB_LOGS_KEY] : [];
-  const recordsByKey = new Map();
-
-  for (const record of [...inMemoryJobLogs, ...storedLogs]) {
-    const key = `${record.jobId || record.url || "unknown"}::${record.status || "unknown"}::${record.updatedAt || ""}`;
-    recordsByKey.set(key, record);
-  }
-
-  const records = Array.from(recordsByKey.values())
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
-    .slice(0, MAX_STORED_JOB_LOGS + MAX_IN_MEMORY_JOB_LOGS);
-
-  return {
-    ok: true,
-    exportedAt: new Date().toISOString(),
-    appName: "Career Peeler",
-    persistence: "chrome_storage_local",
-    note: "Detailed job logs are persisted locally in Chrome storage and merged with the current scan buffer at export time.",
-    storedRecordCount: storedLogs.length,
-    inMemoryRecordCount: inMemoryJobLogs.length,
-    recordCount: records.length,
-    records
-  };
-}
-
 function statusFromDecision(decision) {
   if (decision === "Likely match") {
     return "likely_match";
@@ -619,10 +553,27 @@ function wasStoredBeforeScan(link) {
   return storedIdentifiersAtScanStart.has(link.url) || (link.jobId ? storedIdentifiersAtScanStart.has(link.jobId) : false);
 }
 
+function getStoredJobRecord(link) {
+  if (link.jobId && storedJobRecordsAtScanStart[link.jobId]) {
+    return storedJobRecordsAtScanStart[link.jobId];
+  }
+
+  if (link.url && storedJobRecordsAtScanStart[link.url]) {
+    return storedJobRecordsAtScanStart[link.url];
+  }
+
+  return null;
+}
+
+function isUnqualifiedRecord(record) {
+  return record?.decision === "Likely skip" || record?.status === "likely_skip";
+}
+
 async function hydrateProcessedFromStorage() {
   const stored = await loadStoredJobIdentifiers();
 
   storedIdentifiersAtScanStart.clear();
+  storedJobRecordsAtScanStart = stored.records || {};
 
   for (const url of stored.urls) {
     processedUrls.add(url);
@@ -723,7 +674,8 @@ function getHardSkipTitleReason(title) {
     { label: "staff-level", pattern: /\bstaff\b/i },
     { label: "principal-level", pattern: /\bprincipal\b/i },
     { label: "lead-level", pattern: /\blead\b/i },
-    { label: "manager-level", pattern: /\bmanager\b/i }
+    { label: "manager-level", pattern: /\bmanager\b/i },
+    { label: "internship", pattern: /\bintern(s|ship)?\b/i }
   ];
   const matchedRule = titleRules.find((rule) => rule.pattern.test(normalizedTitle));
 
@@ -733,7 +685,9 @@ function getHardSkipTitleReason(title) {
 function isLocalHardSkip(job) {
   return (
     job.decision === "Likely skip" &&
-    /senior-level|required experience sentence appears to exceed|strong domain mismatch/i.test(job.reason || "")
+    /senior-level|internship|matched your no-match keyword list|strong domain mismatch|(?:exceeds?|above)\b.*\byears? of experience\b/i.test(
+      job.reason || ""
+    )
   );
 }
 
@@ -968,10 +922,6 @@ async function getLlmMatch(job) {
 async function applyLlmMatch(job) {
   const userProfile = normalizeUserProfile(scanState.userProfile);
   const locallyGuardedJob = applyRequiredYoeHardSkip(job, userProfile);
-
-  if (locallyGuardedJob.decision === "Likely skip") {
-    return locallyGuardedJob;
-  }
 
   try {
     const llmMatch = await getLlmMatch(locallyGuardedJob);
@@ -1243,7 +1193,8 @@ async function scanJobLink(link) {
 
     const response = await sendMessageWithFallback(detailTab.id, {
       type: "APPLE_CAREERS_EXTRACT_JOB",
-      userYearsOfExperience: scanState.userProfile?.userYearsOfExperience
+      userYearsOfExperience: scanState.userProfile?.userYearsOfExperience,
+      noMatchKeywords: scanState.userProfile?.noMatchKeywords
     });
 
     if (!response?.ok) {
@@ -1261,6 +1212,7 @@ async function scanJobLink(link) {
     let finalStatus = status;
     let applicationResult = null;
     let failureReason = null;
+    let alreadyCheckpointed = false;
 
     if (shouldAutoApply(status, job)) {
       await updateScanState({
@@ -1271,19 +1223,32 @@ async function scanJobLink(link) {
         }
       });
 
-      const workflowResponse = await runApplicationWorkflow(detailTab);
-      applicationResult = workflowResponse.data || null;
-
-      if (workflowResponse.ok && workflowResponse.data?.submitted) {
-        finalStatus = "applied";
-        scanState.lastApplied = {
+      const workflowResponse = await runApplicationWorkflow(detailTab, {
+        stopIfScanStopped: true,
+        jobContext: {
           jobId: job.jobId,
           site: job.site,
           siteLabel: job.siteLabel,
           title: job.title,
-          url: job.url,
-          appliedAt: new Date().toISOString()
-        };
+          url: job.url
+        }
+      });
+      applicationResult = workflowResponse.data || null;
+
+      if (workflowResponse.ok && workflowResponse.data?.submitted) {
+        finalStatus = "applied";
+        alreadyCheckpointed = Boolean(workflowResponse.data?.checkpointed);
+
+        if (!alreadyCheckpointed) {
+          scanState.lastApplied = {
+            jobId: job.jobId,
+            site: job.site,
+            siteLabel: job.siteLabel,
+            title: job.title,
+            url: job.url,
+            appliedAt: new Date().toISOString()
+          };
+        }
       } else if (workflowResponse.ok && workflowResponse.data?.alreadySubmitted) {
         finalStatus = "submitted";
         job.errorType = workflowResponse.data.errorType || null;
@@ -1331,7 +1296,9 @@ async function scanJobLink(link) {
       },
       finalStatus
     );
-    incrementStatsForStatus(finalStatus);
+    if (!alreadyCheckpointed) {
+      incrementStatsForStatus(finalStatus);
+    }
 
     scanState.scanned += 1;
     await saveScanState();
@@ -1381,6 +1348,7 @@ async function scanCurrentApplicationPage(link) {
   let finalStatus = "review";
   let applicationResult = null;
   let failureReason = null;
+  let alreadyCheckpointed = false;
 
   try {
     await updateScanState({
@@ -1391,7 +1359,8 @@ async function scanCurrentApplicationPage(link) {
 
     const response = await sendMessageWithFallback(scanState.listTabId, {
       type: "APPLE_CAREERS_EXTRACT_JOB",
-      userYearsOfExperience: scanState.userProfile?.userYearsOfExperience
+      userYearsOfExperience: scanState.userProfile?.userYearsOfExperience,
+      noMatchKeywords: scanState.userProfile?.noMatchKeywords
     }).catch(() => null);
 
     if (response?.ok) {
@@ -1413,19 +1382,36 @@ async function scanCurrentApplicationPage(link) {
       return;
     }
 
-    const workflowResponse = await runApplicationWorkflow({ id: scanState.listTabId }, { closeOnDone: false });
+    const workflowResponse = await runApplicationWorkflow(
+      { id: scanState.listTabId },
+      {
+        closeOnDone: false,
+        stopIfScanStopped: true,
+        jobContext: {
+          jobId: job.jobId,
+          site: job.site,
+          siteLabel: job.siteLabel,
+          title: job.title,
+          url: job.url
+        }
+      }
+    );
     applicationResult = workflowResponse.data || null;
 
     if (workflowResponse.ok && workflowResponse.data?.submitted) {
       finalStatus = "applied";
-      scanState.lastApplied = {
-        jobId: job.jobId,
-        site: job.site,
-        siteLabel: job.siteLabel,
-        title: job.title,
-        url: job.url,
-        appliedAt: new Date().toISOString()
-      };
+      alreadyCheckpointed = Boolean(workflowResponse.data?.checkpointed);
+
+      if (!alreadyCheckpointed) {
+        scanState.lastApplied = {
+          jobId: job.jobId,
+          site: job.site,
+          siteLabel: job.siteLabel,
+          title: job.title,
+          url: job.url,
+          appliedAt: new Date().toISOString()
+        };
+      }
     } else if (workflowResponse.ok && workflowResponse.data?.alreadySubmitted) {
       finalStatus = "submitted";
       job.errorType = workflowResponse.data.errorType || null;
@@ -1460,7 +1446,9 @@ async function scanCurrentApplicationPage(link) {
       },
       finalStatus
     );
-    incrementStatsForStatus(finalStatus);
+    if (!alreadyCheckpointed) {
+      incrementStatsForStatus(finalStatus);
+    }
     scanState.scanned += 1;
     await saveScanState();
   } catch (error) {
@@ -1497,11 +1485,25 @@ async function runScanLoop() {
       const collection = await collectLinksFromListTab();
       const newLinks = [];
       let skippedStored = 0;
+      let skippedUnqualified = 0;
 
       for (const link of collection.links) {
         if (isLinkProcessed(link)) {
           if (wasStoredBeforeScan(link)) {
             skippedStored += 1;
+
+            const priorRecord = getStoredJobRecord(link);
+            if (isUnqualifiedRecord(priorRecord)) {
+              skippedUnqualified += 1;
+              rememberSkippedUnqualified({
+                jobId: link.jobId || priorRecord.jobId,
+                site: link.site || priorRecord.site,
+                siteLabel: link.siteLabel || priorRecord.siteLabel,
+                title: link.title || priorRecord.title,
+                url: link.url || priorRecord.url,
+                reason: priorRecord.reason || priorRecord.failureReason
+              });
+            }
           }
           continue;
         }
@@ -1510,6 +1512,7 @@ async function runScanLoop() {
       }
 
       scanState.stats.skippedStored += skippedStored;
+      scanState.stats.skippedUnqualified += skippedUnqualified;
       const hasAlreadyVisitedListPage = visitedListPages.has(collection.url);
 
       scanState.listPageUrl = collection.url;
@@ -1571,7 +1574,10 @@ async function runScanLoop() {
       }
 
       await updateScanState({
-        phase: "Advancing to next page",
+        phase:
+          newLinks.length === 0
+            ? `Skipping page ${scanState.pageCount} (already scanned)`
+            : "Advancing to next page",
         queued: 0
       });
 
@@ -1635,7 +1641,6 @@ async function startScan(tab, userProfile) {
   processedJobIds.clear();
   storedIdentifiersAtScanStart.clear();
   visitedListPages.clear();
-  inMemoryJobLogs = [];
   await hydrateProcessedFromStorage();
   scanState = {
     ...createIdleState(),
@@ -1686,8 +1691,8 @@ async function clearHistory() {
   processedUrls.clear();
   processedJobIds.clear();
   storedIdentifiersAtScanStart.clear();
+  storedJobRecordsAtScanStart = {};
   visitedListPages.clear();
-  inMemoryJobLogs = [];
   scanState = {
     ...createIdleState(),
     userProfile
@@ -1704,6 +1709,8 @@ async function clearHistory() {
 
 async function runApplicationWorkflow(tab, options = {}) {
   const closeOnDone = options.closeOnDone !== false;
+  const stopIfScanStopped = Boolean(options.stopIfScanStopped);
+  const jobContext = options.jobContext || null;
   const originalWorkflowTabId = tab?.id;
   let workflowTabId = tab?.id;
 
@@ -1740,6 +1747,20 @@ async function runApplicationWorkflow(tab, options = {}) {
 
   try {
     for (let attempt = 1; attempt <= 12; attempt += 1) {
+      if (stopIfScanStopped && !scanState.running) {
+        return {
+          ok: false,
+          error: "Scan stopped.",
+          data: {
+            submitted: false,
+            errorType: "stopped_by_user",
+            attempts,
+            steps,
+            summary: "Scan was stopped; leaving the current application step as-is."
+          }
+        };
+      }
+
       await waitForTabComplete(workflowTabId).catch(() => {});
       await delay(PAGE_SETTLE_DELAY_MS);
 
@@ -1791,6 +1812,12 @@ async function runApplicationWorkflow(tab, options = {}) {
       }
 
       if (response.data.done) {
+        const isFreshSubmission = !response.data.alreadySubmitted;
+
+        if (isFreshSubmission && jobContext) {
+          await recordAppliedCheckpoint(jobContext);
+        }
+
         await delay(2500);
         if (closeOnDone) {
           await chrome.tabs.remove(workflowTabId).catch(() => {});
@@ -1817,6 +1844,7 @@ async function runApplicationWorkflow(tab, options = {}) {
           ok: true,
           data: {
             submitted: true,
+            checkpointed: isFreshSubmission && Boolean(jobContext),
             attempts,
             steps,
             summary: closeOnDone ? "Application submitted and the job tab was closed." : "Application submitted."
@@ -1858,47 +1886,42 @@ async function runApplicationWorkflow(tab, options = {}) {
   }
 }
 
+const RECOGNIZED_MESSAGE_TYPES = new Set([
+  "APPLE_CAREERS_START_SCAN",
+  "APPLE_CAREERS_STOP_SCAN",
+  "APPLE_CAREERS_CLEAR_HISTORY",
+  "APPLE_CAREERS_GET_SCAN_STATUS",
+  "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW"
+]);
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "APPLE_CAREERS_START_SCAN") {
-    startScan(message.tab, message.userProfile).then(sendResponse);
-    return true;
+  if (!RECOGNIZED_MESSAGE_TYPES.has(message?.type)) {
+    return false;
   }
 
-  if (message?.type === "APPLE_CAREERS_STOP_SCAN") {
-    stopScan().then(sendResponse);
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_CLEAR_HISTORY") {
-    clearHistory().then(sendResponse);
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_EXPORT_JOB_LOGS") {
-    getExportedJobLogs().then(sendResponse);
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_GET_SCAN_STATUS") {
-    sendResponse({
-      ok: true,
-      status: scanState
-    });
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
-    runApplicationWorkflow(message.tab)
-      .then(sendResponse)
-      .catch((error) => {
+  scanStateReady.then(async () => {
+    try {
+      if (message.type === "APPLE_CAREERS_START_SCAN") {
+        sendResponse(await startScan(message.tab, message.userProfile));
+      } else if (message.type === "APPLE_CAREERS_STOP_SCAN") {
+        sendResponse(await stopScan());
+      } else if (message.type === "APPLE_CAREERS_CLEAR_HISTORY") {
+        sendResponse(await clearHistory());
+      } else if (message.type === "APPLE_CAREERS_GET_SCAN_STATUS") {
         sendResponse({
-          ok: false,
-          error: error?.message || "The application workflow failed."
+          ok: true,
+          status: scanState
         });
+      } else if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
+        sendResponse(await runApplicationWorkflow(message.tab));
+      }
+    } catch (error) {
+      sendResponse({
+        ok: false,
+        error: error?.message || "The request failed."
       });
+    }
+  });
 
-    return true;
-  }
-
-  return false;
+  return true;
 });

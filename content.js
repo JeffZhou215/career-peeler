@@ -89,12 +89,12 @@ const RESUME_KEYWORDS = [
 const DOMAIN_MISMATCH_RULES = [
   {
     label: "iOS app development",
-    terms: ["ios", "swift", "objective-c", "objective c", "uikit", "swiftui", "xcode", "cocoa touch"],
+    terms: ["ios", "objective-c", "objective c", "uikit", "swiftui", "xcode", "cocoa touch"],
     penalty: 16
   },
   {
     label: "macOS app development",
-    terms: ["macos", "appkit", "cocoa", "core data"],
+    terms: ["appkit", "cocoa", "core data"],
     penalty: 10
   },
   {
@@ -152,6 +152,7 @@ const SITE_CONFIGS = {
     applyPattern: /^submit resume$/i,
     continuePattern: /^continue$/i,
     finalSubmitPattern: /^submit$/i,
+    primaryActionId: "apply-step-continue-button",
     titleSuffixPattern: /\s+-\s+(?:Jobs\s+-\s+)?Careers at Apple\.?$/i
   },
   tiktok: {
@@ -538,11 +539,21 @@ function scoreRules(text, rules) {
     .filter((rule) => rule.matchedTerms.length > 0);
 }
 
-function analyzeLocalMatch(text) {
+function normalizeNoMatchKeywords(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+
+  return list
+    .map((term) => String(term || "").trim())
+    .filter(Boolean)
+    .slice(0, 50);
+}
+
+function analyzeLocalMatch(text, noMatchKeywords = []) {
   const resumeMatch = analyzeResumeMatch(text);
   const domainMismatches = scoreRules(text, DOMAIN_MISMATCH_RULES);
   const senioritySignals = scoreRules(text, SENIORITY_RULES);
   const overrideTerms = MISMATCH_OVERRIDES.filter((term) => textIncludesTerm(text, term));
+  const noMatchKeywordHits = noMatchKeywords.filter((term) => term && textIncludesTerm(text, term));
   const mismatchPenalty = domainMismatches.reduce((total, rule) => total + rule.penalty, 0);
   const seniorityPenalty = senioritySignals.reduce((total, rule) => total + rule.penalty, 0);
   const overrideCredit = overrideTerms.length ? Math.min(8, overrideTerms.length * 2) : 0;
@@ -559,17 +570,23 @@ function analyzeLocalMatch(text) {
     domainMismatches: domainMismatches.map((rule) => rule.label),
     senioritySignals: senioritySignals.map((rule) => rule.label),
     overrideTerms,
+    noMatchKeywordHits,
     reasons: [
       ...resumeMatch.keywords.map((keyword) => `Matched resume skill: ${keyword}`),
       ...domainMismatches.map((rule) => `Domain mismatch: ${rule.label}`),
       ...senioritySignals.map((rule) => `Seniority signal: ${rule.label}`),
-      ...overrideTerms.map((term) => `Relevant domain override: ${term}`)
+      ...overrideTerms.map((term) => `Relevant domain override: ${term}`),
+      ...noMatchKeywordHits.map((term) => `No-match keyword: ${term}`)
     ]
   };
 }
 
 function hasHardSeniorityMismatch(title) {
   return /\b(senior|staff|principal|lead|manager)\b|\bsr\.?(?=\s|$|[-,()/])/i.test(title);
+}
+
+function isInternshipTitle(title) {
+  return /\bintern(s|ship)?\b/i.test(title);
 }
 
 function hasBackendOrFullStackFit(matchScore) {
@@ -606,11 +623,27 @@ function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAUL
   const maxMentionedYears = getMaxYears(matches);
   const maxNonPreferredYears = getMaxYears(matches, (match) => match.type !== "preferred");
 
+  if (matchScore.noMatchKeywordHits?.length) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxRequiredYears,
+      reason: `Matched your no-match keyword list: ${matchScore.noMatchKeywordHits.join(", ")}.`
+    };
+  }
+
   if (hasHardSeniorityMismatch(title)) {
     return {
       decision: "Likely skip",
       requiredYears: maxRequiredYears,
       reason: `Title appears senior-level: ${title}.`
+    };
+  }
+
+  if (isInternshipTitle(title)) {
+    return {
+      decision: "Likely skip",
+      requiredYears: maxRequiredYears,
+      reason: `Title appears to be an internship: ${title}.`
     };
   }
 
@@ -650,47 +683,28 @@ function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAUL
     };
   }
 
-  if (maxRequiredYears !== null && matchScore.score >= 8) {
+  // By this point maxRequiredYears is either absent or already within budget (the hard-skip
+  // checks above would have returned otherwise), so a missing YOE requirement is treated the
+  // same as a satisfied one rather than as a reason for lower confidence.
+  if (matchScore.score >= 8) {
     return {
       decision: "Likely match",
       requiredYears: maxRequiredYears,
-      reason: `Required experience is acceptable and local fit score is strong (${matchScore.percentage}%).`
+      reason:
+        maxRequiredYears !== null
+          ? `Required experience is acceptable and local fit score is strong (${matchScore.percentage}%).`
+          : `No years-of-experience requirement was stated (treated as met) and local fit score is strong (${matchScore.percentage}%).`
     };
   }
 
-  if (matchScore.score >= 14) {
-    return {
-      decision: "Likely match",
-      requiredYears: maxRequiredYears,
-      reason: `Job description strongly matches your local profile (${matchScore.percentage}%).`
-    };
-  }
-
-  if (hasBackendOrFullStackFit(matchScore) && matchScore.score >= 8 && matchScore.mismatchPenalty < 16) {
-    return {
-      decision: "Review",
-      requiredYears: maxRequiredYears,
-      reason: `Backend/full-stack experience appears relevant (${matchScore.percentage}%).`
-    };
-  }
-
-  if (
-    (maxRequiredYears !== null ||
-      (maxMentionedYears !== null && maxMentionedYears <= maxAcceptableRequiredYears)) &&
-    matchScore.score >= 4
-  ) {
+  if (matchScore.score >= 4) {
     return {
       decision: "Review",
       requiredYears: null,
-      reason: `Experience looks acceptable, but local fit score is moderate (${matchScore.percentage}%).`
-    };
-  }
-
-  if (matchScore.score >= 6 && matchScore.mismatchPenalty < 16) {
-    return {
-      decision: "Review",
-      requiredYears: null,
-      reason: `No clear YOE requirement was found, but local fit score is relevant (${matchScore.percentage}%).`
+      reason:
+        maxRequiredYears !== null || (maxMentionedYears !== null && maxMentionedYears <= maxAcceptableRequiredYears)
+          ? `Experience looks acceptable, but local fit score is moderate (${matchScore.percentage}%).`
+          : `No years-of-experience requirement was stated (treated as met), but local fit score is only moderate (${matchScore.percentage}%).`
     };
   }
 
@@ -765,15 +779,11 @@ function getAlreadyAppliedDialog() {
   return null;
 }
 
-function hasSubmitResumeAction() {
-  const siteConfig = getSiteConfig();
-  return Boolean(findClickableByText(siteConfig?.applyPattern || /^submit resume$/i));
-}
-
 function extractJobDetails(options = {}) {
   const text = getVisiblePageText();
   const matches = extractExperienceMatches(text);
-  const matchScore = analyzeLocalMatch(text);
+  const noMatchKeywords = normalizeNoMatchKeywords(options.noMatchKeywords);
+  const matchScore = analyzeLocalMatch(text, noMatchKeywords);
   const title = getJobTitle();
   const userYearsOfExperience = normalizeUserYearsOfExperience(options.userYearsOfExperience);
   const classification = classifyRole(matches, matchScore, title, userYearsOfExperience);
@@ -1489,26 +1499,7 @@ async function clickAction(pattern, stepName, steps, options = {}) {
   return true;
 }
 
-async function clickFinalSubmit(steps) {
-  window.scrollTo(0, document.body.scrollHeight);
-  await delay(500);
-
-  const siteConfig = getSiteConfig();
-  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 2500);
-
-  if (!element) {
-    steps.push({
-      step: "Submit application",
-      status: "missing"
-    });
-    return {
-      clicked: false,
-      done: false,
-      pending: false,
-      summary: "Final Submit was not found."
-    };
-  }
-
+async function clickAndDetectSubmission(element, steps) {
   element.scrollIntoView({
     block: "center"
   });
@@ -1577,6 +1568,102 @@ async function clickFinalSubmit(steps) {
   };
 }
 
+async function clickFinalSubmit(steps) {
+  window.scrollTo(0, document.body.scrollHeight);
+  await delay(500);
+
+  const siteConfig = getSiteConfig();
+  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 2500);
+
+  if (!element) {
+    steps.push({
+      step: "Submit application",
+      status: "missing"
+    });
+    return {
+      clicked: false,
+      done: false,
+      pending: false,
+      summary: "Final Submit was not found."
+    };
+  }
+
+  return clickAndDetectSubmission(element, steps);
+}
+
+function findPrimaryActionButton(siteConfig) {
+  if (!siteConfig?.primaryActionId) {
+    return null;
+  }
+
+  const element = document.getElementById(siteConfig.primaryActionId);
+
+  if (!element || !isElementVisible(element) || isActionDisabled(element)) {
+    return null;
+  }
+
+  return element;
+}
+
+// Apple reuses the exact same button (and id) for both "Continue" and the final "Submit" across
+// every step of the apply flow, only changing its visible text. Targeting it by id is more
+// reliable and faster than the text-pattern searches below, which are kept as a fallback for
+// sites/pages where this id isn't present.
+async function clickPrimaryAction(siteConfig, steps) {
+  const primaryButton = findPrimaryActionButton(siteConfig);
+
+  if (!primaryButton) {
+    const submitResult = await clickFinalSubmit(steps);
+
+    if (submitResult.done || submitResult.pending) {
+      return submitResult;
+    }
+
+    const continued = await clickAction(
+      siteConfig?.continuePattern || /^continue$/i,
+      "Continue application step",
+      steps,
+      { scrollBottom: true, timeoutMs: 5000 }
+    );
+
+    return {
+      clicked: continued,
+      done: false,
+      pending: false,
+      summary: continued ? "Clicked Continue." : "No Continue or Submit action was found on this application step."
+    };
+  }
+
+  const label = getActionLabel(primaryButton);
+  const isFinalSubmit = (siteConfig?.finalSubmitPattern || /^submit$/i).test(label);
+
+  window.scrollTo(0, document.body.scrollHeight);
+  await delay(500);
+
+  if (isFinalSubmit) {
+    return clickAndDetectSubmission(primaryButton, steps);
+  }
+
+  primaryButton.scrollIntoView({
+    block: "center"
+  });
+  await delay(200);
+  primaryButton.click();
+  steps.push({
+    step: "Continue application step",
+    status: "clicked",
+    label
+  });
+  await delay(WORKFLOW_STEP_DELAY_MS);
+
+  return {
+    clicked: true,
+    done: false,
+    pending: false,
+    summary: "Clicked Continue."
+  };
+}
+
 function findSponsorshipContainer() {
   const containers = Array.from(document.querySelectorAll("fieldset, section, div, li"))
     .filter((element) => isElementVisible(element))
@@ -1634,6 +1721,11 @@ function isYesAnswerText(text) {
   return /\byes\b/.test(lower) && !/\bno\b/.test(lower);
 }
 
+function isNoAnswerText(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return /\bno\b/.test(lower) && !/\byes\b/.test(lower);
+}
+
 function isWorkAuthorizationQuestion(text) {
   const lower = normalizeText(text || "").toLowerCase();
   return (
@@ -1654,40 +1746,95 @@ function isVisaSponsorshipQuestion(text) {
   );
 }
 
+function isAgeEligibilityQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return /\b18\s+years\s+of\s+age\s+or\s+older\b/.test(lower) || /\bat least 18 years\b/.test(lower);
+}
+
+function isPriorAppleEmploymentQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return /\bever been employed by apple\b/.test(lower);
+}
+
+function isPriorAppleContractorQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return (
+    /\bapple\b/.test(lower) && /\btemporary agency worker\b/.test(lower) && /\bindependent contractor\b/.test(lower)
+  );
+}
+
+const NON_ANSWER_ACTION_LABEL_PATTERN =
+  /\b(edit|change|modify|update|view|remove|delete|continue|submit|apply|cancel|close|back|next|download|print|export|attach|upload|share|preview|resume)\b/i;
+
+// Apple's review page reuses a "-edit-button" id suffix for every section's Edit link, and a
+// "downloadfile" id substring for saved-file buttons (resume, cover letter) whose visible text is
+// just the uploaded filename (e.g. "Yifu_Zhou_Resume.pdf") rather than a recognizable action word,
+// so the label pattern above can't reliably catch those.
+const NON_ANSWER_ACTION_ID_PATTERN = /-edit-button$|downloadfile/i;
+
+function isNonAnswerAction(element) {
+  const elementId = element.id || element.getAttribute("id") || "";
+
+  if (NON_ANSWER_ACTION_ID_PATTERN.test(elementId)) {
+    return true;
+  }
+
+  const label = `${getActionLabel(element)} ${getElementLabel(element)}`;
+  return NON_ANSWER_ACTION_LABEL_PATTERN.test(label);
+}
+
+function isAnswerControlElement(element) {
+  const isButtonLike = element.tagName.toLowerCase() === "button" || element.getAttribute("role") === "button";
+
+  if (!isButtonLike) {
+    return true;
+  }
+
+  return !isNonAnswerAction(element);
+}
+
 function getQuestionContainers() {
   return Array.from(document.querySelectorAll("fieldset, section, div, li"))
     .filter((element) => isElementVisible(element))
     .filter((element) => {
       const text = normalizeText(element.innerText || "");
-      const hasKnownQuestion = isWorkAuthorizationQuestion(text) || isVisaSponsorshipQuestion(text);
-      const hasAnswerControl = element.querySelector(
-        [
-          "select",
-          "input[type='radio']",
-          "[role='radio']",
-          "[role='combobox']",
-          "[aria-haspopup='listbox']",
-          "[aria-haspopup='menu']",
-          ".ud__select",
-          ".ud__select__selector",
-          "button",
-          "[role='button']"
-        ].join(", ")
+      const hasKnownQuestion =
+        isWorkAuthorizationQuestion(text) ||
+        isVisaSponsorshipQuestion(text) ||
+        isAgeEligibilityQuestion(text) ||
+        isPriorAppleEmploymentQuestion(text) ||
+        isPriorAppleContractorQuestion(text);
+      const answerControls = Array.from(
+        element.querySelectorAll(
+          [
+            "select",
+            "input[type='radio']",
+            "[role='radio']",
+            "[role='combobox']",
+            "[aria-haspopup='listbox']",
+            "[aria-haspopup='menu']",
+            ".ud__select",
+            ".ud__select__selector",
+            "button",
+            "[role='button']"
+          ].join(", ")
+        )
       );
+      const hasAnswerControl = answerControls.some(isAnswerControlElement);
 
       return hasKnownQuestion && hasAnswerControl;
     })
     .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
 }
 
-function selectNativeYesAnswer(container, stepName, steps) {
+function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLabel) {
   const selects = Array.from(container.querySelectorAll("select"))
     .filter((element) => isElementVisible(element))
     .filter((element) => !isActionDisabled(element));
 
   for (const select of selects) {
     const option = Array.from(select.options).find((candidate) =>
-      isYesAnswerText(`${candidate.textContent || ""} ${candidate.value || ""}`)
+      matchesAnswer(`${candidate.textContent || ""} ${candidate.value || ""}`)
     );
 
     if (!option) {
@@ -1700,12 +1847,16 @@ function selectNativeYesAnswer(container, stepName, steps) {
     steps.push({
       step: stepName,
       status: "selected",
-      label: normalizeText(option.textContent || option.value || "Yes")
+      label: normalizeText(option.textContent || option.value || answerLabel)
     });
     return true;
   }
 
   return false;
+}
+
+function selectNativeYesAnswer(container, stepName, steps) {
+  return selectNativeAnswer(container, stepName, steps, isYesAnswerText, "Yes");
 }
 
 function clickAnswerInContainer(container, answerPattern, stepName, steps) {
@@ -1741,7 +1892,7 @@ function clickAnswerInContainer(container, answerPattern, stepName, steps) {
   return false;
 }
 
-async function clickDropdownYesAnswer(container, stepName, steps) {
+async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, answerLabel) {
   const controls = Array.from(
     container.querySelectorAll(
       [
@@ -1761,9 +1912,7 @@ async function clickDropdownYesAnswer(container, stepName, steps) {
     .filter((element) => !isActionDisabled(element));
 
   for (const control of controls) {
-    const label = `${getActionLabel(control)} ${getElementLabel(control)}`.toLowerCase();
-
-    if (/\b(continue|submit|apply|cancel|close|back|next)\b/.test(label)) {
+    if (isNonAnswerAction(control)) {
       continue;
     }
 
@@ -1774,7 +1923,7 @@ async function clickDropdownYesAnswer(container, stepName, steps) {
     control.click();
     await delay(300);
 
-    const yesOption = Array.from(
+    const matchedOption = Array.from(
       document.querySelectorAll(".ud__select__list__item, [role='option'], [role='menuitem'], li, button, div, span")
     )
       .filter((element) => isElementVisible(element))
@@ -1782,28 +1931,32 @@ async function clickDropdownYesAnswer(container, stepName, steps) {
         const text = normalizeText(
           `${element.innerText || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`
         );
-        return text.length <= 40 && isYesAnswerText(text) && !isActionDisabled(element);
+        return text.length <= 40 && matchesAnswer(text) && !isActionDisabled(element);
       });
 
-    if (!yesOption) {
+    if (!matchedOption) {
       continue;
     }
 
-    yesOption.scrollIntoView({
+    matchedOption.scrollIntoView({
       block: "center"
     });
     await delay(100);
-    yesOption.click();
+    matchedOption.click();
     steps.push({
       step: stepName,
       status: "selected",
-      label: "Yes"
+      label: answerLabel
     });
     await delay(300);
     return true;
   }
 
   return false;
+}
+
+async function clickDropdownYesAnswer(container, stepName, steps) {
+  return clickDropdownAnswer(container, stepName, steps, isYesAnswerText, "Yes");
 }
 
 function getSelectedDropdownText(container) {
@@ -1895,6 +2048,18 @@ async function answerYesQuestion(container, stepName, steps) {
   return clickDropdownYesAnswer(container, stepName, steps);
 }
 
+async function answerNoQuestion(container, stepName, steps) {
+  if (selectNativeAnswer(container, stepName, steps, isNoAnswerText, "No")) {
+    return true;
+  }
+
+  if (clickAnswerInContainer(container, /\bno\b/, stepName, steps)) {
+    return true;
+  }
+
+  return clickDropdownAnswer(container, stepName, steps, isNoAnswerText, "No");
+}
+
 async function answerQuestionnaire(steps) {
   const tikTokFields = Array.from(document.querySelectorAll("[data-form-field-i18n-name]"))
     .filter((element) => isElementVisible(element))
@@ -1924,62 +2089,54 @@ async function answerQuestionnaire(steps) {
     };
   }
 
-  let answeredCount = 0;
   const containers = getQuestionContainers();
-  const workAuthorization = containers.find((container) =>
-    isWorkAuthorizationQuestion(normalizeText(container.innerText || ""))
-  );
-  const sponsorship = containers.find((container) =>
-    isVisaSponsorshipQuestion(normalizeText(container.innerText || ""))
-  );
+  const questionRules = [
+    { matcher: isWorkAuthorizationQuestion, answer: answerYesQuestion, stepName: "Answer work authorization" },
+    { matcher: isVisaSponsorshipQuestion, answer: answerYesQuestion, stepName: "Answer visa sponsorship" },
+    { matcher: isAgeEligibilityQuestion, answer: answerYesQuestion, stepName: "Answer age eligibility" },
+    {
+      matcher: isPriorAppleEmploymentQuestion,
+      answer: answerNoQuestion,
+      stepName: "Answer prior Apple employment"
+    },
+    {
+      matcher: isPriorAppleContractorQuestion,
+      answer: answerNoQuestion,
+      stepName: "Answer prior Apple contractor status"
+    }
+  ];
 
-  if (workAuthorization && (await answerYesQuestion(workAuthorization, "Answer work authorization", steps))) {
-    answeredCount += 1;
-  }
+  let answeredCount = 0;
+  let requiredCount = 0;
 
-  if (sponsorship && (await answerYesQuestion(sponsorship, "Answer visa sponsorship", steps))) {
-    answeredCount += 1;
+  for (const rule of questionRules) {
+    const container = containers.find((candidate) => rule.matcher(normalizeText(candidate.innerText || "")));
+
+    if (!container) {
+      continue;
+    }
+
+    requiredCount += 1;
+
+    if (await rule.answer(container, rule.stepName, steps)) {
+      answeredCount += 1;
+    }
   }
 
   return {
     answeredAny: answeredCount > 0,
-    requiredCount: Number(Boolean(workAuthorization)) + Number(Boolean(sponsorship)),
+    requiredCount,
     answeredCount
   };
 }
 
-async function runApplicationWorkflow() {
-  const steps = [];
-  const siteConfig = getSiteConfig() || SITE_CONFIGS.apple;
-
-  await clickAction(siteConfig.applyPattern, "Open application flow", steps, {
-    timeoutMs: 6000
-  });
-
-  await clickAction(siteConfig.continuePattern, "Continue from resume step", steps);
-  clickSponsorshipAnswer(steps);
-
-  await clickAction(siteConfig.continuePattern, "Continue from profile source step", steps);
-  clickSponsorshipAnswer(steps);
-
-  await clickAction(siteConfig.continuePattern, "Continue from profile information step", steps, {
-    scrollBottom: true
-  });
-  clickSponsorshipAnswer(steps);
-
-  const submitted = await clickAction(siteConfig.finalSubmitPattern, "Submit application", steps, {
-    scrollBottom: true,
-    afterClickDelayMs: 2500
-  });
-
+function buildStepResult(overrides) {
   return {
     url: window.location.href,
     title: document.title,
-    submitted,
-    steps,
-    summary: submitted
-      ? "Application workflow submitted. The tab can be closed."
-      : "Workflow did not find the final Submit button."
+    heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
+    visibleActions: getVisibleActionLabels(),
+    ...overrides
   };
 }
 
@@ -1996,24 +2153,20 @@ async function runApplicationWorkflowStep() {
       status: "detected",
       label: sessionSignal
     });
-    return {
+    return buildStepResult({
       clicked: false,
       done: false,
       errorType: "session_or_login_required",
       steps,
-      url: window.location.href,
-      title: document.title,
-      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-      visibleActions: getVisibleActionLabels(),
       summary: `Login or session action appears required: ${sessionSignal}`
-    };
+    });
   }
 
   if (isDetailPage) {
     const submittedSignal = getSubmittedSignal();
 
     if (submittedSignal) {
-      return {
+      return buildStepResult({
         clicked: true,
         done: true,
         alreadySubmitted: true,
@@ -2024,12 +2177,8 @@ async function runApplicationWorkflowStep() {
             label: submittedSignal.text
           }
         ],
-        url: window.location.href,
-        title: document.title,
-        heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-        visibleActions: getVisibleActionLabels(),
         summary: "Job already shows Submitted."
-      };
+      });
     }
 
     const jobId = getJobId();
@@ -2039,7 +2188,7 @@ async function runApplicationWorkflowStep() {
       const lateSubmittedSignal = getSubmittedSignal();
 
       if (lateSubmittedSignal) {
-        return {
+        return buildStepResult({
           clicked: true,
           done: true,
           alreadySubmitted: true,
@@ -2050,17 +2199,13 @@ async function runApplicationWorkflowStep() {
               label: lateSubmittedSignal.text
             }
           ],
-          url: window.location.href,
-          title: document.title,
-          heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-          visibleActions: getVisibleActionLabels(),
           summary: "Job already shows Submitted."
-        };
+        });
       }
     }
 
     if (!submitResume) {
-      return {
+      return buildStepResult({
         clicked: false,
         done: false,
         steps: [
@@ -2069,12 +2214,8 @@ async function runApplicationWorkflowStep() {
             status: "missing"
           }
         ],
-        url: window.location.href,
-        title: document.title,
-        heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-        visibleActions: getVisibleActionLabels(),
         summary: `${siteConfig.label} apply action was not found and no Submitted state was detected.`
-      };
+      });
     }
 
     submitResume.scrollIntoView({
@@ -2089,42 +2230,50 @@ async function runApplicationWorkflowStep() {
     });
     await delay(WORKFLOW_STEP_DELAY_MS);
 
-    return {
+    return buildStepResult({
       clicked: true,
       done: false,
       steps,
-      url: window.location.href,
-      title: document.title,
-      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-      visibleActions: getVisibleActionLabels(),
       summary: `Clicked ${getActionLabel(submitResume) || "apply action"}.`
-    };
-
+    });
   }
 
-  const questionnaireResult = await answerQuestionnaire(steps);
-  const answeredQuestionnaire = questionnaireResult.answeredAny;
-  const answeredSponsorship = answeredQuestionnaire ? false : clickSponsorshipAnswer(steps);
+  // On the final Review & Submit step, every question is shown as read-only review text (it was
+  // already answered on the earlier Questions step) rather than an editable control, so there is
+  // nothing for the questionnaire-answering logic below to do there. Running it anyway forces
+  // ever-broader container searches (since no small container has a real answer control left,
+  // they've all been correctly excluded) that can end up clicking unrelated buttons entirely --
+  // Edit links, or the resume/cover-letter download buttons. Detect this step by checking whether
+  // the primary action button already reads "Submit", and skip straight to it when it does.
+  const primaryButtonBeforeQuestions = findPrimaryActionButton(siteConfig);
+  const isReviewAndSubmitStep =
+    Boolean(primaryButtonBeforeQuestions) &&
+    (siteConfig?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primaryButtonBeforeQuestions));
 
-  if (answeredQuestionnaire || answeredSponsorship) {
-    await delay(500);
-  }
+  let answeredQuestionnaire = false;
+  let answeredSponsorship = false;
 
-  if (
-    questionnaireResult.requiredCount > 0 &&
-    questionnaireResult.answeredCount < questionnaireResult.requiredCount
-  ) {
-    return {
-      clicked: answeredQuestionnaire,
-      done: false,
-      steps,
-      url: window.location.href,
-      title: document.title,
-      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-      visibleActions: getVisibleActionLabels(),
-      errorType: "questionnaire_incomplete",
-      summary: `Answered ${questionnaireResult.answeredCount} of ${questionnaireResult.requiredCount} required authorization questions; Submit was not clicked.`
-    };
+  if (!isReviewAndSubmitStep) {
+    const questionnaireResult = await answerQuestionnaire(steps);
+    answeredQuestionnaire = questionnaireResult.answeredAny;
+    answeredSponsorship = answeredQuestionnaire ? false : clickSponsorshipAnswer(steps);
+
+    if (answeredQuestionnaire || answeredSponsorship) {
+      await delay(500);
+    }
+
+    if (
+      questionnaireResult.requiredCount > 0 &&
+      questionnaireResult.answeredCount < questionnaireResult.requiredCount
+    ) {
+      return buildStepResult({
+        clicked: answeredQuestionnaire,
+        done: false,
+        steps,
+        errorType: "questionnaire_incomplete",
+        summary: `Answered ${questionnaireResult.answeredCount} of ${questionnaireResult.requiredCount} required authorization questions; Submit was not clicked.`
+      });
+    }
   }
 
   const loadingSignal = getLoadingSignal();
@@ -2138,67 +2287,46 @@ async function runApplicationWorkflowStep() {
       status: "loading",
       label: loadingSignal
     });
-    return {
+    return buildStepResult({
       clicked: true,
       done: false,
       steps,
-      url: window.location.href,
-      title: document.title,
-      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-      visibleActions: getVisibleActionLabels(),
       summary: "Application page is still loading."
-    };
+    });
   }
 
-  const submitResult = await clickFinalSubmit(steps);
+  const primaryActionResult = await clickPrimaryAction(siteConfig, steps);
 
-  if (submitResult.done) {
-    return {
+  if (primaryActionResult.done) {
+    return buildStepResult({
       clicked: true,
       done: true,
-      alreadySubmitted: Boolean(submitResult.alreadySubmitted),
-      errorType: submitResult.errorType || null,
+      alreadySubmitted: Boolean(primaryActionResult.alreadySubmitted),
+      errorType: primaryActionResult.errorType || null,
       steps,
-      url: window.location.href,
-      title: document.title,
-      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-      visibleActions: getVisibleActionLabels(),
-      summary: submitResult.summary
-    };
+      summary: primaryActionResult.summary
+    });
   }
 
-  if (submitResult.pending) {
-    return {
+  if (primaryActionResult.pending) {
+    return buildStepResult({
       clicked: true,
       done: false,
       steps,
-      url: window.location.href,
-      title: document.title,
-      heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-      visibleActions: getVisibleActionLabels(),
-      summary: submitResult.summary
-    };
+      summary: primaryActionResult.summary
+    });
   }
 
-  const continued = await clickAction(siteConfig?.continuePattern || /^continue$/i, "Continue application step", steps, {
-    scrollBottom: true,
-    timeoutMs: 5000
-  });
-
-  return {
-    clicked: continued || answeredQuestionnaire || answeredSponsorship,
+  return buildStepResult({
+    clicked: primaryActionResult.clicked || answeredQuestionnaire || answeredSponsorship,
     done: false,
     steps,
-    url: window.location.href,
-    title: document.title,
-    heading: normalizeText(document.querySelector("h1, h2")?.innerText || ""),
-    visibleActions: getVisibleActionLabels(),
-    summary: continued
-      ? "Clicked Continue."
+    summary: primaryActionResult.clicked
+      ? primaryActionResult.summary
       : answeredQuestionnaire || answeredSponsorship
         ? "Answered questionnaire."
         : "No Continue or Submit action was found on this application step."
-  };
+  });
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -2206,7 +2334,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({
       ok: true,
       data: extractJobDetails({
-        userYearsOfExperience: message.userYearsOfExperience
+        userYearsOfExperience: message.userYearsOfExperience,
+        noMatchKeywords: message.noMatchKeywords
       })
     });
 
@@ -2218,24 +2347,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       ok: true,
       data: analyzeApplicationPage()
     });
-
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
-    runApplicationWorkflow()
-      .then((data) => {
-        sendResponse({
-          ok: true,
-          data
-        });
-      })
-      .catch((error) => {
-        sendResponse({
-          ok: false,
-          error: error?.message || "The application workflow failed."
-        });
-      });
 
     return true;
   }
