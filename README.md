@@ -40,12 +40,11 @@ In default **Scan only** mode, the extension does not autofill forms, upload fil
 - When the current list page is exhausted, advances to the next results page when an enabled `Next` control is available.
 - Stores local job records in Chrome storage to track scanned, submitted, likely match, likely skip, reviewed, and seen statuses.
 - Optional LLM-assisted matching sends the job text and your resume/profile summary to OpenAI when enabled. Local matching remains the fallback when LLM mode is off or fails.
-- Exports persisted JSON job logs with job ID, URL, compact description preview, YOE evidence, detected tech stack, decision, decision source, workflow attempts, and manual review URLs when available.
 - Logs auto-apply failures with the site, job ID, error type, reason, page heading, visible action labels, and recovery link so workflow issues can be reviewed and submitted manually later.
 - Analyzes the current application page to preview visible fields, required fields, field categories, upload controls, and visible buttons.
 - In acknowledged auto-apply mode, runs the site-specific application workflow on matching jobs: open the application action, continue through known steps, answer work authorization or visa sponsorship as `Yes` when detected, final `Submit`, then close the submitted tab.
 - Finds sentences that mention years of experience.
-- Scores resume overlap using keywords from your AI/ML, RAG, vision-language, PyTorch, C#/.NET, Angular, AWS, Terraform, backend/API, full-stack, event/queue systems, cloud infrastructure, QA/test automation, and distributed systems experience.
+- Scores resume overlap using keyword categories configurable to your own skills and experience, plus your own no-match keyword denylist for domains you want to skip.
 - Penalizes local mismatch signals such as iOS, Swift, Objective-C, UIKit, SwiftUI, Xcode, macOS app work, mobile app UI, firmware, and high seniority.
 - Hard-skips senior/staff/principal/lead titles before auto-apply.
 - Classifies roles as `Likely match`, `Likely skip`, `Review`, or `Unknown`.
@@ -77,6 +76,5 @@ In default **Scan only** mode, the extension does not autofill forms, upload fil
 1. Test list scanning across several Apple search result pages and log false positives.
 2. Refine submitted-state and next-page selectors after inspecting real Apple DOM variations.
 3. Refine application field categories across real application steps.
-4. Add export for analyzed application form fields.
-5. Refine login/session-state detection and stronger confirmation-state detection across more real site variants.
-6. Add configurable auto-apply criteria for `Likely match`, `Review`, and `Unknown`.
+4. Refine login/session-state detection and stronger confirmation-state detection across more real site variants.
+5. Add configurable auto-apply criteria for `Likely match`, `Review`, and `Unknown`.
