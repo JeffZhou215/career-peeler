@@ -285,6 +285,45 @@ test("does not hard-skip on no-match keywords when none are configured or none m
   assert.notEqual(withNonMatchingKeywords.decision, "Likely skip");
 });
 
+test("does not hard-skip on a no-match keyword that only appears under Preferred Qualifications", () => {
+  const result = classify(
+    "Software Development Engineer",
+    "Minimum Qualifications: Build backend APIs and microservices using AWS and DynamoDB.\n" +
+      "Preferred Qualifications: Experience with machine learning is a plus.",
+    2,
+    ["machine learning"]
+  );
+
+  assert.notEqual(result.decision, "Likely skip");
+  assert.deepEqual(result.matchScore.noMatchKeywordHits, []);
+});
+
+test("still hard-skips on a no-match keyword that appears in Minimum Qualifications, even if also mentioned under Preferred", () => {
+  const result = classify(
+    "Software Development Engineer",
+    "Minimum Qualifications: Experience with machine learning and backend APIs.\n" +
+      "Preferred Qualifications: Deeper machine learning research experience is a plus.",
+    2,
+    ["machine learning"]
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.match(result.reason, /no-match keyword list/i);
+  assert.deepEqual(result.matchScore.noMatchKeywordHits, ["machine learning"]);
+});
+
+test("still hard-skips on a no-match keyword in unlabeled text with no section headers at all", () => {
+  const result = classify(
+    "Software Development Engineer",
+    "Build backend APIs and microservices using machine learning, AWS, and DynamoDB.",
+    2,
+    ["machine learning"]
+  );
+
+  assert.equal(result.decision, "Likely skip");
+  assert.deepEqual(result.matchScore.noMatchKeywordHits, ["machine learning"]);
+});
+
 test("skips iOS app roles with Swift/UIKit/Xcode mismatch", () => {
   const result = classify(
     "iOS Software Engineer",

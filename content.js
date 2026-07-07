@@ -548,12 +548,23 @@ function normalizeNoMatchKeywords(value) {
     .slice(0, 50);
 }
 
+function excludePreferredSectionText(text) {
+  return splitRequirementSections(text)
+    .filter((section) => section.type !== "preferred")
+    .map((section) => section.text)
+    .join("\n");
+}
+
 function analyzeLocalMatch(text, noMatchKeywords = []) {
   const resumeMatch = analyzeResumeMatch(text);
   const domainMismatches = scoreRules(text, DOMAIN_MISMATCH_RULES);
   const senioritySignals = scoreRules(text, SENIORITY_RULES);
   const overrideTerms = MISMATCH_OVERRIDES.filter((term) => textIncludesTerm(text, term));
-  const noMatchKeywordHits = noMatchKeywords.filter((term) => term && textIncludesTerm(text, term));
+  // A no-match keyword mentioned only under "Preferred Qualifications" is a nice-to-have, not a
+  // reason to hard-skip -- only count it if it also appears somewhere outside that section
+  // (Minimum Qualifications, Responsibilities, or unstructured postings with no section headers).
+  const noMatchScanText = excludePreferredSectionText(text);
+  const noMatchKeywordHits = noMatchKeywords.filter((term) => term && textIncludesTerm(noMatchScanText, term));
   const mismatchPenalty = domainMismatches.reduce((total, rule) => total + rule.penalty, 0);
   const seniorityPenalty = senioritySignals.reduce((total, rule) => total + rule.penalty, 0);
   const overrideCredit = overrideTerms.length ? Math.min(8, overrideTerms.length * 2) : 0;
