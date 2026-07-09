@@ -1125,7 +1125,39 @@ function getTikTokNextPageButton() {
   return null;
 }
 
-function goToNextPage() {
+function getJobLinkSetKey(links) {
+  return links
+    .map((link) => link.url)
+    .sort()
+    .join("|");
+}
+
+// Sites like TikTok paginate client-side (the "Next" control is a button, not a link -- see
+// getNextPageControl()'s action: "click" path) without changing the URL or firing a navigation
+// event, so there is nothing for waitForTabComplete() to hook into. A fixed delay after the click
+// races the SPA's re-render: if it loses, the next collectJobLinks() call still sees the old page's
+// (already-processed) links, which the scan loop reads as "nothing new on a page I've already
+// visited" and stops the whole scan early, believing the list is exhausted. Poll for the visible
+// job link set to actually change instead of guessing a delay.
+async function waitForJobLinksChange(previousLinks, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 12000;
+  const intervalMs = options.intervalMs ?? 500;
+  const previousKey = getJobLinkSetKey(previousLinks);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await delay(intervalMs);
+    const currentLinks = collectJobLinks();
+
+    if (currentLinks.length > 0 && getJobLinkSetKey(currentLinks) !== previousKey) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function goToNextPage() {
   const nextPageControl = getNextPageControl();
 
   if (!nextPageControl) {
@@ -1144,15 +1176,16 @@ function goToNextPage() {
     };
   }
 
+  const previousLinks = collectJobLinks();
+
   if (nextPageControl.source === "tiktok_pagination") {
     const nextButton = getTikTokNextPageButton();
     if (nextButton) {
       nextButton.click();
-      return {
-        ok: true,
-        action: "click",
-        source: "tiktok_pagination"
-      };
+      const changed = await waitForJobLinksChange(previousLinks);
+      return changed
+        ? { ok: true, action: "click", source: "tiktok_pagination" }
+        : { ok: false, reason: "The job list did not visibly change after clicking the next-page control." };
     }
   }
 
@@ -1163,10 +1196,10 @@ function goToNextPage() {
 
     if ((/^(next|next page)$/.test(lower) || /\bnext page\b/.test(lower)) && isElementVisible(candidate)) {
       candidate.click();
-      return {
-        ok: true,
-        action: "click"
-      };
+      const changed = await waitForJobLinksChange(previousLinks);
+      return changed
+        ? { ok: true, action: "click" }
+        : { ok: false, reason: "The job list did not visibly change after clicking the next-page control." };
     }
   }
 
@@ -2414,7 +2447,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") {
-    sendResponse(goToNextPage());
+    goToNextPage().then(sendResponse);
     return true;
   }
 
