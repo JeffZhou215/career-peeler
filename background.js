@@ -134,6 +134,7 @@ function createIdleState() {
       seen: 0,
       skippedStored: 0,
       skippedUnqualified: 0,
+      needsReview: 0,
       errors: 0
     },
     recent: [],
@@ -652,6 +653,11 @@ function incrementStatsForStatus(status) {
     scanState.stats.seen += 1;
     return;
   }
+
+  if (status === "needs_review") {
+    scanState.stats.needsReview += 1;
+    return;
+  }
 }
 
 function shouldAutoApply(status, job) {
@@ -860,6 +866,35 @@ function parseLlmJson(content) {
   return JSON.parse(withoutFence);
 }
 
+async function callOpenAi(messages, { apiKey, model, temperature = 0.1, jsonMode = true } = {}) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      temperature,
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+      messages
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    console.error("[Career Peeler] OpenAI call HTTP error", {
+      status: response.status,
+      statusText: response.statusText,
+      body: errorText
+    });
+    throw new Error(`OpenAI call failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "";
+}
+
 async function getLlmMatch(job) {
   const userProfile = normalizeUserProfile(scanState.userProfile);
 
@@ -881,33 +916,11 @@ async function getLlmMatch(job) {
     return null;
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${userProfile.llmApiKey}`
-    },
-    body: JSON.stringify({
-      model: userProfile.llmModel,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: buildLlmPrompt(job, userProfile)
-    })
+  const content = await callOpenAi(buildLlmPrompt(job, userProfile), {
+    apiKey: userProfile.llmApiKey,
+    model: userProfile.llmModel
   });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    console.error("[Career Peeler] OpenAI LLM matcher HTTP error", {
-      jobId: job.jobId,
-      status: response.status,
-      statusText: response.statusText,
-      body: errorText
-    });
-    throw new Error(`LLM matcher failed: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  const parsed = parseLlmJson(data.choices?.[0]?.message?.content);
+  const parsed = parseLlmJson(content);
 
   return {
     decision: decisionFromLlmResult(parsed),
@@ -917,6 +930,59 @@ async function getLlmMatch(job) {
     yoeAssessment: normalizeYoeAssessment(parsed.yoe_assessment),
     reason: String(parsed.reason || "LLM completed matching.").slice(0, 500)
   };
+}
+
+function buildAnswerPrompt(questionText, job, userProfile) {
+  return [
+    {
+      role: "system",
+      content:
+        "You are drafting a short answer to an open-ended job application question on behalf of the candidate. Use only facts present in resume_profile -- never invent employers, schools, skills, or achievements that aren't there. Keep the answer specific to the question and the job, first person, and under 120 words. Return only strict JSON matching output_schema."
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        resume_profile: userProfile.resumeProfile,
+        question: questionText,
+        job: {
+          title: job?.title || null,
+          company: job?.siteLabel || null,
+          matched_keywords: job?.matchScore?.keywords || []
+        },
+        output_schema: {
+          answer: "string, first person, under 120 words"
+        }
+      })
+    }
+  ];
+}
+
+function hasLlmAnswerCapability(userProfile) {
+  return Boolean(userProfile?.llmEnabled && userProfile?.llmApiKey && userProfile?.resumeProfile);
+}
+
+async function generateFreeTextAnswer({ questionText, jobId }) {
+  const userProfile = normalizeUserProfile(scanState.userProfile);
+
+  if (!hasLlmAnswerCapability(userProfile)) {
+    return { ok: false, error: "LLM matching is not enabled." };
+  }
+
+  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const job = (stored[JOB_RECORDS_KEY] || {})[jobId] || null;
+
+  const content = await callOpenAi(buildAnswerPrompt(questionText, job, userProfile), {
+    apiKey: userProfile.llmApiKey,
+    model: userProfile.llmModel
+  });
+  const parsed = parseLlmJson(content);
+  const answer = String(parsed.answer || "").trim();
+
+  if (!answer) {
+    return { ok: false, error: "The LLM did not return an answer." };
+  }
+
+  return { ok: true, data: { answer: answer.slice(0, 2000) } };
 }
 
 async function applyLlmMatch(job) {
@@ -1252,6 +1318,22 @@ async function scanJobLink(link) {
       } else if (workflowResponse.ok && workflowResponse.data?.alreadySubmitted) {
         finalStatus = "submitted";
         job.errorType = workflowResponse.data.errorType || null;
+      } else if (workflowResponse.ok && workflowResponse.data?.pausedForReview) {
+        finalStatus = "needs_review";
+        job.errorType = workflowResponse.data.errorType || "open_text_review_required";
+        rememberError({
+          type: job.errorType,
+          errorType: job.errorType,
+          jobId: job.jobId,
+          site: job.site,
+          siteLabel: job.siteLabel,
+          title: job.title,
+          url: workflowResponse.data.url || job.url,
+          status: finalStatus,
+          message: workflowResponse.data.summary,
+          workflow: applicationResult,
+          lastAttempt: applicationResult?.attempts?.at(-1) || null
+        });
       } else {
         finalStatus = `${status}_apply_failed`;
         failureReason = workflowResponse.error || "Auto-apply workflow did not finish.";
@@ -1415,6 +1497,22 @@ async function scanCurrentApplicationPage(link) {
     } else if (workflowResponse.ok && workflowResponse.data?.alreadySubmitted) {
       finalStatus = "submitted";
       job.errorType = workflowResponse.data.errorType || null;
+    } else if (workflowResponse.ok && workflowResponse.data?.pausedForReview) {
+      finalStatus = "needs_review";
+      job.errorType = workflowResponse.data.errorType || "open_text_review_required";
+      rememberError({
+        type: job.errorType,
+        errorType: job.errorType,
+        jobId: job.jobId,
+        site: job.site,
+        siteLabel: job.siteLabel,
+        title: job.title,
+        url: workflowResponse.data.url || job.url,
+        status: finalStatus,
+        message: workflowResponse.data.summary,
+        workflow: applicationResult,
+        lastAttempt: applicationResult?.attempts?.at(-1) || null
+      });
     } else {
       finalStatus = "review_apply_failed";
       failureReason = workflowResponse.error || "Current application page workflow did not finish.";
@@ -1852,6 +1950,23 @@ async function runApplicationWorkflow(tab, options = {}) {
         };
       }
 
+      if (response.data.pausedForReview) {
+        // Leave the tab open (skip cleanupWorkflowTabs) so the user can see the drafted answer
+        // live and submit it themselves -- unlike every other exit path here, this is not a failure.
+        return {
+          ok: true,
+          data: {
+            submitted: false,
+            pausedForReview: true,
+            errorType: response.data.errorType || "open_text_review_required",
+            url: response.data.url,
+            attempts,
+            steps,
+            summary: response.data.summary
+          }
+        };
+      }
+
       if (!response.data.clicked) {
         await cleanupWorkflowTabs();
         return {
@@ -1891,7 +2006,8 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_STOP_SCAN",
   "APPLE_CAREERS_CLEAR_HISTORY",
   "APPLE_CAREERS_GET_SCAN_STATUS",
-  "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW"
+  "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
+  "APPLE_CAREERS_GENERATE_ANSWER"
 ]);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1914,6 +2030,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       } else if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
         sendResponse(await runApplicationWorkflow(message.tab));
+      } else if (message.type === "APPLE_CAREERS_GENERATE_ANSWER") {
+        sendResponse(
+          await generateFreeTextAnswer({
+            questionText: message.questionText,
+            jobId: message.jobId
+          })
+        );
       }
     } catch (error) {
       sendResponse({

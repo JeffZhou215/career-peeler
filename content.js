@@ -1837,6 +1837,31 @@ function isAnswerControlElement(element) {
   return !isNonAnswerAction(element);
 }
 
+// Fields that must never be treated as an open-ended essay prompt, even if their label happens to
+// contain a "?" or an essay-like phrase (e.g. "What company do you currently work for?"). Kept
+// independent from inferFieldCategory()'s broader categories (used by the unrelated application-page
+// preview feature) because that function's "experience" bucket matches on the bare word "company",
+// which would wrongly swallow a real "Why do you want to work at this company?" essay question.
+const PERSONAL_INFO_FIELD_LABEL_PATTERN =
+  /\b(first name|last name|full name|legal name|preferred name|email|e-mail|phone|mobile|telephone|address|city|state|province|zip|postal code|country|linkedin|portfolio|website|personal site|github|referral|referred by|salary|compensation|expected pay|school|university|degree|major|gpa|current employer|current company|what company|currently work|where do you work|gender|race|ethnicity|veteran|disability)\b/i;
+
+const ESSAY_QUESTION_LABEL_PATTERN =
+  /\?|\bwhy (?:do you want|are you interested|would you|this role|this company|this team)\b|\btell us about\b|\bdescribe a time\b|\bwhat interests you\b|\bwalk us through\b|\bwhat makes you\b/i;
+
+function isEssayQuestionLabel(label) {
+  const text = normalizeText(label || "");
+  return ESSAY_QUESTION_LABEL_PATTERN.test(text) && !PERSONAL_INFO_FIELD_LABEL_PATTERN.test(text);
+}
+
+function findOpenTextQuestionField() {
+  const fields = Array.from(document.querySelectorAll("textarea, input[type='text']"))
+    .filter((element) => isElementVisible(element))
+    .filter((element) => !isActionDisabled(element))
+    .filter((element) => !(element.value || "").trim());
+
+  return fields.find((element) => isEssayQuestionLabel(getElementLabel(element))) || null;
+}
+
 function getQuestionContainers() {
   return Array.from(document.querySelectorAll("fieldset, section, div, li"))
     .filter((element) => isElementVisible(element))
@@ -2174,6 +2199,50 @@ async function answerQuestionnaire(steps) {
   };
 }
 
+async function answerOpenTextQuestion(steps) {
+  const field = findOpenTextQuestionField();
+
+  if (!field) {
+    return { pausedForReview: false };
+  }
+
+  const label = getElementLabel(field);
+  const stepName = `Draft answer: ${label}`;
+
+  const response = await chrome.runtime
+    .sendMessage({
+      type: "APPLE_CAREERS_GENERATE_ANSWER",
+      questionText: label,
+      jobId: getJobId()
+    })
+    .catch((error) => ({ ok: false, error: error?.message }));
+
+  const answer = response?.ok ? normalizeText(response.data?.answer || "") : "";
+
+  if (!answer) {
+    steps.push({
+      step: stepName,
+      status: "skipped",
+      label: response?.error || "LLM answer generation is not available."
+    });
+    return { pausedForReview: false };
+  }
+
+  field.focus();
+  field.value = answer;
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.dispatchEvent(new Event("change", { bubbles: true }));
+  field.scrollIntoView({ block: "center" });
+
+  steps.push({
+    step: stepName,
+    status: "drafted",
+    label: answer.length > 140 ? `${answer.slice(0, 140)}…` : answer
+  });
+
+  return { pausedForReview: true, questionText: label };
+}
+
 function buildStepResult(overrides) {
   return {
     url: window.location.href,
@@ -2316,6 +2385,19 @@ async function runApplicationWorkflowStep() {
         steps,
         errorType: "questionnaire_incomplete",
         summary: `Answered ${questionnaireResult.answeredCount} of ${questionnaireResult.requiredCount} required authorization questions; Submit was not clicked.`
+      });
+    }
+
+    const openTextResult = await answerOpenTextQuestion(steps);
+
+    if (openTextResult.pausedForReview) {
+      return buildStepResult({
+        clicked: true,
+        done: false,
+        pausedForReview: true,
+        errorType: "open_text_review_required",
+        steps,
+        summary: `Drafted an answer for "${openTextResult.questionText}" — switch to this tab to review before submitting.`
       });
     }
   }

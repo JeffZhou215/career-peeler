@@ -54,6 +54,7 @@ globalThis.__contentTestApi = {
   getJobIdFromUrl,
   isAgeEligibilityQuestion,
   isAnswerControlElement,
+  isEssayQuestionLabel,
   isInternshipTitle,
   isNonAnswerAction,
   isNoAnswerText,
@@ -78,6 +79,7 @@ const {
   getJobIdFromUrl,
   isAgeEligibilityQuestion,
   isAnswerControlElement,
+  isEssayQuestionLabel,
   isInternshipTitle,
   isNonAnswerAction,
   isNoAnswerText,
@@ -566,4 +568,27 @@ test("excludes every section's Edit button by its '-edit-button' id suffix", () 
     const editButton = makeStubElement("BUTTON", "Edit", null, id);
     assert.equal(isAnswerControlElement(editButton), false, id);
   }
+});
+
+test("recognizes genuine open-ended essay questions", () => {
+  assert.equal(isEssayQuestionLabel("Why do you want to work at this company?"), true);
+  assert.equal(isEssayQuestionLabel("Tell us about a challenge you overcame."), true);
+  assert.equal(isEssayQuestionLabel("What interests you about this role?"), true);
+  assert.equal(isEssayQuestionLabel("Describe a time you showed leadership."), true);
+});
+
+test("does not treat personal-info fields as essay questions, even when they contain '?' or 'company'", () => {
+  // "What company do you currently work for?" contains both a "?" and the word "company", which
+  // would otherwise collide with the essay allowlist -- the personal-info denylist must win.
+  assert.equal(isEssayQuestionLabel("What company do you currently work for?"), false);
+  assert.equal(isEssayQuestionLabel("What is your current employer?"), false);
+  assert.equal(isEssayQuestionLabel("LinkedIn URL"), false);
+  assert.equal(isEssayQuestionLabel("What is your expected salary?"), false);
+  assert.equal(isEssayQuestionLabel("Full Name"), false);
+  assert.equal(isEssayQuestionLabel("Email address"), false);
+});
+
+test("does not treat plain unlabeled or unrelated text as an essay question", () => {
+  assert.equal(isEssayQuestionLabel("Phone number"), false);
+  assert.equal(isEssayQuestionLabel(""), false);
 });

@@ -28,6 +28,7 @@ vm.runInNewContext(
   `${source}
 globalThis.__backgroundTestApi = {
   applyRequiredYoeHardSkip,
+  buildAnswerPrompt,
   classifyWorkflowError,
   compactResumeMatch,
   decisionFromLlmResult,
@@ -36,6 +37,7 @@ globalThis.__backgroundTestApi = {
   getSiteConfig,
   getSiteLabel,
   getYoeHardSkip,
+  hasLlmAnswerCapability,
   incrementStatsForStatus,
   isLocalHardSkip,
   normalizeLlmDecision,
@@ -58,6 +60,7 @@ globalThis.__backgroundTestApi = {
 
 const {
   applyRequiredYoeHardSkip,
+  buildAnswerPrompt,
   classifyWorkflowError,
   compactResumeMatch,
   decisionFromLlmResult,
@@ -66,6 +69,7 @@ const {
   getSiteConfig,
   getSiteLabel,
   getYoeHardSkip,
+  hasLlmAnswerCapability,
   incrementStatsForStatus,
   isLocalHardSkip,
   normalizeLlmDecision,
@@ -302,4 +306,41 @@ test("compactResumeMatch and truncateText shape values defensively", () => {
 
   assert.equal(truncateText("short"), "short");
   assert.equal(truncateText("x".repeat(10), 5), `${"x".repeat(5)}...`);
+});
+
+test("hasLlmAnswerCapability requires an enabled LLM, an API key, and a resume profile", () => {
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: false, llmApiKey: "k", resumeProfile: "r" }), false);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "", resumeProfile: "r" }), false);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "k", resumeProfile: "" }), false);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "k", resumeProfile: "r" }), true);
+});
+
+test("buildAnswerPrompt grounds the answer in the resume profile, question, and job context", () => {
+  const messages = buildAnswerPrompt(
+    "Why do you want to work at this company?",
+    { title: "Software Engineer", siteLabel: "Apple Careers", matchScore: { keywords: ["Swift", "iOS"] } },
+    { resumeProfile: "5 years of backend experience." }
+  );
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].role, "system");
+  assert.match(messages[0].content, /never invent/i);
+
+  const userContent = JSON.parse(messages[1].content);
+  assert.equal(userContent.question, "Why do you want to work at this company?");
+  assert.equal(userContent.resume_profile, "5 years of backend experience.");
+  assert.equal(userContent.job.title, "Software Engineer");
+  assert.equal(userContent.job.company, "Apple Careers");
+  assert.deepEqual(Array.from(userContent.job.matched_keywords), ["Swift", "iOS"]);
+});
+
+test("buildAnswerPrompt tolerates a missing stored job record", () => {
+  const messages = buildAnswerPrompt("Tell us about a challenge you overcame.", null, {
+    resumeProfile: "5 years of backend experience."
+  });
+  const userContent = JSON.parse(messages[1].content);
+
+  assert.equal(userContent.job.title, null);
+  assert.equal(userContent.job.company, null);
+  assert.deepEqual(Array.from(userContent.job.matched_keywords), []);
 });

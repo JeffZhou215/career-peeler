@@ -31,6 +31,7 @@ const scanUnknownEl = document.querySelector("#scanUnknown");
 const scanSkippedStoredEl = document.querySelector("#scanSkippedStored");
 const scanSkippedUnqualifiedEl = document.querySelector("#scanSkippedUnqualified");
 const scanApplyFailedEl = document.querySelector("#scanApplyFailed");
+const scanNeedsReviewEl = document.querySelector("#scanNeedsReview");
 const scanErrorsEl = document.querySelector("#scanErrors");
 const scanErrorsSummaryEl = document.querySelector("#scanErrorsSummary");
 const scanErrorLogEl = document.querySelector("#scanErrorLog");
@@ -713,6 +714,7 @@ function renderScanStatus(status) {
   scanSkippedStoredEl.textContent = status.stats?.skippedStored || 0;
   scanSkippedUnqualifiedEl.textContent = status.stats?.skippedUnqualified || 0;
   scanApplyFailedEl.textContent = status.stats?.applyFailed || 0;
+  scanNeedsReviewEl.textContent = status.stats?.needsReview || 0;
   scanErrorsEl.textContent = status.stats?.errors || 0;
   scanErrorsSummaryEl.textContent = status.stats?.errors || 0;
   scanCurrentEl.textContent = status.currentJob
