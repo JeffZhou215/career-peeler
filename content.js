@@ -858,6 +858,36 @@ function collectJobLinks() {
   return Array.from(linksByUrl.values());
 }
 
+// Client-rendered list pages (e.g. joinbytedance.com's SPA) can still be lazy-loading job cards
+// when a collection request arrives right after the tab was opened or a scan was just started --
+// there's no navigation/load event to wait on for that, unlike a fresh tab. Poll until the visible
+// job link count stops changing (or a timeout elapses) before treating a collection as final, so
+// the first page of a scan and the current page's true job count aren't read mid-render.
+async function waitForJobListToSettle(options = {}) {
+  const timeoutMs = options.timeoutMs ?? 4500;
+  const intervalMs = options.intervalMs ?? 200;
+  const stableChecksRequired = options.stableChecksRequired ?? 4;
+  const deadline = Date.now() + timeoutMs;
+  let lastCount = -1;
+  let stableCount = 0;
+
+  while (Date.now() < deadline) {
+    const currentCount = collectJobLinks().length;
+
+    if (currentCount > 0 && currentCount === lastCount) {
+      stableCount += 1;
+      if (stableCount >= stableChecksRequired) {
+        return;
+      }
+    } else {
+      stableCount = 0;
+    }
+
+    lastCount = currentCount;
+    await delay(intervalMs);
+  }
+}
+
 function getJobListStats(links) {
   const applied = links.filter((link) => link.alreadyAppliedFromList).length;
 
@@ -2559,33 +2589,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
-    const links = collectJobLinks();
-    const siteConfig = getSiteConfig();
-    const currentUrl = getCurrentUrl();
-    const currentJob = siteConfig?.isJobDetailUrl(currentUrl) || siteConfig?.isApplicationUrl(currentUrl)
-      ? {
-          site: siteConfig.id,
-          siteLabel: siteConfig.label,
-          url: window.location.href,
-          jobId: getJobId(),
-          title: getJobTitle(),
-          alreadyAppliedFromList: Boolean(getSubmittedSignal()),
-          isCurrentPage: true
-        }
-      : null;
+    waitForJobListToSettle().then(() => {
+      const links = collectJobLinks();
+      const siteConfig = getSiteConfig();
+      const currentUrl = getCurrentUrl();
+      const currentJob = siteConfig?.isJobDetailUrl(currentUrl) || siteConfig?.isApplicationUrl(currentUrl)
+        ? {
+            site: siteConfig.id,
+            siteLabel: siteConfig.label,
+            url: window.location.href,
+            jobId: getJobId(),
+            title: getJobTitle(),
+            alreadyAppliedFromList: Boolean(getSubmittedSignal()),
+            isCurrentPage: true
+          }
+        : null;
 
-    sendResponse({
-      ok: true,
-      data: {
-        site: siteConfig?.id || "unknown",
-        siteLabel: siteConfig?.label || "Unsupported site",
-        url: window.location.href,
-        currentPage: getCurrentResultsPage(),
-        currentJob,
-        links,
-        listStats: getJobListStats(links),
-        hasNextPage: Boolean(getNextPageControl())
-      }
+      sendResponse({
+        ok: true,
+        data: {
+          site: siteConfig?.id || "unknown",
+          siteLabel: siteConfig?.label || "Unsupported site",
+          url: window.location.href,
+          currentPage: getCurrentResultsPage(),
+          currentJob,
+          links,
+          listStats: getJobListStats(links),
+          hasNextPage: Boolean(getNextPageControl())
+        }
+      });
     });
 
     return true;
