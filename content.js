@@ -2346,6 +2346,41 @@ function buildStepResult(overrides) {
   };
 }
 
+// Mirrors waitForJobListToSettle() for the application form itself: ByteDance's SPA can still be
+// hydrating the form (work-authorization dropdowns, buttons) when this step first runs right after
+// the page loads. Answering/submitting against a form that hasn't finished rendering yet silently
+// finds zero required questions, skips straight to hunting for Submit, and closes the tab when it
+// can't be found or clicked -- intermittent, since it depends on how fast that particular page load
+// happened to render. Poll until the count of interactive form elements stabilizes first.
+async function waitForApplicationFormToSettle(options = {}) {
+  const timeoutMs = options.timeoutMs ?? 4000;
+  const intervalMs = options.intervalMs ?? 200;
+  const stableChecksRequired = options.stableChecksRequired ?? 4;
+  const deadline = Date.now() + timeoutMs;
+  let lastCount = -1;
+  let stableCount = 0;
+
+  const countInteractiveElements = () =>
+    document.querySelectorAll("[data-form-field-i18n-name], select, input, textarea, button, [role='button']")
+      .length;
+
+  while (Date.now() < deadline) {
+    const currentCount = countInteractiveElements();
+
+    if (currentCount > 0 && currentCount === lastCount) {
+      stableCount += 1;
+      if (stableCount >= stableChecksRequired) {
+        return;
+      }
+    } else {
+      stableCount = 0;
+    }
+
+    lastCount = currentCount;
+    await delay(intervalMs);
+  }
+}
+
 async function runApplicationWorkflowStep() {
   const steps = [];
   const siteConfig = getSiteConfig();
@@ -2443,6 +2478,8 @@ async function runApplicationWorkflowStep() {
       summary: `Clicked ${getActionLabel(submitResume) || "apply action"}.`
     });
   }
+
+  await waitForApplicationFormToSettle();
 
   // On the final Review & Submit step, every question is shown as read-only review text (it was
   // already answered on the earlier Questions step) rather than an editable control, so there is
