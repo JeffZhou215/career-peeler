@@ -1098,9 +1098,41 @@ function getNextPageControl() {
   return null;
 }
 
+// Not every ByteDance-family site tags its pagination bar with [data-testid='pagination'] (e.g.
+// joinbytedance.com doesn't). Fall back to finding it structurally: a numbered pagination widget
+// is a set of sibling <button>s where several have plain digit text (page numbers) sharing a
+// common parent -- that parent is the pagination container, whether or not it's tagged.
+function getGenericNumberedPaginationContainer() {
+  const numberButtons = Array.from(document.querySelectorAll("button"))
+    .filter((button) => isElementVisible(button))
+    .filter((button) => /^\d+$/.test(normalizeText(button.textContent || "")));
+
+  const parentCounts = new Map();
+  for (const button of numberButtons) {
+    const parent = button.parentElement;
+    if (!parent) {
+      continue;
+    }
+    parentCounts.set(parent, (parentCounts.get(parent) || 0) + 1);
+  }
+
+  const bestParent = Array.from(parentCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  return bestParent || null;
+}
+
+function getTikTokPaginationContainer() {
+  const taggedContainer = document.querySelector("[data-testid='pagination']");
+  if (taggedContainer && isElementVisible(taggedContainer)) {
+    return taggedContainer;
+  }
+
+  return getGenericNumberedPaginationContainer();
+}
+
 function getTikTokNextPageButton() {
-  const pagination = document.querySelector("[data-testid='pagination']");
-  if (!pagination || !isElementVisible(pagination)) {
+  const pagination = getTikTokPaginationContainer();
+  if (!pagination) {
     return null;
   }
 
