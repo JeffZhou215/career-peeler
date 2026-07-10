@@ -100,6 +100,7 @@ test("getSiteConfig recognizes Apple and TikTok/ByteDance hosts", () => {
   assert.equal(getSiteConfig("https://www.apple.com/careers/us/")?.id, "apple");
   assert.equal(getSiteConfig("https://careers.tiktok.com/position/123/detail")?.id, "tiktok");
   assert.equal(getSiteConfig("https://lifeattiktok.com/search/123")?.id, "tiktok");
+  assert.equal(getSiteConfig("https://joinbytedance.com/search?keyword=software+engineer")?.id, "tiktok");
   assert.equal(getSiteConfig("https://example.com"), null);
 });
 

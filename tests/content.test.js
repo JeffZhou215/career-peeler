@@ -171,6 +171,22 @@ test("recognizes TikTok search detail links but not application links as result 
   assert.equal(isSupportedJobDetailUrl(new URL("https://careers.tiktok.com/position/7278068779270408508/detail")), true);
 });
 
+test("recognizes joinbytedance.com as a supported ByteDance careers host", () => {
+  assert.equal(
+    isSupportedJobDetailUrl(
+      new URL(
+        "https://joinbytedance.com/search?keyword=software+engineer&recruitment_id_list=1&job_category_id_list=&subject_id_list=&location_code_list=CT_159%2CCT_93&limit=12&offset=0"
+      )
+    ),
+    false
+  );
+  assert.equal(isSupportedJobDetailUrl(new URL("https://joinbytedance.com/search/7278068779270408508")), true);
+  assert.equal(
+    getJobIdFromUrl("https://joinbytedance.com/search/7278068779270408508"),
+    "7278068779270408508"
+  );
+});
+
 test("recognizes TikTok work authorization and sponsorship questions", () => {
   assert.equal(
     isWorkAuthorizationQuestion("Are you legally authorized to work in the US without restriction?"),

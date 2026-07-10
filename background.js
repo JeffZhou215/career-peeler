@@ -48,9 +48,13 @@ const SITE_CONFIGS = {
     id: "tiktok",
     label: "TikTok/ByteDance Careers",
     isSupportedUrl: (url) =>
-      ["careers.tiktok.com", "lifeattiktok.com", "jobs.bytedance.com", "careers.bytedance.com"].includes(
-        url?.hostname || ""
-      ),
+      [
+        "careers.tiktok.com",
+        "lifeattiktok.com",
+        "jobs.bytedance.com",
+        "careers.bytedance.com",
+        "joinbytedance.com"
+      ].includes(url?.hostname || ""),
     isApplicationUrl: (url) => /\/resume\/[^/?#]+\/apply(?:\/|$)?/i.test(url?.pathname || "")
   }
 };
