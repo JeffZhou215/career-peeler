@@ -1998,6 +1998,34 @@ function clickAnswerInContainer(container, answerPattern, stepName, steps) {
   return false;
 }
 
+// Some sites (e.g. ByteDance's applyFormModule dropdown) render their option list with a
+// virtualized list library (rc-virtual-list) that can take longer than a fixed delay to mount --
+// especially on first open. Poll for a matching option to actually appear instead of guessing a
+// delay, mirroring the same fix used for TikTok's client-side pagination race.
+async function waitForDropdownOption(scope, matches, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 5000;
+  const intervalMs = options.intervalMs ?? 200;
+  const selector = options.selector || ".ud__select__list__item, [role='option']";
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const localOptions = scope ? Array.from(scope.querySelectorAll(selector)) : [];
+    const globalOptions = Array.from(document.querySelectorAll(selector));
+    const match = [...localOptions, ...globalOptions]
+      .filter((element, index, allOptions) => allOptions.indexOf(element) === index)
+      .filter((element) => isElementVisible(element) && !isActionDisabled(element))
+      .find(matches);
+
+    if (match) {
+      return match;
+    }
+
+    await delay(intervalMs);
+  }
+
+  return null;
+}
+
 async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, answerLabel) {
   const controls = Array.from(
     container.querySelectorAll(
@@ -2027,18 +2055,20 @@ async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, an
     });
     await delay(150);
     control.click();
-    await delay(300);
 
-    const matchedOption = Array.from(
-      document.querySelectorAll(".ud__select__list__item, [role='option'], [role='menuitem'], li, button, div, span")
-    )
-      .filter((element) => isElementVisible(element))
-      .find((element) => {
+    const matchedOption = await waitForDropdownOption(
+      null,
+      (element) => {
         const text = normalizeText(
           `${element.innerText || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`
         );
-        return text.length <= 40 && matchesAnswer(text) && !isActionDisabled(element);
-      });
+        return text.length <= 40 && matchesAnswer(text);
+      },
+      {
+        selector: ".ud__select__list__item, [role='option'], [role='menuitem'], li, button, div, span",
+        timeoutMs: 3000
+      }
+    );
 
     if (!matchedOption) {
       continue;
@@ -2104,17 +2134,13 @@ async function selectTikTokYesAnswer(field, stepName, steps) {
   selector.scrollIntoView({ block: "center" });
   await delay(150);
   selector.click();
-  await delay(400);
 
-  const localOptions = Array.from(field.querySelectorAll(".ud__select__list__item, [role='option']"));
-  const globalOptions = Array.from(document.querySelectorAll(".ud__select__list__item, [role='option']"));
-  const yesOption = [...localOptions, ...globalOptions]
-    .filter((element, index, options) => options.indexOf(element) === index)
-    .filter((element) => isElementVisible(element) && !isActionDisabled(element))
-    .find((element) => isYesAnswerText(element.innerText || element.textContent || ""));
+  const yesOption = await waitForDropdownOption(field, (element) =>
+    isYesAnswerText(element.innerText || element.textContent || "")
+  );
 
   if (!yesOption) {
-    const visibleOptions = globalOptions
+    const visibleOptions = Array.from(document.querySelectorAll(".ud__select__list__item, [role='option']"))
       .filter((element) => isElementVisible(element))
       .map((element) => normalizeText(element.innerText || element.textContent || ""))
       .filter(Boolean)
