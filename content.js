@@ -1737,7 +1737,7 @@ async function clickFinalSubmit(steps) {
   await delay(500);
 
   const siteConfig = getSiteConfig();
-  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 2500);
+  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 4000);
 
   if (!element) {
     steps.push({
@@ -2406,9 +2406,9 @@ function buildStepResult(overrides) {
 // can't be found or clicked -- intermittent, since it depends on how fast that particular page load
 // happened to render. Poll until the count of interactive form elements stabilizes first.
 async function waitForApplicationFormToSettle(options = {}) {
-  const timeoutMs = options.timeoutMs ?? 4000;
+  const timeoutMs = options.timeoutMs ?? 9000;
   const intervalMs = options.intervalMs ?? 200;
-  const stableChecksRequired = options.stableChecksRequired ?? 4;
+  const stableChecksRequired = options.stableChecksRequired ?? 5;
   const deadline = Date.now() + timeoutMs;
   let lastCount = -1;
   let stableCount = 0;
