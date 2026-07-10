@@ -795,6 +795,60 @@ function getAlreadyAppliedDialog() {
   return null;
 }
 
+// ByteDance's "already applied through another channel" message renders as a self-dismissing
+// toast/notice (atsx-message-*), not a modal dialog, so getAlreadyAppliedDialog()'s dialog-only
+// selectors never match it.
+function getAlreadyAppliedToast() {
+  const toasts = Array.from(
+    document.querySelectorAll(
+      ".atsx-message-notice, .atsx-message-custom-content, [class*='message-notice'], [class*='message-custom-content']"
+    )
+  ).filter((element) => isElementVisible(element));
+
+  for (const toast of toasts) {
+    const text = normalizeText(toast.innerText || "");
+
+    if (isAlreadyAppliedDialogText(text)) {
+      return {
+        element: toast,
+        text: text.slice(0, 240)
+      };
+    }
+  }
+
+  return null;
+}
+
+function getAlreadyAppliedSignal() {
+  return getAlreadyAppliedDialog() || getAlreadyAppliedToast();
+}
+
+// The above toast is only visible for a few seconds and can take several more to appear after the
+// click (server round-trip for the duplicate-application check), so a single check after one fixed
+// delay can land before it appears or after it's already gone. Poll instead so a signal appearing
+// anywhere in that window gets caught.
+async function waitForSubmissionOutcome(options = {}) {
+  const timeoutMs = options.timeoutMs ?? 9000;
+  const intervalMs = options.intervalMs ?? 400;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const submittedSignal = getSubmittedSignal();
+    if (submittedSignal) {
+      return { type: "submitted", signal: submittedSignal };
+    }
+
+    const alreadyAppliedSignal = getAlreadyAppliedSignal();
+    if (alreadyAppliedSignal) {
+      return { type: "already_applied", signal: alreadyAppliedSignal };
+    }
+
+    await delay(intervalMs);
+  }
+
+  return null;
+}
+
 function extractJobDetails(options = {}) {
   const text = getVisiblePageText();
   const matches = extractExperienceMatches(text);
@@ -1622,14 +1676,13 @@ async function clickAndDetectSubmission(element, steps) {
     label: getActionLabel(element)
   });
 
-  await delay(5000);
+  const outcome = await waitForSubmissionOutcome();
 
-  const submittedSignal = getSubmittedSignal();
-  if (submittedSignal) {
+  if (outcome?.type === "submitted") {
     steps.push({
       step: "Confirm application submitted",
       status: "detected",
-      label: submittedSignal.text
+      label: outcome.signal.text
     });
     return {
       clicked: true,
@@ -1639,12 +1692,12 @@ async function clickAndDetectSubmission(element, steps) {
     };
   }
 
-  const alreadyAppliedDialog = getAlreadyAppliedDialog();
-  if (alreadyAppliedDialog) {
+  if (outcome?.type === "already_applied") {
+    const alreadyAppliedSignal = outcome.signal;
     steps.push({
       step: "Detect already applied dialog",
       status: "detected",
-      label: alreadyAppliedDialog.body || alreadyAppliedDialog.text
+      label: alreadyAppliedSignal.body || alreadyAppliedSignal.text
     });
     return {
       clicked: true,
@@ -1652,7 +1705,7 @@ async function clickAndDetectSubmission(element, steps) {
       pending: false,
       alreadySubmitted: true,
       errorType: "already_applied",
-      summary: alreadyAppliedDialog.body || "You've already applied for this job. Unable to apply again."
+      summary: alreadyAppliedSignal.body || alreadyAppliedSignal.text || "You've already applied for this job. Unable to apply again."
     };
   }
 
