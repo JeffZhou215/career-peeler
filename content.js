@@ -602,7 +602,7 @@ function hasHardSeniorityMismatch(title) {
 }
 
 function isInternshipTitle(title) {
-  return /\bintern(s|ship)?\b/i.test(title);
+  return /\bintern(s|ships?)?\b/i.test(title);
 }
 
 function hasBackendOrFullStackFit(matchScore) {

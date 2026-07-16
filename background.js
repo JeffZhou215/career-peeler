@@ -685,7 +685,7 @@ function getHardSkipTitleReason(title) {
     { label: "principal-level", pattern: /\bprincipal\b/i },
     { label: "lead-level", pattern: /\blead\b/i },
     { label: "manager-level", pattern: /\bmanager\b/i },
-    { label: "internship", pattern: /\bintern(s|ship)?\b/i }
+    { label: "internship", pattern: /\bintern(s|ships?)?\b/i }
   ];
   const matchedRule = titleRules.find((rule) => rule.pattern.test(normalizedTitle));
 

@@ -159,6 +159,7 @@ test("getHardSkipTitleReason flags seniority and internship titles", () => {
   assert.match(getHardSkipTitleReason("Senior Software Engineer"), /senior-level/);
   assert.match(getHardSkipTitleReason("Engineering Manager"), /manager-level/);
   assert.match(getHardSkipTitleReason("Software Engineering Internship"), /internship/);
+  assert.match(getHardSkipTitleReason("Engineering Program Management Undergrad Internships"), /internship/);
   assert.equal(getHardSkipTitleReason("Software Engineer"), null);
 });
 

@@ -274,6 +274,13 @@ test("recognizes internship titles without matching substrings like 'Internation
   assert.equal(isInternshipTitle("Internal Tools Engineer"), false);
 });
 
+test("recognizes plural 'Internships' titles", () => {
+  // \bintern(s|ship)?\b previously missed "Internships" -- neither "s" nor "ship" alone
+  // leaves a word boundary before the trailing "s" in "...ships".
+  assert.equal(isInternshipTitle("Engineering Program Management Undergrad Internships"), true);
+  assert.equal(isInternshipTitle("Software Engineering Internships, 2026"), true);
+});
+
 test("hard-skips jobs matching user-defined no-match keywords, before any other scoring", () => {
   const result = classify(
     "Software Development Engineer",
