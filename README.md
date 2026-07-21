@@ -1,6 +1,8 @@
 # Career Peeler
 
-Unofficial Chrome extension that scans Apple Careers, TikTok Careers, and ByteDance Careers job lists, classifies each role against your profile, and can optionally auto-apply. This project is not affiliated with Apple, TikTok, or ByteDance.
+Unofficial tool that scans Apple Careers, TikTok Careers, and ByteDance Careers job lists, classifies each role against your profile, and can optionally auto-apply. This project is not affiliated with Apple, TikTok, or ByteDance.
+
+Two interfaces share the same matching/apply logic: a **Chrome extension** (friendlier UI, reuses your logged-in browser tab) and a **command-line tool** (for headless/scheduled runs, e.g. via cron). They keep separate local job-tracking history — scanning via one doesn't inform the other.
 
 ## How it works
 
@@ -36,12 +38,31 @@ Previously scanned jobs are skipped across sessions, and pagination advances aut
 - **Auto-applies** (only once explicitly acknowledged in settings) by working through each site's application steps, answering common work-authorization/visa questions, and submitting — then logs failures with enough detail (site, error type, page heading, recovery link) to fix and re-submit manually.
 - **Stores everything locally** in Chrome storage. Does not upload files or create profile data — the workflow assumes your Apple Careers profile, resume, and LinkedIn are already saved on the site itself.
 
-## Load locally
+## Load locally (Chrome extension)
 
 1. Open Chrome and go to `chrome://extensions`.
 2. Turn on Developer Mode.
 3. Click `Load unpacked` and select this folder.
 4. Open a supported careers list page and click `Start Scan`. Auto-apply stays off until you enable it under `Matching and application settings`.
+
+## Command-line tool
+
+Drives a real (Playwright-controlled) Chromium browser instead of a Chrome extension popup — useful for headless or scheduled runs. It reuses `content.js` and the shared matching/LLM logic in `lib/core.js` verbatim; only the browser-automation layer (`cli/`) differs from the extension's `background.js`.
+
+```bash
+npm install                        # installs playwright
+npx playwright install chromium    # one-time browser download (skip if already cached)
+
+node cli/index.js login apple      # opens a browser window; log in manually, then press Enter
+node cli/index.js config --set userYearsOfExperience=3 --set scanMode=scan_only
+node cli/index.js scan https://jobs.apple.com/en-us/search
+```
+
+Or, after `npm link` (or installing globally), use the `career-peeler` command directly, e.g. `career-peeler scan <list-url>`.
+
+Other commands: `config` (view/update your profile), `status` (print the current/last scan), `stop` (stop a scan running in another terminal), `history [--clear]` (view/clear tracked job records), `apply <application-url>` (run the apply workflow against an already-open application page). Run `career-peeler --help` for the full flag list.
+
+Data (browser session, profile, scan state, job records) lives in `~/.career-peeler/` by default (override with `--data-dir` or `$CAREER_PEELER_DATA_DIR`) — deliberately outside the repo, since it holds your OpenAI API key and login session.
 
 ## Publishing checklist
 

@@ -5,10 +5,16 @@ const vm = require("node:vm");
 
 const backgroundPath = path.join(__dirname, "..", "background.js");
 const source = fs.readFileSync(backgroundPath, "utf8");
+const core = require(path.join(__dirname, "..", "lib", "core.js"));
 
 const sandbox = {
   URL,
   console,
+  // background.js's real importScripts("lib/core.js") loads that file into the same global scope
+  // (classic MV3 service workers support importScripts natively) -- simulate that here by
+  // pre-populating the sandbox with lib/core.js's exports instead of actually loading a file.
+  importScripts: () => {},
+  ...core,
   chrome: {
     storage: {
       local: {
@@ -212,18 +218,22 @@ test("isLocalHardSkip excludes confident skip reasons but lets soft seniority-si
 });
 
 test("shouldAutoApply requires auto_apply mode, consent, and an eligible status", () => {
-  setScanStateForTest({
-    userProfile: normalizeUserProfile({ scanMode: "auto_apply", autoApplyConsent: true, userYearsOfExperience: 5 })
+  const autoApplyProfile = normalizeUserProfile({
+    scanMode: "auto_apply",
+    autoApplyConsent: true,
+    userYearsOfExperience: 5
   });
 
-  assert.equal(shouldAutoApply("likely_match", { requiredYears: 2, matches: [] }), true);
-  assert.equal(shouldAutoApply("seen", { requiredYears: 2, matches: [] }), false);
-  assert.equal(shouldAutoApply("likely_match", { requiredYears: 10, matches: [] }), false);
+  assert.equal(shouldAutoApply("likely_match", { requiredYears: 2, matches: [] }, autoApplyProfile), true);
+  assert.equal(shouldAutoApply("seen", { requiredYears: 2, matches: [] }, autoApplyProfile), false);
+  assert.equal(shouldAutoApply("likely_match", { requiredYears: 10, matches: [] }, autoApplyProfile), false);
 
-  setScanStateForTest({
-    userProfile: normalizeUserProfile({ scanMode: "scan_only", autoApplyConsent: true, userYearsOfExperience: 5 })
+  const scanOnlyProfile = normalizeUserProfile({
+    scanMode: "scan_only",
+    autoApplyConsent: true,
+    userYearsOfExperience: 5
   });
-  assert.equal(shouldAutoApply("likely_match", { requiredYears: 2, matches: [] }), false);
+  assert.equal(shouldAutoApply("likely_match", { requiredYears: 2, matches: [] }, scanOnlyProfile), false);
 });
 
 test("classifyWorkflowError recognizes common failure signatures", () => {
@@ -251,12 +261,11 @@ test("decisionFromLlmResult forces Likely skip when YOE is assessed too high", (
 });
 
 test("incrementStatsForStatus tallies scan stats by status", () => {
-  setScanStateForTest({ stats: { applied: 0, likelyMatch: 0, applyFailed: 0 } });
-  incrementStatsForStatus("applied");
-  incrementStatsForStatus("likely_match");
-  incrementStatsForStatus("review_apply_failed");
+  const stats = { applied: 0, likelyMatch: 0, applyFailed: 0 };
+  incrementStatsForStatus(stats, "applied");
+  incrementStatsForStatus(stats, "likely_match");
+  incrementStatsForStatus(stats, "review_apply_failed");
 
-  const stats = getScanStateForTest().stats;
   assert.equal(stats.applied, 1);
   assert.equal(stats.likelyMatch, 1);
   assert.equal(stats.applyFailed, 1);

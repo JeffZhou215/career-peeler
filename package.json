@@ -2,8 +2,15 @@
   "name": "career-peeler",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "career-peeler": "./cli/index.js"
+  },
   "scripts": {
-    "test": "node tests/content.test.js && node tests/background.test.js",
-    "check": "node --check content.js && node --check background.js && node --check popup.js"
+    "test": "node tests/content.test.js && node tests/background.test.js && node tests/core.test.js",
+    "test:cli": "node tests/cli/scan-flow.test.js",
+    "check": "node --check content.js && node --check background.js && node --check popup.js && node --check lib/core.js && node --check cli/store.js && node --check cli/browser.js && node --check cli/orchestrator.js && node --check cli/index.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
   }
 }
