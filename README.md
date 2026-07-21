@@ -64,6 +64,24 @@ Other commands: `config` (view/update your profile), `status` (print the current
 
 Data (browser session, profile, scan state, job records) lives in `~/.career-peeler/` by default (override with `--data-dir` or `$CAREER_PEELER_DATA_DIR`) — deliberately outside the repo, since it holds your OpenAI API key and login session.
 
+### Example: `career-peeler scan`
+
+While a scan runs, one status line updates in place (like `docker pull`'s progress line), and a permanent one-line log prints each time a job finishes:
+
+```text
+$ career-peeler scan https://jobs.apple.com/en-us/search --scan-only
+Scanning https://jobs.apple.com/en-us/search (scan-only mode)...
+[Scanning job detail] scanned=1 queued=18 applied=0 likely_match=0 likely_skip=1 reviewed=0 needs_review=0 errors=0
+  -> likely_skip (Likely skip): Senior Software Engineer, Partner Onboarding
+  -> reviewed (Review): Software Engineer, Maps Search
+[Advancing to next page] scanned=20 queued=0 applied=0 likely_match=3 likely_skip=9 reviewed=8 needs_review=0 errors=0
+^C
+Stopping after the current step finishes (press Ctrl+C again to force exit)...
+Done: Stopped
+```
+
+Piping output to a file (or running non-interactively) drops the in-place redraw and just logs each status change as its own line instead, so logs stay readable.
+
 ## Publishing checklist
 
 - Verify extension icons render correctly in Chrome and add Chrome Web Store screenshots.

@@ -37,13 +37,75 @@ Common flags:
 `);
 }
 
-function printStatusLine(scanState) {
+function formatStatusLine(scanState) {
   const stats = scanState.stats || {};
-  console.log(
+  return (
     `[${scanState.phase}] scanned=${scanState.scanned} queued=${scanState.queued} ` +
-      `applied=${stats.applied || 0} likely_match=${stats.likelyMatch || 0} likely_skip=${stats.likelySkip || 0} ` +
-      `reviewed=${stats.reviewed || 0} needs_review=${stats.needsReview || 0} errors=${stats.errors || 0}`
+    `applied=${stats.applied || 0} likely_match=${stats.likelyMatch || 0} likely_skip=${stats.likelySkip || 0} ` +
+    `reviewed=${stats.reviewed || 0} needs_review=${stats.needsReview || 0} errors=${stats.errors || 0}`
   );
+}
+
+function recentJobKey(record) {
+  return record ? `${record.jobId || record.url}|${record.status}|${record.decision}` : null;
+}
+
+// Redraws a single status line in place (like `docker pull`'s progress line) instead of scrolling
+// a new line per tick, and prints a permanent one-line log the moment a new job finishes scanning
+// (detected by watching scanState.recent[0], the same "last 8 scanned" list the popup UI shows).
+// Falls back to plain periodic logging when stdout isn't a real terminal (piped/redirected output,
+// e.g. into a log file), since carriage-return redraws only make sense on a TTY.
+function startLiveStatus(store) {
+  const isTTY = Boolean(process.stdout.isTTY);
+  let lastLine = null;
+  let lastRecentKey = recentJobKey(store.scanState.recent?.[0]);
+  let lineIsOpen = false;
+
+  function logPermanent(text) {
+    if (lineIsOpen && isTTY) {
+      process.stdout.clearLine(0);
+      process.stdout.cursorTo(0);
+      lineIsOpen = false;
+    }
+    console.log(text);
+  }
+
+  function tick() {
+    const scanState = store.scanState;
+    const mostRecent = scanState.recent?.[0];
+    const recentKey = recentJobKey(mostRecent);
+
+    if (recentKey && recentKey !== lastRecentKey) {
+      lastRecentKey = recentKey;
+      const label = mostRecent.decision ? `${mostRecent.status} (${mostRecent.decision})` : mostRecent.status;
+      logPermanent(`  -> ${label}: ${mostRecent.title || mostRecent.url}`);
+    }
+
+    const line = formatStatusLine(scanState);
+    if (line === lastLine) {
+      return;
+    }
+    lastLine = line;
+
+    if (isTTY) {
+      process.stdout.clearLine(0);
+      process.stdout.cursorTo(0);
+      process.stdout.write(line);
+      lineIsOpen = true;
+    } else {
+      console.log(line);
+    }
+  }
+
+  tick();
+  const timer = setInterval(tick, 300);
+
+  return () => {
+    clearInterval(timer);
+    if (lineIsOpen && isTTY) {
+      process.stdout.write("\n");
+    }
+  };
 }
 
 async function withBrowserContext(dataDir, headless, store, run) {
@@ -150,41 +212,36 @@ async function commandScan(positionals, values) {
   }
 
   await withBrowserContext(dataDir, headless, store, async (context) => {
+    const stopLiveStatus = startLiveStatus(store);
+
     let stopping = false;
     const onSignal = () => {
       if (stopping) {
-        console.log("\nForce exiting.");
+        stopLiveStatus();
+        console.log("Force exiting.");
         process.exit(1);
       }
       stopping = true;
-      console.log("\nStopping after the current step finishes (press Ctrl+C again to force exit)...");
       orchestrator.stopScan(store);
+      console.log("\nStopping after the current step finishes (press Ctrl+C again to force exit)...");
     };
     process.on("SIGINT", onSignal);
 
     console.log(`Scanning ${listUrl} (${profile.scanMode === "auto_apply" ? "auto-apply" : "scan-only"} mode)...`);
 
-    let lastPhase = null;
-    const progressTimer = setInterval(() => {
-      if (store.scanState.phase !== lastPhase) {
-        lastPhase = store.scanState.phase;
-        printStatusLine(store.scanState);
-      }
-    }, 500);
-
     try {
       const result = await orchestrator.startScan(context, store, listUrl, profile);
       if (!result.ok) {
+        stopLiveStatus();
         console.error(`Could not start scan: ${result.error}`);
         process.exitCode = 1;
         return;
       }
     } finally {
-      clearInterval(progressTimer);
+      stopLiveStatus();
       process.removeListener("SIGINT", onSignal);
     }
 
-    printStatusLine(store.scanState);
     console.log(`Done: ${store.scanState.phase}`);
   });
 }
@@ -220,19 +277,24 @@ async function commandApply(positionals, values) {
   store.saveScanState();
 
   await withBrowserContext(dataDir, headless, store, async (context) => {
-    const page = await browser.openPage(context, applicationUrl);
-    await browser.waitForPageLoad(page, 25000);
+    const stopLiveStatus = startLiveStatus(store);
 
-    await orchestrator.scanCurrentApplicationPage(context, store, page, {
-      site: siteConfig.id,
-      siteLabel: siteConfig.label,
-      jobId: core.getJobIdFromUrl(applicationUrl),
-      title: await page.title().catch(() => ""),
-      url: applicationUrl
-    });
+    try {
+      const page = await browser.openPage(context, applicationUrl);
+      await browser.waitForPageLoad(page, 25000);
 
-    store.updateScanState({ running: false, phase: "Complete", completedAt: new Date().toISOString() });
-    printStatusLine(store.scanState);
+      await orchestrator.scanCurrentApplicationPage(context, store, page, {
+        site: siteConfig.id,
+        siteLabel: siteConfig.label,
+        jobId: core.getJobIdFromUrl(applicationUrl),
+        title: await page.title().catch(() => ""),
+        url: applicationUrl
+      });
+
+      store.updateScanState({ running: false, phase: "Complete", completedAt: new Date().toISOString() });
+    } finally {
+      stopLiveStatus();
+    }
   });
 }
 
