@@ -463,9 +463,14 @@ async function scanJobLink(link) {
       lastError: null
     });
 
+    // Without an explicit windowId, chrome.tabs.create() opens the tab in "the current window" --
+    // i.e. whichever window happens to have OS focus at that exact moment, not necessarily the
+    // window the scan was started from. Pin it explicitly so job tabs never leak into a second
+    // Chrome window the user is actively working in alongside the scan.
     detailTab = await chrome.tabs.create({
       url: link.url,
-      active: false
+      active: false,
+      ...(scanState.listWindowId ? { windowId: scanState.listWindowId } : {})
     });
 
     await waitForTabComplete(detailTab.id);
@@ -959,6 +964,7 @@ async function startScan(tab, userProfile) {
     running: true,
     phase: "Starting scan",
     listTabId: tab.id,
+    listWindowId: tab.windowId,
     listPageUrl: tab.url,
     site: siteConfig.id,
     siteLabel: siteConfig.label,
