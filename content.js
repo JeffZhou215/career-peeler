@@ -1551,6 +1551,28 @@ function findClickableByText(pattern) {
   return getClickableCandidates().find((element) => pattern.test(getActionLabel(element)));
 }
 
+// A real `<a target="_blank">` click (as opposed to our own chrome.tabs.create calls) makes Chrome
+// activate the new tab and bring its whole window to the OS foreground by default -- interrupting
+// whatever else the user is doing, even in a completely different application, since showing a new
+// browser tab requires the browser itself to momentarily take focus. Detect this case up front so
+// the caller can ask background.js to open the URL via chrome.tabs.create({active:false}) instead
+// of clicking through the browser's native (and disruptive) new-tab handling.
+function getBackgroundOpenableLink(element) {
+  const anchor = element?.matches?.("a[target='_blank'][href]")
+    ? element
+    : element?.closest?.("a[target='_blank'][href]");
+
+  if (!anchor) {
+    return null;
+  }
+
+  try {
+    return new URL(anchor.getAttribute("href"), window.location.href).href;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function findJobSpecificApplyAction(siteConfig, jobId) {
   if (siteConfig?.id !== "tiktok") {
     return findClickableByText(siteConfig?.applyPattern || /^submit resume$/i);
@@ -2509,6 +2531,24 @@ async function runApplicationWorkflowStep() {
           }
         ],
         summary: `${siteConfig.label} apply action was not found and no Submitted state was detected.`
+      });
+    }
+
+    const backgroundOpenableLink = getBackgroundOpenableLink(submitResume);
+
+    if (backgroundOpenableLink) {
+      steps.push({
+        step: "Open application flow",
+        status: "opening_in_background",
+        label: getActionLabel(submitResume)
+      });
+
+      return buildStepResult({
+        clicked: true,
+        done: false,
+        steps,
+        openUrlInBackgroundTab: backgroundOpenableLink,
+        summary: `Opening ${getActionLabel(submitResume) || "apply action"} in a background tab.`
       });
     }
 

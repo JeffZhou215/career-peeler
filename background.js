@@ -1123,7 +1123,28 @@ async function runApplicationWorkflow(tab, options = {}) {
           (step) => step.step === "Open application flow" && step.status === "clicked"
         );
 
-      if (openedApplication) {
+      if (response.data.openUrlInBackgroundTab) {
+        // content.js detected a real target="_blank" link and deliberately did NOT click it --
+        // clicking it would hand tab creation to the browser's native handling, which activates
+        // the new tab and foregrounds its window (and Chrome itself) regardless of what the user
+        // is doing elsewhere, even in a different application entirely. Open it ourselves instead,
+        // the same non-disruptive way scanJobLink opens detail tabs.
+        const newTab = await chrome.tabs.create({
+          url: response.data.openUrlInBackgroundTab,
+          active: false,
+          ...(scanState.listWindowId ? { windowId: scanState.listWindowId } : {})
+        });
+        workflowTabId = newTab.id;
+        ownedWorkflowTabIds.add(newTab.id);
+        attempts.push({
+          attempt,
+          url: newTab.url || response.data.openUrlInBackgroundTab,
+          title: newTab.title || "",
+          heading: "",
+          summary: "Opened application tab in the background.",
+          visibleActions: []
+        });
+      } else if (openedApplication) {
         const applicationTab = await waitForApplicationTab(previousTabIds, siteConfig, jobId);
         if (applicationTab?.id) {
           workflowTabId = applicationTab.id;
