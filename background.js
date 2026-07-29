@@ -1083,6 +1083,15 @@ async function runApplicationWorkflow(tab, options = {}) {
       await delay(PAGE_SETTLE_DELAY_MS);
 
       const previousTabIds = await getOpenTabIds();
+      // Sites often open the application step via a real <a target="_blank"> click (rather than
+      // our own chrome.tabs.create, which we already keep inactive/backgrounded), and Chrome
+      // activates -- and can foreground the whole window for -- a tab opened that way. Capture
+      // whatever window actually has focus right before the click that might trigger this, so it
+      // can be restored afterward instead of leaving the user pulled away from another window.
+      const focusedWindowIdBeforeStep = await chrome.windows
+        .getLastFocused()
+        .then((win) => win.id)
+        .catch(() => null);
       const response = await sendMessageWithFallback(workflowTabId, {
         type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP"
       });
@@ -1126,6 +1135,11 @@ async function runApplicationWorkflow(tab, options = {}) {
             summary: "Detected newly opened application tab.",
             visibleActions: []
           });
+
+          if (focusedWindowIdBeforeStep && focusedWindowIdBeforeStep !== applicationTab.windowId) {
+            await chrome.tabs.update(applicationTab.id, { active: false }).catch(() => {});
+            await chrome.windows.update(focusedWindowIdBeforeStep, { focused: true }).catch(() => {});
+          }
         }
       }
 
