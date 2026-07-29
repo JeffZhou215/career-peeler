@@ -819,8 +819,31 @@ function getAlreadyAppliedToast() {
   return null;
 }
 
+// A separate ByteDance UI variant renders the "already applied" message as an inline notice/alert
+// banner (ud__notice-error, role="alert") baked into the application form itself, rather than as a
+// dialog or a self-dismissing toast -- neither getAlreadyAppliedDialog() nor getAlreadyAppliedToast()
+// matches this shape.
+function getAlreadyAppliedNotice() {
+  const notices = Array.from(
+    document.querySelectorAll("[role='alert'], .ud__notice-error, [class*='notice-error']")
+  ).filter((element) => isElementVisible(element));
+
+  for (const notice of notices) {
+    const text = normalizeText(notice.innerText || "");
+
+    if (isAlreadyAppliedDialogText(text)) {
+      return {
+        element: notice,
+        text: text.slice(0, 240)
+      };
+    }
+  }
+
+  return null;
+}
+
 function getAlreadyAppliedSignal() {
-  return getAlreadyAppliedDialog() || getAlreadyAppliedToast();
+  return getAlreadyAppliedDialog() || getAlreadyAppliedToast() || getAlreadyAppliedNotice();
 }
 
 // The above toast is only visible for a few seconds and can take several more to appear after the
@@ -2569,6 +2592,28 @@ async function runApplicationWorkflowStep() {
       done: false,
       steps,
       summary: `Clicked ${getActionLabel(submitResume) || "apply action"}.`
+    });
+  }
+
+  const alreadyAppliedOnLoad = getAlreadyAppliedSignal();
+
+  if (alreadyAppliedOnLoad) {
+    return buildStepResult({
+      clicked: true,
+      done: true,
+      alreadySubmitted: true,
+      errorType: "already_applied",
+      steps: [
+        {
+          step: "Detect already applied notice",
+          status: "detected",
+          label: alreadyAppliedOnLoad.body || alreadyAppliedOnLoad.text
+        }
+      ],
+      summary:
+        alreadyAppliedOnLoad.body ||
+        alreadyAppliedOnLoad.text ||
+        "You've already applied for this job. Unable to apply again."
     });
   }
 
