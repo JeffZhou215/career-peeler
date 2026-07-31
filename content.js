@@ -2595,6 +2595,30 @@ async function runApplicationWorkflowStep() {
     });
   }
 
+  // A job's submission can land on the site (and start showing a Submitted badge on this very
+  // application page) even though our own bookkeeping never recorded it -- e.g. the extension was
+  // reloaded mid-attempt, right as the site accepted the submission but before markLinkProcessed()/
+  // saveJobRecord() ran. The next scan then re-queues this job and lands back on this same page,
+  // which no longer has a working Continue/Submit action. Check for the generic Submitted signal
+  // here too (already checked on the detail page) before assuming the form still needs filling out.
+  const submittedOnLoad = getSubmittedSignal();
+
+  if (submittedOnLoad) {
+    return buildStepResult({
+      clicked: true,
+      done: true,
+      alreadySubmitted: true,
+      steps: [
+        {
+          step: "Detect already submitted",
+          status: "detected",
+          label: submittedOnLoad.text
+        }
+      ],
+      summary: "Job already shows Submitted."
+    });
+  }
+
   const alreadyAppliedOnLoad = getAlreadyAppliedSignal();
 
   if (alreadyAppliedOnLoad) {
