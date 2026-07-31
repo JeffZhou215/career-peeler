@@ -830,7 +830,17 @@ async function runScanLoop() {
 
       scanState.stats.skippedStored += skippedStored;
       scanState.stats.skippedUnqualified += skippedUnqualified;
-      const hasAlreadyVisitedListPage = visitedListPages.has(collection.url);
+      // TikTok/ByteDance paginate client-side without changing the URL, so collection.url alone
+      // can't tell two different pages apart -- it would look "already visited" from page 2 onward
+      // regardless of actual page, causing a false stop the moment a page's jobs happen to be fully
+      // already-processed (e.g. from an earlier run). Key on the actual set of links shown instead,
+      // which does change per page even when the URL doesn't (same technique as
+      // waitForJobLinksChange()/getJobLinkSetKey() in content.js).
+      const listPageKey = collection.links
+        .map((link) => link.url)
+        .sort()
+        .join("|");
+      const hasAlreadyVisitedListPage = visitedListPages.has(listPageKey);
 
       scanState.listPageUrl = collection.url;
       scanState.site = collection.site || scanState.site;
@@ -873,7 +883,7 @@ async function runScanLoop() {
         await scanJobLink(link);
       }
 
-      visitedListPages.add(collection.url);
+      visitedListPages.add(listPageKey);
 
       if (!scanState.running) {
         break;

@@ -544,7 +544,14 @@ async function runScanLoop(context, store, listPage) {
 
       store.scanState.stats.skippedStored += skippedStored;
       store.scanState.stats.skippedUnqualified += skippedUnqualified;
-      const hasAlreadyVisitedListPage = store.visitedListPages.has(collection.url);
+      // TikTok/ByteDance paginate client-side without changing the URL, so collection.url alone
+      // can't tell two different pages apart. Key on the actual set of links shown instead, which
+      // does change per page even when the URL doesn't (mirrors the fix in background.js).
+      const listPageKey = collection.links
+        .map((link) => link.url)
+        .sort()
+        .join("|");
+      const hasAlreadyVisitedListPage = store.visitedListPages.has(listPageKey);
 
       store.scanState.listPageUrl = collection.url;
       store.scanState.site = collection.site || store.scanState.site;
@@ -587,7 +594,7 @@ async function runScanLoop(context, store, listPage) {
         await scanJobLink(context, store, link);
       }
 
-      store.visitedListPages.add(collection.url);
+      store.visitedListPages.add(listPageKey);
 
       if (!store.scanState.running) {
         break;
