@@ -287,18 +287,13 @@ async function scanJobLink(context, store, link) {
       } else if (workflowResponse.ok && workflowResponse.data?.pausedForReview) {
         finalStatus = "needs_review";
         job.errorType = workflowResponse.data.errorType || "open_text_review_required";
-        store.rememberError({
-          type: job.errorType,
-          errorType: job.errorType,
+        store.rememberNeedsReview({
           jobId: job.jobId,
           site: job.site,
           siteLabel: job.siteLabel,
           title: job.title,
           url: workflowResponse.data.url || job.url,
-          status: finalStatus,
-          message: workflowResponse.data.summary,
-          workflow: applicationResult,
-          lastAttempt: applicationResult?.attempts?.at(-1) || null
+          reason: workflowResponse.data.summary
         });
       } else {
         finalStatus = `${status}_apply_failed`;
@@ -443,18 +438,13 @@ async function scanCurrentApplicationPage(context, store, listPage, link) {
     } else if (workflowResponse.ok && workflowResponse.data?.pausedForReview) {
       finalStatus = "needs_review";
       job.errorType = workflowResponse.data.errorType || "open_text_review_required";
-      store.rememberError({
-        type: job.errorType,
-        errorType: job.errorType,
+      store.rememberNeedsReview({
         jobId: job.jobId,
         site: job.site,
         siteLabel: job.siteLabel,
         title: job.title,
         url: workflowResponse.data.url || job.url,
-        status: finalStatus,
-        message: workflowResponse.data.summary,
-        workflow: applicationResult,
-        lastAttempt: applicationResult?.attempts?.at(-1) || null
+        reason: workflowResponse.data.summary
       });
     } else {
       finalStatus = "review_apply_failed";

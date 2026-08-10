@@ -137,6 +137,21 @@ function createStore(dataDir = defaultDataDir()) {
     ].slice(0, 8);
   }
 
+  function rememberNeedsReview(entry) {
+    scanState.needsReview = [
+      {
+        jobId: entry.jobId || null,
+        site: entry.site || core.getSiteConfig(entry.url)?.id || null,
+        siteLabel: entry.siteLabel || core.getSiteLabel(entry.site || entry.url),
+        title: core.truncateText(entry.title, 220),
+        url: entry.url,
+        reason: core.truncateText(entry.reason, 300),
+        flaggedAt: new Date().toISOString()
+      },
+      ...scanState.needsReview
+    ].slice(0, 8);
+  }
+
   function recordAppliedCheckpoint(jobContext) {
     if (!jobContext) {
       return;
@@ -272,6 +287,7 @@ function createStore(dataDir = defaultDataDir()) {
     rememberFailure,
     rememberError,
     rememberSkippedUnqualified,
+    rememberNeedsReview,
     recordAppliedCheckpoint,
     saveJobRecord,
     compactStoredJobRecords,

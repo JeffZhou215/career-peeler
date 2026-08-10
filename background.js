@@ -103,6 +103,21 @@ function rememberSkippedUnqualified(entry) {
   ].slice(0, 8);
 }
 
+function rememberNeedsReview(entry) {
+  scanState.needsReview = [
+    {
+      jobId: entry.jobId || null,
+      site: entry.site || getSiteConfig(entry.url)?.id || null,
+      siteLabel: entry.siteLabel || getSiteLabel(entry.site || entry.url),
+      title: truncateText(entry.title, 220),
+      url: entry.url,
+      reason: truncateText(entry.reason, 300),
+      flaggedAt: new Date().toISOString()
+    },
+    ...scanState.needsReview
+  ].slice(0, 8);
+}
+
 async function recordAppliedCheckpoint(jobContext) {
   if (!jobContext) {
     return;
@@ -544,18 +559,13 @@ async function scanJobLink(link) {
       } else if (workflowResponse.ok && workflowResponse.data?.pausedForReview) {
         finalStatus = "needs_review";
         job.errorType = workflowResponse.data.errorType || "open_text_review_required";
-        rememberError({
-          type: job.errorType,
-          errorType: job.errorType,
+        rememberNeedsReview({
           jobId: job.jobId,
           site: job.site,
           siteLabel: job.siteLabel,
           title: job.title,
           url: workflowResponse.data.url || job.url,
-          status: finalStatus,
-          message: workflowResponse.data.summary,
-          workflow: applicationResult,
-          lastAttempt: applicationResult?.attempts?.at(-1) || null
+          reason: workflowResponse.data.summary
         });
       } else {
         finalStatus = `${status}_apply_failed`;
@@ -723,18 +733,13 @@ async function scanCurrentApplicationPage(link) {
     } else if (workflowResponse.ok && workflowResponse.data?.pausedForReview) {
       finalStatus = "needs_review";
       job.errorType = workflowResponse.data.errorType || "open_text_review_required";
-      rememberError({
-        type: job.errorType,
-        errorType: job.errorType,
+      rememberNeedsReview({
         jobId: job.jobId,
         site: job.site,
         siteLabel: job.siteLabel,
         title: job.title,
         url: workflowResponse.data.url || job.url,
-        status: finalStatus,
-        message: workflowResponse.data.summary,
-        workflow: applicationResult,
-        lastAttempt: applicationResult?.attempts?.at(-1) || null
+        reason: workflowResponse.data.summary
       });
     } else {
       finalStatus = "review_apply_failed";

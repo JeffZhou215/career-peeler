@@ -35,6 +35,8 @@ const scanNeedsReviewEl = document.querySelector("#scanNeedsReview");
 const scanErrorsEl = document.querySelector("#scanErrors");
 const scanErrorsSummaryEl = document.querySelector("#scanErrorsSummary");
 const scanErrorLogEl = document.querySelector("#scanErrorLog");
+const scanNeedsReviewSummaryEl = document.querySelector("#scanNeedsReviewSummary");
+const scanNeedsReviewLogEl = document.querySelector("#scanNeedsReviewLog");
 const scanCurrentEl = document.querySelector("#scanCurrent");
 const scanRecentEl = document.querySelector("#scanRecent");
 const scanFailuresEl = document.querySelector("#scanFailures");
@@ -696,6 +698,18 @@ function renderScanErrors(errors) {
   });
 }
 
+function renderScanNeedsReview(needsReview) {
+  renderList(scanNeedsReviewLogEl, needsReview, "No roles need review right now.", (entry) => {
+    const site = entry.siteLabel ? ` ${entry.siteLabel}.` : "";
+    const when = entry.flaggedAt ? ` (${formatRelativeTime(entry.flaggedAt)})` : "";
+    return [
+      `Needs review:${site} `,
+      createJobLink(entry.jobId, entry.title, entry.url),
+      ` - ${entry.reason}${when}`
+    ];
+  });
+}
+
 function renderScanStatus(status) {
   scanStatusEl.classList.remove("hidden");
   scanPhaseEl.textContent = status.phase || "Idle";
@@ -715,6 +729,7 @@ function renderScanStatus(status) {
   scanSkippedUnqualifiedEl.textContent = status.stats?.skippedUnqualified || 0;
   scanApplyFailedEl.textContent = status.stats?.applyFailed || 0;
   scanNeedsReviewEl.textContent = status.stats?.needsReview || 0;
+  scanNeedsReviewSummaryEl.textContent = status.stats?.needsReview || 0;
   scanErrorsEl.textContent = status.stats?.errors || 0;
   scanErrorsSummaryEl.textContent = status.stats?.errors || 0;
   scanCurrentEl.textContent = status.currentJob
@@ -725,6 +740,7 @@ function renderScanStatus(status) {
     : "No jobs applied yet.";
   renderScanFailures(status.failures || []);
   renderScanErrors(status.errors || []);
+  renderScanNeedsReview(status.needsReview || []);
   renderSkippedUnqualified(status.skippedUnqualified || []);
   renderScanRecent(status.recent || []);
 
