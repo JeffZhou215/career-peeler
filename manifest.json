@@ -8,7 +8,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "scripting", "tabs"],
+  "permissions": ["storage", "scripting", "tabs", "sidePanel"],
   "host_permissions": [
     "https://jobs.apple.com/*",
     "https://www.apple.com/careers/*",
@@ -19,8 +19,9 @@
     "https://joinbytedance.com/*",
     "https://api.openai.com/*"
   ],
-  "action": {
-    "default_popup": "popup.html"
+  "action": {},
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "background": {
     "service_worker": "background.js"

@@ -1,5 +1,9 @@
 importScripts("lib/core.js");
 
+// Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
+// instead of a transient popup. Must run on every service worker startup, not just install.
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
 const JOB_RECORDS_KEY = "appleCareersJobRecords";
 const JOB_LOGS_KEY = "appleCareersDetailedJobLogs";
 const SCAN_STATUS_KEY = "appleCareersScanStatus";

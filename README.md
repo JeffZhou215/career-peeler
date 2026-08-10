@@ -8,7 +8,7 @@ Two interfaces share the same matching/apply logic: a **Chrome extension** (frie
 
 **1. Open a job list page and start a scan.** Career Peeler reads every visible job link on the page and works through them one by one in a background tab, so your active tab is left alone.
 
-![Popup overview: start scan, live job list with Submitted/Review statuses](store-assets/screenshot-1-overview-1280x800.png)
+![Side panel overview: start scan, live job list with Submitted/Review statuses](store-assets/screenshot-1-overview-1280x800.png)
 
 **2. Each job gets classified locally** — years-of-experience, tech-stack overlap with your profile, and any no-match keywords you've set — before anything is ever sent to an LLM. Scan-only mode is the default: nothing gets submitted until you explicitly turn on auto-apply.
 
@@ -43,7 +43,7 @@ Previously scanned jobs are skipped across sessions, and pagination advances aut
 1. Open Chrome and go to `chrome://extensions`.
 2. Turn on Developer Mode.
 3. Click `Load unpacked` and select this folder.
-4. Open a supported careers list page and click `Start Scan`. Auto-apply stays off until you enable it under `Matching and application settings`.
+4. Click the Career Peeler toolbar icon to open the side panel — it docks to the side of the window and stays open as you switch tabs. Open a supported careers list page and click `Start Scan`. Auto-apply stays off until you enable it under `Matching and application settings`.
 
 ## Command-line tool
 

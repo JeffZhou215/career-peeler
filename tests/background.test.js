@@ -26,6 +26,9 @@ const sandbox = {
       onMessage: {
         addListener() {}
       }
+    },
+    sidePanel: {
+      setPanelBehavior: async () => {}
     }
   }
 };
