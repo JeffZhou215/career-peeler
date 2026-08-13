@@ -56,6 +56,8 @@ globalThis.__backgroundTestApi = {
   normalizeYoeAssessment,
   recordAppliedCheckpoint,
   shouldAutoApply,
+  shouldAutoSubmitGenericAutofill,
+  buildNeedsReviewReasonSummary,
   statusFromDecision,
   truncateText,
   getScanStateForTest: () => scanState,
@@ -88,6 +90,8 @@ const {
   normalizeYoeAssessment,
   recordAppliedCheckpoint,
   shouldAutoApply,
+  shouldAutoSubmitGenericAutofill,
+  buildNeedsReviewReasonSummary,
   statusFromDecision,
   truncateText,
   getScanStateForTest,
@@ -239,6 +243,32 @@ test("shouldAutoApply requires auto_apply mode, consent, and an eligible status"
   assert.equal(shouldAutoApply("likely_match", { requiredYears: 2, matches: [] }, scanOnlyProfile), false);
 });
 
+test("shouldAutoSubmitGenericAutofill only submits with zero flagged fields, no essay draft, and auto-apply consent", () => {
+  const autoApplyProfile = normalizeUserProfile({ scanMode: "auto_apply", autoApplyConsent: true });
+  const scanOnlyProfile = normalizeUserProfile({ scanMode: "scan_only", autoApplyConsent: true });
+  const noConsentProfile = normalizeUserProfile({ scanMode: "auto_apply", autoApplyConsent: false });
+
+  assert.equal(shouldAutoSubmitGenericAutofill(0, false, autoApplyProfile), true);
+  assert.equal(shouldAutoSubmitGenericAutofill(1, false, autoApplyProfile), false);
+  assert.equal(shouldAutoSubmitGenericAutofill(0, true, autoApplyProfile), false);
+  assert.equal(shouldAutoSubmitGenericAutofill(0, false, scanOnlyProfile), false);
+  assert.equal(shouldAutoSubmitGenericAutofill(0, false, noConsentProfile), false);
+});
+
+test("buildNeedsReviewReasonSummary summarizes single vs multiple flagged fields", () => {
+  assert.equal(
+    buildNeedsReviewReasonSummary([{ label: "Email", reason: "Email -- no value saved" }]),
+    "Email -- no value saved"
+  );
+  assert.equal(
+    buildNeedsReviewReasonSummary([
+      { label: "Email", reason: "Email -- no value saved" },
+      { label: "Gender", reason: "Gender -- no value saved" }
+    ]),
+    "2 fields need review: Email, Gender"
+  );
+});
+
 test("classifyWorkflowError recognizes common failure signatures", () => {
   assert.equal(classifyWorkflowError("You've already applied for this job.", null), "already_applied");
   assert.equal(classifyWorkflowError("Answered 1 of 2 required authorization questions", null), "questionnaire_incomplete");
@@ -341,7 +371,7 @@ test("buildAnswerPrompt grounds the answer in the resume profile, question, and 
   assert.match(messages[0].content, /never invent/i);
 
   const userContent = JSON.parse(messages[1].content);
-  assert.equal(userContent.question, "Why do you want to work at this company?");
+  assert.equal(userContent.question, "<untrusted_question>Why do you want to work at this company?</untrusted_question>");
   assert.equal(userContent.resume_profile, "5 years of backend experience.");
   assert.equal(userContent.job.title, "Software Engineer");
   assert.equal(userContent.job.company, "Apple Careers");

@@ -9,16 +9,7 @@
     "128": "icons/icon128.png"
   },
   "permissions": ["storage", "scripting", "tabs", "sidePanel"],
-  "host_permissions": [
-    "https://jobs.apple.com/*",
-    "https://www.apple.com/careers/*",
-    "https://careers.tiktok.com/*",
-    "https://lifeattiktok.com/*",
-    "https://jobs.bytedance.com/*",
-    "https://careers.bytedance.com/*",
-    "https://joinbytedance.com/*",
-    "https://api.openai.com/*"
-  ],
+  "host_permissions": ["<all_urls>"],
   "action": {},
   "side_panel": {
     "default_path": "sidepanel.html"

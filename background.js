@@ -1275,13 +1275,114 @@ async function runApplicationWorkflow(tab, options = {}) {
   }
 }
 
+// Order matters: chrome.scripting.executeScript injects a files[] array sequentially into the same
+// isolated world, and genericAutofill/*.js share state via a plain window.__careerPeelerGA namespace
+// object (no bundler/ES modules in this project) -- each file reads what it needs off that object and
+// adds its own exports, so dependencies must load before dependents. agent.js (last) is the only one
+// with an observable side effect on load (registering the message listener below).
+const GENERIC_AUTOFILL_FILES = [
+  "genericAutofill/domHelpers.js",
+  "genericAutofill/classify.js",
+  "genericAutofill/actions.js",
+  "genericAutofill/snapshot.js",
+  "genericAutofill/prompt.js",
+  "genericAutofill/loop.js",
+  "genericAutofill/agent.js"
+];
+
+async function sendGenericAutofillMessage(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (_error) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: GENERIC_AUTOFILL_FILES
+    });
+
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+// Essay questions and unrecognized required fields always block auto-submit even when the LLM (or
+// the user, via the manual-prompt fallback) supplied an answer -- unlike the known-site flow,
+// there's no multi-attempt retry loop here to catch a silently-skipped required field later, so this
+// pass is the only chance to keep a human in the loop on the answer.
+function shouldAutoSubmitGenericAutofill(flaggedCount, hadPendingAnswerFields, userProfile) {
+  return (
+    flaggedCount === 0 && !hadPendingAnswerFields && userProfile.scanMode === "auto_apply" && Boolean(userProfile.autoApplyConsent)
+  );
+}
+
+function buildNeedsReviewReasonSummary(flaggedFields) {
+  return flaggedFields.length === 1
+    ? flaggedFields[0].reason
+    : `${flaggedFields.length} fields need review: ${flaggedFields.map((field) => field.label).join(", ")}`;
+}
+
+// Site-agnostic autofill for arbitrary job application pages -- deliberately single-page-only (fill/
+// flag what's visible on this page, submit at most once), unlike runApplicationWorkflow's multi-step
+// Continue-chaining loop for the three known sites. Chaining "click Continue, wait, repeat" across a
+// site this extension has never seen is materially riskier than doing that on tuned, well-understood
+// sites, so the user re-clicks "Autofill this page" after each Continue on a multi-page form instead.
+async function runGenericAutofillWorkflow(tab, userProfile) {
+  if (!tab?.id || !/^https?:$/.test(parseUrl(tab.url)?.protocol || "")) {
+    return {
+      ok: false,
+      error: "Open a job application page in this tab before running Autofill."
+    };
+  }
+
+  const response = await sendGenericAutofillMessage(tab.id, {
+    type: "APPLE_CAREERS_RUN_GENERIC_AUTOFILL",
+    userProfile
+  });
+
+  if (!response?.ok) {
+    return {
+      ok: false,
+      error: response?.error || "Autofill did not complete."
+    };
+  }
+
+  const { data } = response;
+
+  let submitted = false;
+  if (shouldAutoSubmitGenericAutofill(data.flaggedFields.length, data.hadPendingAnswerFields, userProfile)) {
+    const submitResponse = await sendGenericAutofillMessage(tab.id, {
+      type: "APPLE_CAREERS_GENERIC_AUTOFILL_SUBMIT"
+    }).catch(() => null);
+    submitted = Boolean(submitResponse?.clicked);
+  }
+
+  if (data.flaggedFields.length > 0) {
+    rememberNeedsReview({
+      jobId: null,
+      site: "generic",
+      siteLabel: data.hostname,
+      title: data.pageTitle,
+      url: tab.url,
+      reason: buildNeedsReviewReasonSummary(data.flaggedFields)
+    });
+    await saveScanState();
+  }
+
+  return {
+    ok: true,
+    data: {
+      ...data,
+      submitted
+    }
+  };
+}
+
 const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_START_SCAN",
   "APPLE_CAREERS_STOP_SCAN",
   "APPLE_CAREERS_CLEAR_HISTORY",
   "APPLE_CAREERS_GET_SCAN_STATUS",
   "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
-  "APPLE_CAREERS_GENERATE_ANSWER"
+  "APPLE_CAREERS_GENERATE_ANSWER",
+  "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW"
 ]);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1305,8 +1406,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
         sendResponse(await runApplicationWorkflow(message.tab));
       } else if (message.type === "APPLE_CAREERS_GENERATE_ANSWER") {
-        const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
-        const job = (stored[JOB_RECORDS_KEY] || {})[message.jobId] || null;
+        let job = null;
+
+        if (message.jobId) {
+          const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+          job = (stored[JOB_RECORDS_KEY] || {})[message.jobId] || null;
+        } else if (message.pageTitle || message.siteLabel) {
+          job = { title: message.pageTitle || null, siteLabel: message.siteLabel || null };
+        }
+
         sendResponse(
           await generateFreeTextAnswer({
             questionText: message.questionText,
@@ -1314,6 +1422,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             userProfile: scanState.userProfile
           })
         );
+      } else if (message.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW") {
+        sendResponse(await runGenericAutofillWorkflow(message.tab, message.userProfile));
       }
     } catch (error) {
       sendResponse({

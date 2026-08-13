@@ -2,3 +2,4 @@
 .trunk/
 node_modules/
 .career-peeler/
+dist/

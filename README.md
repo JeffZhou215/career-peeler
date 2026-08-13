@@ -37,13 +37,17 @@ Previously scanned jobs are skipped across sessions, and pagination advances aut
 - **Hard-skips** senior/staff/principal/lead titles, internships, and roles that clearly exceed your years of experience, before any LLM call.
 - **Auto-applies** (only once explicitly acknowledged in settings) by working through each site's application steps, answering common work-authorization/visa questions, and submitting — then logs failures with enough detail (site, error type, page heading, recovery link) to fix and re-submit manually.
 - **Stores everything locally** in Chrome storage. Does not upload files or create profile data — the workflow assumes your Apple Careers profile, resume, and LinkedIn are already saved on the site itself.
+- **Autofills any other job application page** (Greenhouse, Lever, Workday, custom ATS) on demand via the "Autofill this page" button. Fills what it can confidently match from a separate autofill profile (contact info, EEO/work-authorization dropdowns, resume file), drafts an answer for genuine open-ended questions with the LLM, and flags everything else under "Needs Review" instead of guessing — same auto-submit rules as the known sites.
 
 ## Load locally (Chrome extension)
 
-1. Open Chrome and go to `chrome://extensions`.
-2. Turn on Developer Mode.
-3. Click `Load unpacked` and select this folder.
-4. Click the Career Peeler toolbar icon to open the side panel — it docks to the side of the window and stays open as you switch tabs. Open a supported careers list page and click `Start Scan`. Auto-apply stays off until you enable it under `Matching and application settings`.
+The side panel is a Vite + React app; `background.js`/`content.js`/`genericAutofill/`/`lib/` stay as plain, unbundled scripts and are copied through verbatim. `npm run build` produces the complete loadable extension in `dist/` — that folder, not the repo root, is what you point Chrome at.
+
+1. `npm install && npm run build` (re-run `npm run build` after any code change; `npm run dev` runs Vite in watch mode for active side-panel development).
+2. Open Chrome and go to `chrome://extensions`.
+3. Turn on Developer Mode.
+4. Click `Load unpacked` and select this repo's `dist/` folder.
+5. Click the Career Peeler toolbar icon to open the side panel — it docks to the side of the window and stays open as you switch tabs. Open a supported careers list page and click `Start Scan`. Auto-apply stays off until you enable it under `Matching and application settings`.
 
 ## Command-line tool
 
