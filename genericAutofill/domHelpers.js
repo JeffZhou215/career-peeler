@@ -30,6 +30,21 @@
     return element.disabled || element.getAttribute("aria-disabled") === "true" || element.getAttribute("disabled") !== null;
   }
 
+  // Re-checks the exact predicates snapshotPage() filtered on at discovery time, but right before
+  // acting rather than only once, upfront. Pie re-resolves a fresh element handle (via its idx system)
+  // immediately before every tool call, because its multi-turn LLM loop can leave a real gap between
+  // observing an element and acting on it. Our sweep holds a direct reference from one upfront
+  // snapshot instead -- cheaper, and fine for the common case -- but that means a mid-sweep re-render
+  // (e.g. an earlier field's fill causing a framework to replace a later field's DOM node) can leave a
+  // later loop iteration holding a stale reference with no warning: .value and dispatchEvent() both
+  // silently "succeed" on a detached node, so without this check the field would be logged as filled
+  // when nothing the user can see actually changed. This is the cheap equivalent of Pie's fresh-
+  // resolution for our single-pass architecture: verify the already-held reference is still good,
+  // rather than re-querying the whole page for it again.
+  function isElementStillActionable(element) {
+    return element.isConnected && isElementVisible(element) && !isActionDisabled(element);
+  }
+
   function getElementLabel(element) {
     const labels = [];
 
@@ -223,6 +238,7 @@
     normalizeText,
     isElementVisible,
     isActionDisabled,
+    isElementStillActionable,
     getElementLabel,
     getActionLabel,
     getOptionLabel,

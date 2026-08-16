@@ -33,14 +33,6 @@ export function GenericAutofillResultPanel({ data }) {
       </div>
       <p className="muted">{buildSummary(data)}</p>
 
-      <h2>Activity Log</h2>
-      <ItemList
-        className="trace-log"
-        items={data.trace || []}
-        emptyMessage="No trace recorded."
-        renderItem={(line) => line}
-      />
-
       <details className="progress-details">
         <summary>Filled fields</summary>
         <ItemList

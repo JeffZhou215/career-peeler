@@ -71,10 +71,46 @@ body {
   padding: 16px;
 }
 
-.mode-section {
+/* Every flex/grid item defaults to min-width:auto, i.e. "never shrink below my content's natural
+   width" -- one long, unbroken string anywhere in this tree (a job title in the activity log is the
+   real case that surfaced this: activity-step-label's white-space:nowrap) is enough to force its
+   flex/grid ancestor chain wider one level at a time, all the way up through mode-section-body,
+   mode-section, and .app to body, well past the panel's real width. Chrome's side panel has no
+   horizontal scrollbar for that overflow -- it just hard-clips at the visible edge, which is why button
+   labels and job titles were cutting off mid-word instead of wrapping or ellipsizing. min-width:0 as
+   the baseline for this entire tree is what lets text-overflow:ellipsis (activity-step-label) and
+   normal wrapping (everything else) actually take effect instead of being preempted by that default.
+   .tag-input's own min-width:90px below still wins -- same specificity, later in the file. */
+.app,
+.app * {
+  min-width: 0;
+}
+
+/* One shared card boundary for the top-level accordions AND every section nested inside them
+   (settings panels, the status bar, result panels, the activity log, advanced tools). Before this,
+   five separate rulesets each redeclared the same border/radius/background, and nested cards ended up
+   visually identical to their own parent -- see .mode-section-body's background below for how the
+   outer/inner tiers are told apart despite intentionally sharing this same card look. */
+.mode-section,
+.settings,
+.status,
+.result,
+.activity-log,
+.advanced {
   border: 1px solid var(--color-border);
   border-radius: 14px;
   background: var(--color-surface);
+}
+
+.settings,
+.status,
+.result,
+.activity-log,
+.advanced {
+  padding: 14px;
+}
+
+.mode-section {
   overflow: hidden;
 }
 
@@ -118,10 +154,15 @@ body {
   border-bottom: 1px solid var(--color-border);
 }
 
+/* surface-subtle here (vs. the surface background every nested card uses -- see the shared card rule
+   above) is what makes those cards read as sitting IN this body rather than fused to it. 16px matches
+   summary's own left padding below (14px 40px 14px 16px) so the collapsed header and the open body
+   share one left edge instead of the 2px drift a bare 14px here used to leave. */
 .mode-section-body {
   display: grid;
   gap: 14px;
-  padding: 14px;
+  padding: 16px;
+  background: var(--color-surface-subtle);
 }
 
 .trace-log {
@@ -146,6 +187,87 @@ body {
 
 .trace-log li:last-child {
   border-bottom: none;
+}
+
+/* No border/background/padding of its own -- .activity-log is now one of the shared card selectors
+   above, so the list sits directly in that card's padding, same as .result's content does, instead of
+   carrying a second, wrong-tier (--color-bg, not --color-surface) nested box. */
+.activity-log-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-step {
+  display: flex;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.activity-step:last-child {
+  border-bottom: none;
+}
+
+.activity-step-icon {
+  flex: none;
+  width: 14px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.activity-step--success .activity-step-icon {
+  color: var(--color-accent);
+}
+
+.activity-step--error .activity-step-icon {
+  color: var(--color-danger);
+}
+
+.activity-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.activity-step-heading {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.activity-step-tool {
+  flex: none;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.activity-step-label {
+  color: var(--color-text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-step-observation {
+  color: var(--color-text-secondary);
+  word-break: break-word;
+}
+
+.activity-step--pending .activity-step-observation {
+  color: var(--color-text-muted);
+  font-style: italic;
 }
 
 .eyebrow {
@@ -253,13 +375,6 @@ button.danger:hover {
 button:disabled {
   opacity: 0.4;
   cursor: wait;
-}
-
-.settings {
-  border: 1px solid var(--color-border);
-  border-radius: 14px;
-  padding: 14px;
-  background: var(--color-surface);
 }
 
 .settings summary,
@@ -398,25 +513,62 @@ button:disabled {
   transform: translateY(0);
 }
 
-.status,
-.result {
+.api-key-validation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -6px 0 4px;
+}
+
+.api-key-validation-status {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.api-key-validation-status--valid {
+  color: var(--color-accent);
+}
+
+.api-key-validation-status--invalid {
+  color: var(--color-danger);
+}
+
+.api-key-validation-status--error {
+  color: var(--color-text-secondary);
+}
+
+.candidate-extraction-status {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
   border: 1px solid var(--color-border);
-  border-radius: 14px;
-  padding: 14px;
-  background: var(--color-surface);
+  border-radius: 10px;
+  background: var(--color-surface-subtle);
+}
+
+.candidate-extraction-status .actions {
+  margin-top: 4px;
+}
+
+.candidate-profile-entries {
+  margin: 4px 0;
+}
+
+.candidate-profile-entries ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .status {
   color: var(--color-text-secondary);
   font-size: 13px;
   line-height: 1.4;
-}
-
-.advanced {
-  border: 1px solid var(--color-border);
-  border-radius: 14px;
-  padding: 12px 14px;
-  background: var(--color-surface);
 }
 
 .advanced .actions {

@@ -60,6 +60,7 @@ globalThis.__backgroundTestApi = {
   buildNeedsReviewReasonSummary,
   statusFromDecision,
   truncateText,
+  translateKnownSiteStep,
   getScanStateForTest: () => scanState,
   setScanStateForTest: (partial) => {
     scanState = { ...scanState, ...partial };
@@ -94,6 +95,7 @@ const {
   buildNeedsReviewReasonSummary,
   statusFromDecision,
   truncateText,
+  translateKnownSiteStep,
   getScanStateForTest,
   setScanStateForTest
 } = sandbox.__backgroundTestApi;
@@ -387,4 +389,67 @@ test("buildAnswerPrompt tolerates a missing stored job record", () => {
   assert.equal(userContent.job.title, null);
   assert.equal(userContent.job.company, null);
   assert.deepEqual(Array.from(userContent.job.matched_keywords), []);
+});
+
+test("translateKnownSiteStep maps the entry-button click to the semantic open_application tool", () => {
+  const opened = translateKnownSiteStep({ step: "Open application flow", status: "clicked", label: "Apply Now" });
+  assert.equal(opened.tool, "open_application");
+  assert.equal(opened.status, "success");
+
+  const missing = translateKnownSiteStep({ step: "Open application flow", status: "missing" });
+  assert.equal(missing.tool, "open_application");
+  assert.equal(missing.status, "error");
+});
+
+test("translateKnownSiteStep maps the final-submit click to the semantic submit_application tool", () => {
+  const submitted = translateKnownSiteStep({ step: "Submit application", status: "clicked", label: "Submit" });
+  assert.equal(submitted.tool, "submit_application");
+  assert.equal(submitted.status, "success");
+  assert.match(submitted.observation, /clicked "Submit"/);
+});
+
+test("translateKnownSiteStep distinguishes a confirmed submission from an unconfirmed one", () => {
+  const confirmed = translateKnownSiteStep({
+    step: "Confirm application submitted",
+    status: "detected",
+    label: "Your application has been submitted"
+  });
+  assert.equal(confirmed.tool, "read_page");
+  assert.equal(confirmed.status, "success");
+
+  // The exact regression case content.js's fallback branch used to silently misreport as done:true --
+  // see clickAndDetectSubmission's comment on why this is now pausedForReview, not a false success.
+  const unconfirmed = translateKnownSiteStep({ step: "Confirm application submitted", status: "unconfirmed" });
+  assert.equal(unconfirmed.tool, "read_page");
+  assert.equal(unconfirmed.status, "error");
+  assert.match(unconfirmed.observation, /could not confirm/);
+});
+
+test("translateKnownSiteStep maps the new pre-submit validation check to an error, not a success", () => {
+  const blocked = translateKnownSiteStep({
+    step: "Check for validation errors before submitting",
+    status: "blocked",
+    label: "2 field(s) marked invalid"
+  });
+  assert.equal(blocked.tool, "verify");
+  assert.equal(blocked.status, "error");
+  assert.match(blocked.observation, /field\(s\) marked invalid/);
+});
+
+test("translateKnownSiteStep maps already-submitted/already-applied detection to a successful read", () => {
+  for (const stepName of ["Detect already submitted", "Detect already submitted after waiting", "Detect already applied notice"]) {
+    const detected = translateKnownSiteStep({ step: stepName, status: "detected", label: "Submitted" });
+    assert.equal(detected.tool, "read_page");
+    assert.equal(detected.status, "success");
+  }
+});
+
+test("translateKnownSiteStep returns null for per-field/per-question steps, keeping the live log to attempt-level actions only", () => {
+  // content.js pushes into the SAME steps array from 20+ call sites for per-field/per-question
+  // answering -- none of those step names are in translateKnownSiteStep's allowlist, so they must not
+  // show up in the live activity log (they stay exactly where they already were: the existing
+  // steps/attempts arrays in the final report).
+  assert.equal(translateKnownSiteStep({ step: "Answer work authorization question", status: "answered" }), null);
+  assert.equal(translateKnownSiteStep({ step: "Fill open text question", status: "filled" }), null);
+  assert.equal(translateKnownSiteStep({ step: "Some future step nobody has written yet", status: "clicked" }), null);
 });

@@ -4,11 +4,117 @@
   const GA = window.__careerPeelerGA;
   const { normalizeText, isElementVisible, isActionDisabled, getElementLabel, getActionLabel, getOptionLabel, delay, buildOptionMatcher } = GA;
 
+  // A plain `element.value = x` goes through whatever setter is CURRENTLY installed on the element --
+  // and React wraps every controlled input's setter with its own value tracker so it can tell a real
+  // change apart from a no-op. Setting through that wrapped setter updates the tracker's own "last
+  // value" right along with the DOM, so when the `input` event fires afterward, React's tracker sees
+  // no change since ITS OWN last-known value and never updates the page's actual state -- the DOM
+  // shows the new value for now, but the site's own React state still thinks the field is empty. The
+  // next time ANYTHING on the page re-renders (a sibling field's dependent-field logic, a debounced
+  // validation pass, navigating a wizard step), React repaints the input from that stale state and the
+  // value silently reverts -- this is the mechanism behind "a field I filled earlier went blank
+  // again." Calling the ORIGINAL prototype setter (captured once, before React or anything else could
+  // have wrapped the instance's own property) bypasses the wrapped instance setter entirely, so
+  // React's tracker still sees its old value and correctly detects + commits the change once the
+  // input event fires. Falls back to a plain assignment when no such prototype setter exists (e.g. an
+  // unusual custom element) -- strictly an upgrade over the old behavior, never a regression.
+  function setNativeElementValue(element, value) {
+    const prototype =
+      element.tagName === "TEXTAREA" ? window.HTMLTextAreaElement?.prototype : window.HTMLInputElement?.prototype;
+    const nativeSetter = prototype && Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+
+    if (nativeSetter) {
+      nativeSetter.call(element, value);
+    } else {
+      element.value = value;
+    }
+  }
+
+  // A bare `new Event("input")` carries none of the information a REAL typed character produces --
+  // no `inputType`, no `data`. Ported from Pie's act-core.ts `type` op (the one difference from what
+  // this function used to do): a genuine `InputEvent("input", {inputType:"insertText", data:value})`
+  // is what browsers themselves dispatch for a real text insertion, and form libraries that key their
+  // own state off `event.data`/`event.inputType` (rather than just re-reading `element.value`) don't
+  // recognize a plain Event as one at all -- the write can appear to succeed (the DOM shows the value)
+  // while the framework's own model of the field never registers a change, and a later unrelated
+  // re-render repaints the input from that untouched state. This is why the previous version of this
+  // function (native setter + bare Event) fixed some sites but not Microsoft Careers specifically.
   function fillTextField(element, value) {
     element.focus();
-    element.value = value;
-    element.dispatchEvent(new Event("input", { bubbles: true }));
+    setNativeElementValue(element, value);
+    element.dispatchEvent(new InputEvent("input", { inputType: "insertText", data: value, bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Used by loop.js's end-of-sweep verification pass to confirm a field's live DOM value still
+  // matches what was filled earlier in the same run -- a cheap, synchronous re-check, not a repeat of
+  // the whole fill.
+  function hasExpectedFieldValue(element, expectedValue) {
+    return (element.value || "") === expectedValue;
+  }
+
+  // Wraps this element's OWN `value` property with a logging getter/setter that records every write
+  // (value + timestamp) to the console, then delegates to the real native setter -- lets you see
+  // exactly what wrote what, and in what order, when a field's value reverts after fillTextField
+  // already reported it as present. Attached only while loop.js is actively retrying a field that
+  // failed its immediate check, never on every field, so an ordinary sweep pays nothing for it.
+  // Instance-level (Object.defineProperty on the element itself, not its prototype), so it never
+  // affects any other element on the page. Returns a function that removes the override, restoring the
+  // prototype's own setter -- always call it once done tracing, whether the retry succeeded or not.
+  // Never logs the raw value for a password-kind field, matching loop.js's describeEnteredValue guard.
+  function traceElementWrites(element, label, kind) {
+    const prototype = element.tagName === "TEXTAREA" ? window.HTMLTextAreaElement?.prototype : window.HTMLInputElement?.prototype;
+    const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "value");
+
+    if (!descriptor?.get || !descriptor?.set) {
+      return () => {};
+    }
+
+    Object.defineProperty(element, "value", {
+      configurable: true,
+      get() {
+        return descriptor.get.call(element);
+      },
+      set(nextValue) {
+        console.log(`[Career Peeler] write to "${label}":`, {
+          value: kind === "password" ? "(redacted)" : nextValue,
+          at: new Date().toISOString()
+        });
+        descriptor.set.call(element, nextValue);
+      }
+    });
+
+    return () => {
+      delete element.value;
+    };
+  }
+
+  // Fallback for a field that rejects fillTextField's programmatic write entirely (see loop.js's
+  // "rejected-on-write" diagnostic) -- some frameworks only accept a value change traceable to a
+  // genuine, OS-trusted keyboard event, which no DOM-dispatched synthetic event can produce no matter
+  // how it's constructed. chrome.debugger's CDP Input.insertText is the one mechanism available to an
+  // extension that DOES produce isTrusted input, but the API itself is only callable from the
+  // background service worker, not from this content-script context -- so this only does the part
+  // that DOES belong here (focus + select the target, exactly what a real user does before typing
+  // over existing content) and hands the actual typing to background.js over a message.
+  async function typeViaKeyboardFallback(element, value) {
+    element.focus();
+    element.select();
+
+    const response = await chrome.runtime
+      .sendMessage({ type: "APPLE_CAREERS_TYPE_VIA_DEBUGGER", text: value })
+      .catch((error) => ({ ok: false, error: error?.message }));
+
+    if (!response?.ok) {
+      return { ok: false, error: response?.error || "Keyboard-input fallback failed." };
+    }
+
+    // Input.insertText already produces the isTrusted input event the site needs -- this dispatches
+    // `change` too (real typing wouldn't fire it until blur) so anything downstream that specifically
+    // waits for `change` (this codebase's own isFieldNowInvalid included) still sees it, same as
+    // fillTextField already does for the normal path.
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true };
   }
 
   // Checks the field's OWN validation state after a fill, rather than assuming a value was accepted
@@ -40,7 +146,16 @@
       return false;
     }
 
-    selectElement.value = match.value;
+    // Same React-value-tracker reasoning as fillTextField's setNativeElementValue -- a native <select>
+    // is just as susceptible to a controlled-component re-render reverting a plain `.value =`
+    // assignment as a text input is.
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement?.prototype || {}, "value")?.set;
+    if (nativeSetter) {
+      nativeSetter.call(selectElement, match.value);
+    } else {
+      selectElement.value = match.value;
+    }
+
     selectElement.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
   }
@@ -214,6 +329,9 @@
   Object.assign(GA, {
     fillTextField,
     isFieldNowInvalid,
+    hasExpectedFieldValue,
+    traceElementWrites,
+    typeViaKeyboardFallback,
     selectMatchingOption,
     simulateRealClick,
     isOptionConfirmedSelected,

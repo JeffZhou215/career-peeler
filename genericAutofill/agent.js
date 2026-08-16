@@ -18,11 +18,24 @@
   const GA = window.__careerPeelerGA;
   const { runGenericAutofill, findGenericSubmitButton } = GA;
 
+  // Must match loop.js's own copy of this key -- if runGenericAutofill throws before reaching its own
+  // final persistActivity(false) call, the activity log would otherwise stay stuck showing "running"
+  // in the side panel until the next sweep overwrites it.
+  const GENERIC_AUTOFILL_ACTIVITY_KEY = "appleCareersGenericAutofillActivity";
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL") {
       runGenericAutofill(message.userProfile)
         .then(sendResponse)
-        .catch((error) => sendResponse({ ok: false, error: error?.message || "Autofill failed." }));
+        .catch((error) => {
+          chrome.storage.local.get(GENERIC_AUTOFILL_ACTIVITY_KEY).then((stored) => {
+            const activity = stored[GENERIC_AUTOFILL_ACTIVITY_KEY];
+            if (activity?.running) {
+              chrome.storage.local.set({ [GENERIC_AUTOFILL_ACTIVITY_KEY]: { ...activity, running: false } }).catch(() => {});
+            }
+          });
+          sendResponse({ ok: false, error: error?.message || "Autofill failed." });
+        });
       return true;
     }
 
@@ -48,6 +61,13 @@
     isAgeEligibilityQuestion: GA.isAgeEligibilityQuestion,
     isPreviousEmploymentQuestion: GA.isPreviousEmploymentQuestion,
     isReferralSourceQuestion: GA.isReferralSourceQuestion,
-    askLlmForAnswer: GA.askLlmForAnswer
+    askLlmForAnswer: GA.askLlmForAnswer,
+    hasExpectedFieldValue: GA.hasExpectedFieldValue,
+    resolveProfileValue: GA.resolveProfileValue,
+    isElementStillActionable: GA.isElementStillActionable,
+    describeEnteredValue: GA.describeEnteredValue,
+    buildTextFillRetryOutcome: GA.buildTextFillRetryOutcome,
+    findNextUnhandledFieldEntry: GA.findNextUnhandledFieldEntry,
+    runGenericAutofill: GA.runGenericAutofill
   };
 })();

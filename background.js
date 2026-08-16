@@ -18,6 +18,14 @@ const ownedWorkflowTabIds = new Set();
 
 let scanState = createIdleState();
 let storedJobRecordsAtScanStart = {};
+// Deliberately NOT a property on scanState -- scanState gets fully serialized to SCAN_STATUS_KEY on
+// every saveScanState() call and polled by the side panel every second while running (see
+// useScanStatus.js), so nesting a growing steps array in there would double-store the same data the
+// dedicated KNOWN_SITE_ACTIVITY_KEY already holds and re-send it on every poll. A separate module-level
+// array, same pattern as processedUrls/visitedListPages above, reset once per scan (see startScan) and
+// read directly by runScanLoop/scanJobLink/runApplicationWorkflow without needing to be threaded
+// through as a parameter.
+let currentScanActivitySteps = [];
 
 const scanStateReady = chrome.storage.local.get(SCAN_STATUS_KEY).then((stored) => {
   const savedState = stored[SCAN_STATUS_KEY];
@@ -505,6 +513,8 @@ async function scanJobLink(link) {
       throw new Error("Could not extract the job detail page.");
     }
 
+    await pushKnownSiteStep(currentScanActivitySteps, "read_job_description", response.data.title || link.title || null, "success", null);
+
     let job = await applyLlmMatch(response.data, scanState.userProfile, { onError: rememberError });
     job = {
       ...job,
@@ -517,8 +527,21 @@ async function scanJobLink(link) {
     let applicationResult = null;
     let failureReason = null;
     let alreadyCheckpointed = false;
+    const willApply = shouldAutoApply(status, job, scanState.userProfile);
 
-    if (shouldAutoApply(status, job, scanState.userProfile)) {
+    // Score prefers the LLM's own fit score when LLM matching ran; falls back to the local keyword
+    // match's percentage otherwise (a different, coarser signal, but still a real one) so the log
+    // always shows SOME percentage rather than nothing when only local matching was used.
+    const matchScoreForLog = job.llmMatch?.score ?? job.matchScore?.percentage ?? null;
+    await pushKnownSiteStep(
+      currentScanActivitySteps,
+      "evaluate_job_match",
+      job.title || null,
+      "success",
+      `${matchScoreForLog === null ? job.decision : `${matchScoreForLog}% match`} -- ${willApply ? "applying" : "skipped"}`
+    );
+
+    if (willApply) {
       await updateScanState({
         phase: "Auto-applying",
         currentJob: {
@@ -529,6 +552,7 @@ async function scanJobLink(link) {
 
       const workflowResponse = await runApplicationWorkflow(detailTab, {
         stopIfScanStopped: true,
+        activitySteps: currentScanActivitySteps,
         jobContext: {
           jobId: job.jobId,
           site: job.site,
@@ -948,6 +972,18 @@ async function runScanLoop() {
     await saveScanState();
   }
 
+  // Fires regardless of how the loop above exited -- the scan-level counterpart to
+  // runApplicationWorkflow's own "done" push for its standalone-call case; this is what marks the
+  // WHOLE run's activity log finished, once, rather than after each individual application.
+  currentScanActivitySteps.push({
+    id: currentScanActivitySteps.length + 1,
+    tool: "done",
+    label: null,
+    status: "success",
+    observation: null
+  });
+  await persistKnownSiteActivity(false, currentScanActivitySteps);
+
   await closeOwnedWorkflowTabs();
 }
 
@@ -978,6 +1014,32 @@ async function startScan(tab, userProfile) {
   storedIdentifiersAtScanStart.clear();
   visitedListPages.clear();
   await hydrateProcessedFromStorage();
+
+  // Reset once per scan run (not once per application, like before this session -- see
+  // runApplicationWorkflow's own activitySteps option) so validate_api_key/extract_resume_profile
+  // below, and every job's read_job_description/evaluate_job_match/application steps after them, land
+  // in ONE continuous log for the whole run, matching the flow you described.
+  currentScanActivitySteps = [];
+  await persistKnownSiteActivity(true, currentScanActivitySteps);
+
+  // Mirrors KnownSitesSection.jsx's startListScan gate exactly (requiresValidatedApiKeyForScan) --
+  // these two steps just RECORD that the side panel's already-completed gating/extraction passed, for
+  // the activity log's sake, not re-do the work. Skipped entirely when this is false, matching what
+  // KnownSitesSection.jsx already decided before sending this message.
+  if (requiresValidatedApiKeyForScan(normalizedProfile)) {
+    await pushKnownSiteStep(currentScanActivitySteps, "validate_api_key", null, "success", "API key is valid");
+
+    if (normalizedProfile.resumeFileDataUrl) {
+      await pushKnownSiteStep(
+        currentScanActivitySteps,
+        "extract_resume_profile",
+        null,
+        "success",
+        hasCandidateProfileContent(normalizedProfile.candidateProfile) ? "candidate profile ready" : "no candidate profile available"
+      );
+    }
+  }
+
   scanState = {
     ...createIdleState(),
     running: true,
@@ -1044,6 +1106,99 @@ async function clearHistory() {
   };
 }
 
+// Same shape and same reuse rationale as genericAutofill/loop.js's activity-log machinery -- written
+// directly to chrome.storage.local (background.js already has direct access, no relay needed), picked
+// up by the side panel's generalized useAutofillActivity/AutofillActivityLog (see those files).
+const KNOWN_SITE_ACTIVITY_KEY = "appleCareersKnownSiteActivity";
+
+async function persistKnownSiteActivity(running, activitySteps) {
+  await chrome.storage.local
+    .set({ [KNOWN_SITE_ACTIVITY_KEY]: { running, steps: activitySteps, updatedAt: Date.now() } })
+    .catch(() => {}); // best-effort UI nicety, same as loop.js's persistActivity -- must never break the workflow itself
+}
+
+// Translates a subset of content.js's existing step-tracking entries (runApplicationWorkflowStep's
+// `steps` array, already returned in the final report) onto the live activity log's
+// {tool, label, status, observation} shape -- specifically the OUTER, attempt/submission-level actions
+// a user would actually want to watch happen live (open the application, submit, confirm). content.js
+// pushes into that SAME array from 20+ other call sites too, for per-field/per-question answering --
+// those are deliberately left out of this translation and stay exactly where they already were (the
+// existing steps/attempts arrays in the final report), rather than flooding this new live log with
+// granularity nobody asked to watch step by step.
+function translateKnownSiteStep(entry) {
+  if (entry.step === "Open application flow") {
+    const opened = entry.status !== "missing";
+    return {
+      tool: "open_application",
+      label: entry.label || "Apply",
+      status: opened ? "success" : "error",
+      observation: opened ? "opened the application" : "no application entry point found"
+    };
+  }
+
+  if (entry.step === "Submit application") {
+    return {
+      tool: "submit_application",
+      label: entry.label || "Submit",
+      status: "success",
+      observation: `clicked "${entry.label || "Submit"}"`
+    };
+  }
+
+  if (entry.step === "Confirm application submitted") {
+    const confirmed = entry.status !== "unconfirmed";
+    return {
+      tool: "read_page",
+      label: "Submission confirmation",
+      status: confirmed ? "success" : "error",
+      observation: confirmed ? entry.label || "confirmed" : "could not confirm a success/already-applied/loading signal"
+    };
+  }
+
+  if (entry.step === "Check for validation errors before submitting") {
+    return { tool: "verify", label: "Validation check", status: "error", observation: entry.label || "validation issues found" };
+  }
+
+  if (entry.step === "Detect login or session requirement") {
+    return { tool: "verify", label: "Session check", status: "error", observation: entry.label || "login required" };
+  }
+
+  if (
+    entry.step === "Detect already submitted" ||
+    entry.step === "Detect already submitted after waiting" ||
+    entry.step === "Detect already applied notice"
+  ) {
+    return { tool: "read_page", label: "Application status", status: "success", observation: entry.label || entry.step };
+  }
+
+  return null;
+}
+
+async function pushKnownSiteActivitySteps(activitySteps, newEntries) {
+  let changed = false;
+
+  for (const entry of newEntries) {
+    const translated = translateKnownSiteStep(entry);
+    if (translated) {
+      activitySteps.push({ id: activitySteps.length + 1, ...translated });
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await persistKnownSiteActivity(true, activitySteps);
+  }
+}
+
+// For steps background.js synthesizes itself (validate_api_key, extract_resume_profile,
+// read_job_description, evaluate_job_match) -- already in the target {tool, label, status, observation}
+// shape, so no translateKnownSiteStep pass is needed, unlike pushKnownSiteActivitySteps above (which
+// exists specifically to translate content.js's differently-shaped step entries).
+async function pushKnownSiteStep(activitySteps, tool, label, status, observation) {
+  activitySteps.push({ id: activitySteps.length + 1, tool, label, status, observation });
+  await persistKnownSiteActivity(true, activitySteps);
+}
+
 async function runApplicationWorkflow(tab, options = {}) {
   const closeOnDone = options.closeOnDone !== false;
   const stopIfScanStopped = Boolean(options.stopIfScanStopped);
@@ -1072,6 +1227,15 @@ async function runApplicationWorkflow(tab, options = {}) {
 
   const steps = [];
   const attempts = [];
+  // When called as part of a scan, scanJobLink passes its own already-running activitySteps array
+  // (reset once at the top of startScan, already carrying validate_api_key/read_job_description/
+  // evaluate_job_match for this job) -- append to THAT instead of resetting, so the whole run stays
+  // one continuous log. When called standalone (the "Run current job workflow" diagnostic button,
+  // which never goes through startScan), create and reset a fresh one, exactly as before this session.
+  const activitySteps = options.activitySteps || [];
+  if (!options.activitySteps) {
+    await persistKnownSiteActivity(true, activitySteps);
+  }
   const cleanupWorkflowTabs = async () => {
     if (!closeOnDone) {
       return;
@@ -1135,6 +1299,7 @@ async function runApplicationWorkflow(tab, options = {}) {
           attempt
         }))
       );
+      await pushKnownSiteActivitySteps(activitySteps, response.data.steps);
 
       const openedApplication =
         response.data.clicked &&
@@ -1272,6 +1437,17 @@ async function runApplicationWorkflow(tab, options = {}) {
   } catch (error) {
     await cleanupWorkflowTabs();
     throw error;
+  } finally {
+    // Fires on every exit path (success, paused-for-review, error, timeout, or a rethrown exception)
+    // -- "done" here means "the workflow stopped running," matching genericAutofill/loop.js's own
+    // done step, not a judgment on the outcome (the steps already pushed above carry that). Only for
+    // the STANDALONE case (see activitySteps above): when this ran as part of a scan, the scan itself
+    // is what's still running (more jobs may follow) -- runScanLoop pushes its OWN done step and marks
+    // running:false once, when the whole scan actually finishes, not after each individual application.
+    if (!options.activitySteps) {
+      activitySteps.push({ id: activitySteps.length + 1, tool: "done", label: null, status: "success", observation: null });
+      await persistKnownSiteActivity(false, activitySteps);
+    }
   }
 }
 
@@ -1375,6 +1551,54 @@ async function runGenericAutofillWorkflow(tab, userProfile) {
   };
 }
 
+// Fallback for form fields that reject programmatically-set values outright -- some frameworks only
+// accept a value change traceable to genuine, OS-trusted input, which no DOM-dispatched (isTrusted:
+// false) synthetic event can produce, no matter how faithfully it's constructed. chrome.debugger is
+// the one mechanism an extension has that DOES produce isTrusted input (Chrome treats CDP's Input.*
+// commands as trusted, the same privileged position real DevTools occupies) -- but the API is only
+// callable from here (the background service worker), never from the content-script context
+// genericAutofill/*.js runs in, hence the message bridge. "debugger" is requested as an OPTIONAL
+// permission (see manifest.json + GenericAutofillSection.jsx's runGenericAutofill, the only place
+// that can request it, since chrome.permissions.request() requires an active user gesture and this
+// message handler has none) -- most sites never need this path, so most users are never prompted.
+async function typeViaDebugger(tabId, text) {
+  if (!tabId) {
+    return { ok: false, error: "No tab id was provided for the keyboard-input fallback." };
+  }
+
+  const target = { tabId };
+  const hasPermission = await chrome.permissions.contains({ permissions: ["debugger"] }).catch(() => false);
+
+  if (!hasPermission) {
+    return { ok: false, error: "Debugger permission was not granted, so the keyboard-input fallback is unavailable." };
+  }
+
+  try {
+    // Chrome refuses a second attach if real DevTools (or another extension) is already attached to
+    // this tab -- surfaced as a normal failure below, not a crash, since that's a legitimate state
+    // (e.g. the user has DevTools open) rather than a bug.
+    await chrome.debugger.attach(target, "1.3");
+  } catch (error) {
+    return { ok: false, error: `Could not attach the debugger to type into this field: ${error?.message || error}` };
+  }
+
+  try {
+    // Input.insertText -- a single string, not per-key virtual-keycode dispatch -- inserts at the
+    // current selection exactly like a real user selecting-all and typing over it would (see
+    // actions.js's typeViaKeyboardFallback, which selects the field's existing content first).
+    // Handles spaces/punctuation/unicode uniformly since it's just text, no character-by-character
+    // key-code mapping to get wrong.
+    await chrome.debugger.sendCommand(target, "Input.insertText", { text });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `CDP text insertion failed: ${error?.message || error}` };
+  } finally {
+    // Detach immediately after use rather than holding the session for the whole autofill sweep --
+    // keeps the "this tab is being debugged" banner Chrome shows while attached as brief as possible.
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
 const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_START_SCAN",
   "APPLE_CAREERS_STOP_SCAN",
@@ -1382,10 +1606,13 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_GET_SCAN_STATUS",
   "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
   "APPLE_CAREERS_GENERATE_ANSWER",
-  "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW"
+  "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW",
+  "APPLE_CAREERS_TYPE_VIA_DEBUGGER",
+  "APPLE_CAREERS_TEST_API_KEY",
+  "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE"
 ]);
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!RECOGNIZED_MESSAGE_TYPES.has(message?.type)) {
     return false;
   }
@@ -1424,6 +1651,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         );
       } else if (message.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW") {
         sendResponse(await runGenericAutofillWorkflow(message.tab, message.userProfile));
+      } else if (message.type === "APPLE_CAREERS_TYPE_VIA_DEBUGGER") {
+        sendResponse(await typeViaDebugger(sender.tab?.id, message.text));
+      } else if (message.type === "APPLE_CAREERS_TEST_API_KEY") {
+        // The UI never calls the provider directly -- same "content/UI messages background, background
+        // does the fetch" shape as every other LLM call in this codebase (see callOpenAi's call sites).
+        sendResponse(await testApiKey(message.provider, message.apiKey));
+      } else if (message.type === "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE") {
+        sendResponse(
+          await extractCandidateProfileFromResume({
+            resumeFileDataUrl: message.resumeFileDataUrl,
+            resumeFileName: message.resumeFileName,
+            apiKey: message.apiKey,
+            model: message.model
+          })
+        );
       }
     } catch (error) {
       sendResponse({

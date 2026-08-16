@@ -4,8 +4,21 @@ import { TagInput } from "./TagInput";
 import { ScanStatusPanel } from "./ScanStatusPanel";
 import { ExtractResultPanel } from "./ExtractResultPanel";
 import { ApplicationAnalysisPanel } from "./ApplicationAnalysisPanel";
+import { ApiKeyValidationStatus } from "./ApiKeyValidationStatus";
+import { AutofillActivityLog } from "./AutofillActivityLog";
+import { CandidateProfileSection } from "./CandidateProfileSection";
 import { getActiveTab, isSupportedCareersUrl, sendMessageWithFallback } from "../lib/format";
 import { useProfileField } from "../hooks/useDraftField";
+import { useApiKeyValidation } from "../hooks/useApiKeyValidation";
+import { useResumeExtraction } from "../hooks/useResumeExtraction";
+import {
+  KNOWN_SITE_ACTIVITY_KEY,
+  hasLlmProviderConfigured,
+  isApiKeyValidated,
+  isCandidateProfileFreshForResume,
+  requiresValidatedApiKeyForScan,
+  fingerprintText
+} from "../lib/profile";
 
 export function KnownSitesSection({ profile, save, status, refreshScanStatus, setStatusMessage }) {
   const [extractResult, setExtractResult] = useState(null);
@@ -19,6 +32,8 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
   const llmApiKeyField = useProfileField(profile, save, "llmApiKey");
   const llmModelField = useProfileField(profile, save, "llmModel");
   const resumeProfileField = useProfileField(profile, save, "resumeProfile");
+  const apiKeyValidation = useApiKeyValidation({ provider: "openai", apiKey: profile.llmApiKey, profile, save });
+  const resumeExtraction = useResumeExtraction({ profile, save });
 
   function setFieldBusy(key, value) {
     setBusy((prev) => ({ ...prev, [key]: value }));
@@ -149,11 +164,55 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
     try {
       const tab = await getActiveTab();
-      const savedProfile = await save();
+      let savedProfile = await save();
 
       if (savedProfile.scanMode === "auto_apply" && !savedProfile.autoApplyConsent) {
         setStatusMessage("Confirm the auto-apply acknowledgement before starting an auto-apply scan.");
         return;
+      }
+
+      // Auto-apply's LLM-ASSISTED job matching depends on a usable, validated LLM provider and (when
+      // a resume is uploaded) an up-to-date CandidateProfile -- both must be ready BEFORE the first
+      // job is evaluated, not discovered mid-scan. Gated on llmEnabled specifically, not just
+      // scanMode: "auto_apply" -- local-only auto-apply (llmEnabled left off) is an existing, fully
+      // supported mode (see the status message below, and shouldAutoApply/getLlmMatch's own graceful
+      // "LLM matching is disabled" skip) that has never needed an API key and must keep not needing
+      // one. background.js never writes to the stored user profile itself (only this side panel does,
+      // via save()), so this happens here rather than inside startScan -- reusing the exact same
+      // APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE message and gating GenericAutofillSection.jsx already
+      // triggers on resume upload, not a second extraction path.
+      if (requiresValidatedApiKeyForScan(savedProfile)) {
+        if (!hasLlmProviderConfigured(savedProfile) || !isApiKeyValidated(savedProfile)) {
+          setStatusMessage("Auto-apply job matching requires a valid API key. Configure and test it above, then try again.");
+          return;
+        }
+
+        if (savedProfile.resumeFileDataUrl && !isCandidateProfileFreshForResume(savedProfile)) {
+          setStatusMessage("Preparing your candidate profile from your resume...");
+
+          const extraction = await chrome.runtime
+            .sendMessage({
+              type: "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE",
+              resumeFileDataUrl: savedProfile.resumeFileDataUrl,
+              resumeFileName: savedProfile.resumeFileName,
+              apiKey: savedProfile.llmApiKey,
+              model: savedProfile.llmModel
+            })
+            .catch((error) => ({ ok: false, error: error?.message }));
+
+          if (!extraction?.ok) {
+            setStatusMessage(extraction?.error || "Could not prepare your candidate profile from the resume.");
+            return;
+          }
+
+          // Cached against a fingerprint of THIS resume -- a later scan against the same resume sees
+          // isCandidateProfileFreshForResume as already true and skips extraction entirely; uploading
+          // a different resume changes the fingerprint and makes this run again.
+          savedProfile = await save({
+            candidateProfile: extraction.candidateProfile,
+            candidateProfileResumeFingerprint: fingerprintText(savedProfile.resumeFileDataUrl)
+          });
+        }
       }
 
       const response = await chrome.runtime.sendMessage({
@@ -284,6 +343,16 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
               placeholder="sk-..."
               autoComplete="off"
               {...llmApiKeyField}
+              onBlur={(event) => {
+                llmApiKeyField.onBlur(event);
+                apiKeyValidation.testNow();
+              }}
+            />
+            <ApiKeyValidationStatus
+              status={apiKeyValidation.status}
+              message={apiKeyValidation.message}
+              testing={apiKeyValidation.status === "testing"}
+              onTest={apiKeyValidation.testNow}
             />
 
             <label className="field-label" htmlFor="llmModel">
@@ -292,9 +361,29 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
             </label>
             <input id="llmModel" type="text" {...llmModelField} />
 
+            <label className="field-label" htmlFor="knownSiteResumeFile">
+              <span>Resume file</span>
+              <HelpTooltip text="Extracted into a structured candidate profile (skills, experience, technologies) and used to decide apply-vs-skip for every job this scan reads -- prepared once per scan, not re-extracted per job. Requires a valid API key above." />
+            </label>
+            <input
+              id="knownSiteResumeFile"
+              type="file"
+              accept=".pdf,.doc,.docx"
+              onChange={resumeExtraction.handleResumeFileChange}
+            />
+            <p className="muted">{profile.resumeFileName ? `Current resume: ${profile.resumeFileName}` : "No resume selected."}</p>
+            <CandidateProfileSection
+              profile={profile}
+              save={save}
+              extractionStatus={resumeExtraction.extractionStatus}
+              extractionError={resumeExtraction.extractionError}
+              onExtractNow={resumeExtraction.extractProfile}
+              idPrefix="knownsite-"
+            />
+
             <label className="field-label" htmlFor="resumeProfile">
-              <span>Resume/profile summary</span>
-              <HelpTooltip text="A concise summary of your target roles, strongest skills, and domains to avoid. This improves LLM matching quality." />
+              <span>Resume/profile summary (fallback)</span>
+              <HelpTooltip text="Used for matching only when no resume file has been uploaded/extracted above -- a quicker, manual alternative to the structured extraction, not a second source combined with it." />
             </label>
             <textarea
               id="resumeProfile"
@@ -329,6 +418,7 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
           </button>
         </div>
 
+        <AutofillActivityLog storageKey={KNOWN_SITE_ACTIVITY_KEY} />
         <ScanStatusPanel status={status} />
 
         <details className="advanced">

@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { GenericAutofillResultPanel } from "./GenericAutofillResultPanel";
+import { AutofillActivityLog } from "./AutofillActivityLog";
+import { CandidateProfileSection } from "./CandidateProfileSection";
 import { getActiveTab } from "../lib/format";
 import { useProfileField } from "../hooks/useDraftField";
+import { useResumeExtraction } from "../hooks/useResumeExtraction";
+import { GENERIC_AUTOFILL_ACTIVITY_KEY } from "../lib/profile";
 
 function TextField({ id, label, type = "text", profile, save }) {
   const field = useProfileField(profile, save, id);
@@ -51,29 +55,23 @@ function EeoSelectField({ id, label, options, profile, save }) {
   );
 }
 
-async function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error || new Error("Could not read the selected file."));
-    reader.readAsDataURL(file);
-  });
-}
-
 export function GenericAutofillSection({ profile, save, setStatusMessage }) {
   const [autofillBusy, setAutofillBusy] = useState(false);
   const [autofillResult, setAutofillResult] = useState(null);
+  const { extractionStatus, extractionError, handleResumeFileChange, extractProfile } = useResumeExtraction({ profile, save });
 
-  async function handleResumeFileChange(event) {
-    const file = event.target.files?.[0];
-
-    if (!file) {
-      await save({ resumeFileDataUrl: "", resumeFileName: "", resumeFileType: "" });
-      return;
-    }
-
-    const dataUrl = await readFileAsDataUrl(file);
-    await save({ resumeFileDataUrl: dataUrl, resumeFileName: file.name, resumeFileType: file.type });
+  // Some sites' form fields reject a value set via the normal, DOM-level autofill path outright --
+  // background.js's typeViaDebugger falls back to real CDP keyboard input for exactly those fields,
+  // but chrome.debugger is a sensitive, optional permission (see manifest.json), so it's requested
+  // here rather than bundled into the install-time grant. This is the ONLY place that can request it:
+  // chrome.permissions.request() needs an active user gesture, which this button click is and a
+  // message handler deep in the autofill sweep is not, and content scripts can't call the permissions
+  // API at all. A decline isn't fatal -- it just means that fallback won't be available this run;
+  // fields that would have needed it get flagged for manual review instead, same as before this
+  // existed.
+  async function ensureDebuggerPermission() {
+    const alreadyGranted = await chrome.permissions.contains({ permissions: ["debugger"] }).catch(() => false);
+    return alreadyGranted || (await chrome.permissions.request({ permissions: ["debugger"] }).catch(() => false));
   }
 
   async function runGenericAutofill() {
@@ -87,6 +85,8 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
         setStatusMessage("Open a job application page in this tab, then try again.");
         return;
       }
+
+      await ensureDebuggerPermission();
 
       const savedProfile = await save();
 
@@ -138,6 +138,7 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
             <TextField id="email" label="Email" type="email" profile={profile} save={save} />
             <TextField id="phone" label="Phone" type="tel" profile={profile} save={save} />
             <TextField id="addressLine1" label="Street address" profile={profile} save={save} />
+            <TextField id="addressLine2" label="Address line 2 (apartment/suite/unit, optional)" profile={profile} save={save} />
             <TextField id="addressCity" label="City" profile={profile} save={save} />
             <TextField id="addressState" label="State / province" profile={profile} save={save} />
             <TextField id="addressPostalCode" label="Postal code" profile={profile} save={save} />
@@ -146,12 +147,20 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
             <TextField id="githubUrl" label="GitHub URL" type="url" profile={profile} save={save} />
             <TextField id="portfolioUrl" label="Portfolio / website URL" type="url" profile={profile} save={save} />
 
-            <label className="field-label" htmlFor="resumeFile">
+            <label className="field-label" htmlFor="genericResumeFile">
               <span>Resume file</span>
-              <HelpTooltip text="Stored locally in Chrome storage and attached to a resume upload field, if one is found, by handing the page a real file object -- no debugger permission or file path needed." />
+              <HelpTooltip text="Stored locally in Chrome storage and attached to a resume upload field, if one is found, by handing the page a real file object -- no debugger permission or file path needed. Also used for automatic profile extraction, same as the Apple/TikTok/ByteDance section's copy -- one shared resume across both." />
             </label>
-            <input id="resumeFile" type="file" accept=".pdf,.doc,.docx" onChange={handleResumeFileChange} />
+            <input id="genericResumeFile" type="file" accept=".pdf,.doc,.docx" onChange={handleResumeFileChange} />
             <p className="muted">{profile.resumeFileName ? `Current resume: ${profile.resumeFileName}` : "No resume selected."}</p>
+            <CandidateProfileSection
+              profile={profile}
+              save={save}
+              extractionStatus={extractionStatus}
+              extractionError={extractionError}
+              onExtractNow={extractProfile}
+              idPrefix="generic-"
+            />
 
             <YesNoField
               id="workAuthorized"
@@ -222,6 +231,7 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
           </div>
         </div>
 
+        <AutofillActivityLog storageKey={GENERIC_AUTOFILL_ACTIVITY_KEY} />
         <GenericAutofillResultPanel data={autofillResult} />
       </div>
     </details>

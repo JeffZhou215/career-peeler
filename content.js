@@ -846,6 +846,28 @@ function getAlreadyAppliedSignal() {
   return getAlreadyAppliedDialog() || getAlreadyAppliedToast() || getAlreadyAppliedNotice();
 }
 
+// Checked immediately before the final Submit click -- deliberately limited to standard, semantic ARIA
+// signals (role=alert, aria-invalid) rather than a broad ".error"/".invalid" class-name guess: a fuzzy
+// class-name match risks false-positives on unrelated styling classes that happen to be present but
+// inactive, which would block a legitimate submission. role=alert and aria-invalid are signals a site
+// sets deliberately to mean "look at this now", the same standard this codebase already trusts
+// elsewhere (genericAutofill/actions.js's isFieldNowInvalid checks the same aria-invalid attribute).
+function getVisibleValidationErrors() {
+  const alertMessages = Array.from(document.querySelectorAll("[role='alert']"))
+    .filter((element) => isElementVisible(element))
+    .map((element) => normalizeText(element.innerText || ""))
+    .filter(Boolean);
+
+  const invalidFieldCount = Array.from(document.querySelectorAll("[aria-invalid='true']")).filter(isElementVisible).length;
+
+  const messages = [...new Set(alertMessages)].slice(0, 5);
+  if (invalidFieldCount > 0) {
+    messages.push(`${invalidFieldCount} field(s) marked invalid`);
+  }
+
+  return messages;
+}
+
 // The above toast is only visible for a few seconds and can take several more to appear after the
 // click (server round-trip for the duplicate-application check), so a single check after one fixed
 // delay can land before it appears or after it's already gone. Poll instead so a signal appearing
@@ -1710,6 +1732,22 @@ async function clickAction(pattern, stepName, steps, options = {}) {
 }
 
 async function clickAndDetectSubmission(element, steps) {
+  const validationErrors = getVisibleValidationErrors();
+  if (validationErrors.length > 0) {
+    steps.push({
+      step: "Check for validation errors before submitting",
+      status: "blocked",
+      label: validationErrors.join("; ")
+    });
+    return {
+      clicked: false,
+      done: false,
+      pending: false,
+      errorType: "blocked_by_validation",
+      summary: `Found ${validationErrors.length} validation issue(s) before submitting -- please resolve them first: ${validationErrors.join("; ")}`
+    };
+  }
+
   element.scrollIntoView({
     block: "center"
   });
@@ -1769,11 +1807,24 @@ async function clickAndDetectSubmission(element, steps) {
     };
   }
 
+  // Clicked, and neither a success signal, an already-applied signal, nor a still-loading indicator
+  // showed up within waitForSubmissionOutcome's window -- genuinely ambiguous, not a confident success.
+  // Reuses pausedForReview (its downstream handling in background.js is already generic: "needs_review"
+  // status, driven by whatever errorType/summary this response carries, not hardcoded essay-review
+  // text) rather than silently reporting done:true on a click alone, and rather than falling through to
+  // another attempt -- retrying could click an already-submitted form's Submit button a second time.
+  steps.push({
+    step: "Confirm application submitted",
+    status: "unconfirmed"
+  });
   return {
     clicked: true,
-    done: true,
+    done: false,
     pending: false,
-    summary: "Clicked final Submit."
+    pausedForReview: true,
+    errorType: "clicked_but_unconfirmed",
+    summary:
+      "Clicked final Submit, but couldn't confirm a success, already-applied, or still-loading signal afterward -- please check this application manually before assuming it went through."
   };
 }
 

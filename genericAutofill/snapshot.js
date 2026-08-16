@@ -28,12 +28,23 @@
     findResumeFileInput
   } = GA;
 
+  // role=combobox/listbox/aria-haspopup=listbox selector shared between the field-exclusion pass and
+  // the dropdown-detection pass below, so the two can never drift out of sync with each other.
+  const DROPDOWN_LIKE_SELECTOR = "[role='combobox'], [role='listbox'], [aria-haspopup='listbox']";
+
   function snapshotPage() {
     const entries = [];
 
     const fieldElements = Array.from(document.querySelectorAll("input, select, textarea"))
       .filter((element) => isElementVisible(element))
-      .filter((element) => !isActionDisabled(element));
+      .filter((element) => !isActionDisabled(element))
+      // A custom combobox's own typing/filter surface is very often a real <input> (or, less
+      // commonly, has role="combobox" directly on it) -- without this exclusion it gets picked up
+      // AGAIN here as an ordinary text field, and inferGenericFieldMapping/fillTextField would type
+      // arbitrary profile text straight into what's actually only a filter box for a fixed option
+      // list. closest() also matches the element itself, not just ancestors, so this covers both the
+      // "input nested inside a combobox wrapper" and "role=combobox is on the input itself" shapes.
+      .filter((element) => !element.closest(DROPDOWN_LIKE_SELECTOR));
 
     for (const element of fieldElements) {
       const fieldKind = getFieldKind(element);
@@ -62,9 +73,9 @@
       });
     }
 
-    const allDropdownLikeElements = Array.from(
-      document.querySelectorAll("[role='combobox'], [role='listbox'], [aria-haspopup='listbox']")
-    ).filter((element) => isElementVisible(element));
+    const allDropdownLikeElements = Array.from(document.querySelectorAll(DROPDOWN_LIKE_SELECTOR)).filter((element) =>
+      isElementVisible(element)
+    );
     const topLevelDropdowns = allDropdownLikeElements.filter(
       (element) => !allDropdownLikeElements.some((other) => other !== element && other.contains(element))
     );

@@ -11,9 +11,22 @@ import { useEffect, useRef, useState } from "react";
 // only the value bound to the input's `value` prop is decoupled, so it always shows exactly what was
 // typed instead of whatever normalizeProfile trimmed it down to. Once the field blurs and the
 // (possibly-trimmed) value round-trips back through `externalValue`, the draft re-syncs to match it.
+//
+// That same "skip the sync while focused" guard has a second, unrelated trigger besides the user's own
+// typing: an entirely external update to the SAME key, e.g. re-extracting a candidate profile while its
+// multi-line "Professional summary" textarea happens to be focused because the user merely clicked in to
+// read it (a resume-derived summary usually doesn't fit in three rows). No keystroke ever happened, so
+// there's nothing worth protecting, but the effect above only re-syncs on `externalValue` changing --
+// which already fired once and was skipped while focused -- not on blur, so without the check below the
+// field would stay stuck on the pre-extraction text until some UNRELATED future save touched this same
+// key again. `editedWhileFocusedRef` distinguishes the two triggers: only skip the catch-up-on-blur sync
+// when the user actually typed something themselves during this focus session.
 export function useDraftField(externalValue, onCommit) {
   const [draft, setDraft] = useState(externalValue);
   const isFocusedRef = useRef(false);
+  const editedWhileFocusedRef = useRef(false);
+  const externalValueRef = useRef(externalValue);
+  externalValueRef.current = externalValue;
 
   useEffect(() => {
     if (!isFocusedRef.current) {
@@ -25,14 +38,19 @@ export function useDraftField(externalValue, onCommit) {
     value: draft,
     onChange: (event) => {
       const nextValue = event.target.value;
+      editedWhileFocusedRef.current = true;
       setDraft(nextValue);
       onCommit(nextValue);
     },
     onFocus: () => {
       isFocusedRef.current = true;
+      editedWhileFocusedRef.current = false;
     },
     onBlur: () => {
       isFocusedRef.current = false;
+      if (!editedWhileFocusedRef.current) {
+        setDraft(externalValueRef.current);
+      }
     }
   };
 }

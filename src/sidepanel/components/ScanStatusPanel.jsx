@@ -6,7 +6,7 @@ function renderRecentItem(record) {
   const reason = record.failureReason ? ` - ${record.failureReason}` : "";
   const llmDetails =
     record.matchSource === "llm" && record.llmMatch
-      ? ` · LLM ${record.llmMatch.confidence}%${
+      ? ` · LLM ${record.llmMatch.score}%${
           record.llmMatch.matchedSkills?.length ? ` · ${record.llmMatch.matchedSkills.slice(0, 3).join(", ")}` : ""
         }`
       : "";

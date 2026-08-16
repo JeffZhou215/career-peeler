@@ -25,7 +25,15 @@
     { profileKey: "fullName", pattern: /\b(full name|legal name|your full name|applicant'?s? name|signature name)\b/i },
     { profileKey: "email", pattern: /\b(email|e-mail)\b/i },
     { profileKey: "phone", pattern: /\b(phone|mobile|telephone)\b/i },
-    { profileKey: "addressLine1", pattern: /\b(street address|address line|mailing address|address)\b/i },
+    // Checked before addressLine1 on purpose: "address line" alone matches BOTH "Address Line 1" and
+    // "Address Line 2", so without this narrower rule running first, Line 2 was classified as Line 1
+    // too and silently filled with the same street address. Apartment/suite/unit fields commonly
+    // don't say "address" at all ("Apt/Suite"), so those are matched standalone here too.
+    {
+      profileKey: "addressLine2",
+      pattern: /\b(address line\s*2|apartment|apt\.?|suite|ste\.?|unit)\b/i
+    },
+    { profileKey: "addressLine1", pattern: /\b(street address|address line\s*1|mailing address|address)\b/i },
     { profileKey: "addressCity", pattern: /\bcity\b/i },
     { profileKey: "addressState", pattern: /\b(state|province)\b/i },
     { profileKey: "addressPostalCode", pattern: /\b(zip|postal code)\b/i },
@@ -87,12 +95,44 @@
   // "fullName" isn't a real stored profile field -- it's derived from firstName + lastName, since
   // the profile stores them separately but plenty of sites (especially e-signature sections) ask
   // for one combined name field.
+  // Only fields that map cleanly 1:1 onto a candidateProfile.basicInfo field without any guessed
+  // parsing -- firstName/lastName are deliberately excluded even though basicInfo has fullName, since
+  // splitting a full name string into first/last is itself a guess (compound names, multiple middle
+  // names) this codebase's "never guess" philosophy argues against. addressLine1/2 and
+  // addressPostalCode have no candidateProfile equivalent at all (resumes rarely include a street
+  // address), so they're correctly absent here too, not an oversight.
+  const CANDIDATE_PROFILE_FALLBACK_FIELDS = {
+    email: "email",
+    phone: "phone",
+    linkedinUrl: "linkedinUrl",
+    githubUrl: "githubUrl",
+    portfolioUrl: "portfolioUrl",
+    addressCity: "city",
+    addressState: "state",
+    addressCountry: "country"
+  };
+
+  // An explicitly-filled flat autofill-profile field (typed by hand in the side panel) always wins
+  // when non-empty -- candidateProfile (extracted from a resume, see lib/core.js's
+  // extractCandidateProfileFromResume) is only ever a fallback for a field the user left blank, never
+  // a silent override of something they deliberately entered themselves.
   function resolveProfileValue(profile, profileKey) {
     if (profileKey === "fullName") {
-      return `${profile.firstName || ""} ${profile.lastName || ""}`.trim();
+      const flatFullName = `${profile.firstName || ""} ${profile.lastName || ""}`.trim();
+      return flatFullName || profile.candidateProfile?.basicInfo?.fullName || "";
     }
 
-    return profile[profileKey];
+    const direct = profile[profileKey];
+    if (direct) {
+      return direct;
+    }
+
+    const candidateProfileField = CANDIDATE_PROFILE_FALLBACK_FIELDS[profileKey];
+    if (candidateProfileField) {
+      return profile.candidateProfile?.basicInfo?.[candidateProfileField] || direct;
+    }
+
+    return direct;
   }
 
   function buildOptionMatcher(wantedValue) {
