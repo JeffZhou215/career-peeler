@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { HelpTooltip } from "./HelpTooltip";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
 
 const TARGET_ACTIVE_APPLICATIONS = 50;
@@ -160,16 +161,16 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       <div className="submitted-history-heading">
         <div>
           <p className="eyebrow">APPLE CAREERS</p>
-          <h2>Submitted application review</h2>
+          <div className="submitted-history-title-row">
+            <h2>Submitted Application Review</h2>
+            <HelpTooltip text="Reviews active Apple submissions page by page, compares each posting's description and qualifications with your saved resume, and caches details for 180 days. If Apple signs you out, sign back in and analyze again; cached details are reused. Unavailable postings are low confidence and aren't preselected for withdrawal." />
+          </div>
         </div>
         <button type="button" onClick={analyzeRoles} disabled={busy}>
           {busy ? "Working…" : roles.length ? "Refresh roles" : "Analyze roles"}
         </button>
       </div>
 
-      <p className="muted">
-        Reviews Apple submissions page by page, reading active postings and saving their descriptions and qualifications in extension storage. Cached details are reused for 180 days. If Apple signs you out mid-review, sign back in and analyze again; saved posting details are reused. Unavailable postings are marked low confidence and not preselected for withdrawal.
-      </p>
       <p className="muted">
         Apple says some roles are exempt from its 50-role cap. The count and suggested batch here target exactly 50 entries in the visible Active submissions list; they may differ from Apple’s cap-eligible count.
       </p>

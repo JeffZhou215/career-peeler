@@ -95,6 +95,11 @@ body {
   font-size: 16px;
 }
 
+.submitted-history-title-row {
+  display: flex;
+  align-items: center;
+}
+
 .submitted-history-summary {
   padding: 9px 10px;
   border-radius: 8px;
