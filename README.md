@@ -2,21 +2,19 @@
 
 Unofficial tool that scans Apple Careers, TikTok Careers, and ByteDance Careers job lists, classifies each role against your profile, and can optionally auto-apply. This project is not affiliated with Apple, TikTok, or ByteDance.
 
-Two interfaces share the same matching/apply logic: a **Chrome extension** (friendlier UI, reuses your logged-in browser tab) and a **command-line tool** (for headless/scheduled runs, e.g. via cron). They keep separate local job-tracking history — scanning via one doesn't inform the other.
+Two interfaces share the same matching/apply logic: a **Chrome extension** (the primary interface, reusing your logged-in browser tab) and an **experimental command-line tool** (for headless/scheduled runs, e.g. via cron). CLI auto-apply is experimental and should be monitored. They keep separate local job-tracking history — scanning via one doesn't inform the other.
 
 ## How it works
 
-**1. Open a job list page and start a scan.** Career Peeler reads every visible job link on the page and works through them one by one in a background tab, so your active tab is left alone.
+**1. Open a supported job list and start a scan.** Career Peeler discovers the visible Apple, TikTok, or ByteDance job links, opens each detail page in a workflow tab, and returns to the list between jobs. Workflow tabs are activated inside Chrome because some TikTok/ByteDance pages do not render while inactive; the extension does not bring the Chrome window in front of another application.
 
-![Side panel overview: start scan, live job list with Submitted/Review statuses](store-assets/screenshot-1-overview-1280x800.png)
+**2. Extract and evaluate each job.** The content script reads the job description, then fast static heuristics evaluate title/seniority, required years of experience, technical signals, and the user's no-match keywords. When LLM-assisted matching is enabled, OpenAI evaluates the job against the structured CandidateProfile or the saved summary. Deterministic hard skips still win; otherwise a strong LLM fit (currently 70% or higher) can proceed despite limited learnable-tool gaps.
 
-**2. Each job gets classified locally** — years-of-experience, tech-stack overlap with your profile, and any no-match keywords you've set — before anything is ever sent to an LLM. Scan-only mode is the default: nothing gets submitted until you explicitly turn on auto-apply.
+**3. Apply or record the decision.** Scan-only mode records the result without opening the application workflow. Acknowledged auto-apply mode can advance through the tuned multi-step Apple/TikTok/ByteDance flows, fill and verify required questions sequentially, attach the saved PDF resume, and click final Submit. A job counts as applied only after the site exposes a success signal; already-applied notices are recorded separately and the workflow tab is closed.
 
-![Settings: scan-only default, auto-apply acknowledgement, optional LLM matching](store-assets/screenshot-2-settings-1280x800.png)
+**4. Follow the live execution.** The side panel shows API validation, resume-profile readiness, job-description reads, local and LLM match results, final apply/skip decisions, field actions, verification, submission, errors, and needs-review items. Job titles in activity and progress views link back to the original role.
 
-**3. Watch progress and review what happened.** Live stats show how many were applied, need review, or hit an error, and every job is logged with a link back to it for manual follow-up.
-
-![Progress panel: applied/review/error counts and a recent jobs log](store-assets/screenshot-3-progress-logs-1280x800.png)
+The original May screenshots have been removed from this walkthrough because they show the retired popup-era UI. Current side-panel captures are still needed; see `store-assets/PRIVATE_LISTING.md` for the exact capture checklist.
 
 ### Stored job statuses
 
@@ -27,17 +25,27 @@ Two interfaces share the same matching/apply logic: a **Chrome extension** (frie
 | `likely_match` | Strong local fit |
 | `likely_skip` | Poor fit, or hard-skipped (seniority, internship, YOE, no-match keyword) |
 | `submitted` | Already applied, or detected as already submitted |
+| `applied` | Submitted by this run and confirmed by a site success signal |
+| `needs_review` | Automation or LLM evidence was insufficient to decide or submit safely |
+| `*_apply_failed` | An eligible job entered the application workflow but did not finish |
 
 Previously scanned jobs are skipped across sessions, and pagination advances automatically when the current list page is exhausted.
+Confirmed/apparently already-submitted jobs also enter a durable, site-qualified applied ledger, so they remain skipped even after the compact general history is pruned. Job-specific failures remain in a separate saved Errors ledger and can be retried directly without scanning or paginating through the original job list again. Successful retries remove only the resolved error; interrupted retries leave it available.
+
+The side panel provides separate `Clear Applied Jobs` and `Clear Error Jobs` controls. Each makes those jobs eligible for discovery again and leaves the other ledger untouched. `Clear Job History` resets both ledgers, compact job records, detailed logs, and scan progress while preserving settings, API credentials, and resume/profile data.
 
 ## What it does
 
 - **Scans** Apple Careers, TikTok Careers, and ByteDance Careers list pages, across pagination, skipping jobs it's already seen.
-- **Classifies** each job locally by years-of-experience requirements, tech-stack keyword overlap with your profile, and your own no-match keyword denylist — with optional OpenAI-assisted matching for closer calls (off by default; only sends job text and your profile summary when enabled).
-- **Hard-skips** senior/staff/principal/lead titles, internships, and roles that clearly exceed your years of experience, before any LLM call.
-- **Auto-applies** (only once explicitly acknowledged in settings) by working through each site's application steps, answering common work-authorization/visa questions, and submitting — then logs failures with enough detail (site, error type, page heading, recovery link) to fix and re-submit manually.
-- **Stores everything locally** in Chrome storage. Does not upload files or create profile data — the workflow assumes your Apple Careers profile, resume, and LinkedIn are already saved on the site itself.
-- **Autofills any other job application page** (Greenhouse, Lever, Workday, custom ATS) on demand via the "Autofill this page" button. Fills what it can confidently match from a separate autofill profile (contact info, EEO/work-authorization dropdowns, resume file), drafts an answer for genuine open-ended questions with the LLM, and flags everything else under "Needs Review" instead of guessing — same auto-submit rules as the known sites.
+- **Classifies** each job first with fast, static years-of-experience, title, technical-keyword, and denylist heuristics, with optional OpenAI-assisted CandidateProfile matching as the personalized layer.
+- **Hard-skips** manager/senior/staff/principal/lead titles, internships, explicit no-match keywords, and roles whose required experience clearly exceeds the saved profile before any LLM call.
+- **Extracts a CandidateProfile** from one PDF resume through OpenAI, caches it against that exact PDF, and uses it for matching, application answers, and autofill. Replacing the PDF invalidates the cached extraction. A manually pasted profile summary remains available as a fallback.
+- **Validates the OpenAI API key** before LLM-assisted auto-apply starts. OpenAI is the only implemented provider; `gpt-4o` is the default configured model, while required open-text research uses a bounded `gpt-5.5` Responses request with hosted web search. Local-only scanning and auto-apply remain available with LLM matching disabled.
+- **Auto-applies on known sites** only after explicit acknowledgement and completion of the locally stored Required Application Answers. Required fields are filled one at a time and verified; optional questions are skipped. Fixed policies handle recognized authorization/date questions locally. Required EEO questions use saved profile values locally without sending them to OpenAI. Unknown required questions invoke the agent only for open text or dropdowns: text answers can combine resume facts with public company/role research, while dropdowns are restricted to exact observed options. On generic/Workday forms, recognizable previous-employer Yes/No groups are the narrow option-group exception: the answer is derived locally from CandidateProfile employer history and is never globally defaulted to No.
+- **Tracks applied and error jobs durably** by supported site plus job ID (with a URL fallback), exposes independent clear controls, and retries saved error jobs without rescanning list pages.
+- **Reviews Apple submissions** from the signed-in Your Roles page, ranks active roles against the saved profile, and offers a confirmed batch-withdraw flow that refreshes the remaining active list afterward. The first-pass score uses each role's title and department, not its full job description.
+- **Stores settings and profile data locally** in Chrome storage. OpenAI receives data only for an enabled/requested LLM operation; the selected PDF is sent when CandidateProfile extraction is requested.
+- **Autofills other job application pages** (Greenhouse, Lever, Workday, custom ATS) on demand. Unknown sites use a single-page sequential sweep: it fills and verifies recognized fields, retries rejected controlled inputs through framework-compatible native setter/events, and flags unresolved required fields. Workday is the bounded multi-page exception; its adapter commits controlled text and already-matched dropdown clicks through a narrow page-context bridge, treats search-backed multi-selects as offered-option widgets rather than text fields, can add and verify CandidateProfile work-experience/education records, learns populated Workday entries back into the same Chrome-local CandidateProfile, and continues through exact Workday forward actions. Generic Submit is reported as **clicked, confirmation pending**, never as a confirmed application.
 
 ## Load locally (Chrome extension)
 
@@ -47,11 +55,17 @@ The side panel is a Vite + React app; `background.js`/`content.js`/`genericAutof
 2. Open Chrome and go to `chrome://extensions`.
 3. Turn on Developer Mode.
 4. Click `Load unpacked` and select this repo's `dist/` folder.
-5. Click the Career Peeler toolbar icon to open the side panel — it docks to the side of the window and stays open as you switch tabs. Open a supported careers list page and click `Start Scan`. Auto-apply stays off until you enable it under `Matching and application settings`.
+5. Click the Career Peeler toolbar icon to open the side panel — it docks to the side of the window and stays open as you switch tabs. Open a supported careers list page and click `Scan Visible Job List`. Auto-apply stays off until you enable it under `Matching And Application Settings` and acknowledge that it can submit real applications.
+
+## Private beta distribution
+
+This repository is currently being prepared for a private Chrome Web Store listing restricted to trusted testers. The store submission fields, permission explanations, privacy answers, tester instructions, and outstanding screenshot inputs are maintained in `store-assets/PRIVATE_LISTING.md`.
+
+Before sharing a build, review the current fixed application-answer policies. This working version still contains personal defaults for required authorization, sponsorship, criminal-history, and age-eligibility questions. Previous-employment answers are derived from CandidateProfile employer history, while EEO answers are configurable per profile and required before auto-apply; the remaining fixed answers are appropriate only for a tester whose real circumstances match them.
 
 ## Command-line tool
 
-Drives a real (Playwright-controlled) Chromium browser instead of a Chrome extension popup — useful for headless or scheduled runs. It reuses `content.js` and the shared matching/LLM logic in `lib/core.js` verbatim; only the browser-automation layer (`cli/`) differs from the extension's `background.js`.
+Experimental interface that drives a real Playwright-controlled Chromium browser. Scan-only runs are suitable for testing; CLI auto-apply and the direct `apply` command should be monitored and their results manually verified. It reuses `content.js` and the shared matching/LLM logic in `lib/core.js` verbatim; only the browser-automation layer (`cli/`) differs from the extension's `background.js`.
 
 ```bash
 npm install                        # installs playwright
@@ -88,20 +102,22 @@ Piping output to a file (or running non-interactively) drops the in-place redraw
 
 ## Publishing checklist
 
-- Verify extension icons render correctly in Chrome and add Chrome Web Store screenshots.
-- Use the generated Chrome Web Store images in `store-assets/`: three `1280x800` screenshots, `promo-small-440x280.png`, `promo-marquee-1400x560.png`, and `store-icon-128x128.png`.
+- Verify extension icons render correctly in Chrome and capture current Chrome Web Store screenshots.
+- Keep the current logo/icon identity. The three existing `1280x800` screenshots and two promotional images predate the side panel and multi-site/generic workflows; do not submit them until they are replaced with the current captures described in `store-assets/PRIVATE_LISTING.md`.
 - Host a public privacy policy based on `PRIVACY.md` and link it from the Chrome Web Store Developer Dashboard.
 - Keep scan-only as the default so users can preview decisions without submitting.
-- Ensure listing copy clearly states that OpenAI matching is optional and sends job/profile text externally only when enabled.
-- Add resume upload/reset UI before publishing beyond personal use.
+- Ensure listing copy explains every OpenAI-assisted operation: API-key validation, job matching, PDF CandidateProfile extraction, and required-question resolution.
+- Add an explicit resume remove/reset control and make personal application-answer policies configurable before distribution beyond matching trusted testers.
 - Avoid Apple logos or wording that implies affiliation.
-- Keep permissions limited to supported careers hosts, optional OpenAI access, storage, tabs, and scripting.
+- Explain the current `storage`, `tabs`, `scripting`, `sidePanel`, `debugger`, and `<all_urls>` permissions accurately.
 - Run the pre-publish checklist in `TEST_CASES.md`.
 
-## Next milestones
+## Current limitations
 
-1. Test list scanning across several Apple search result pages and log false positives.
-2. Refine submitted-state and next-page selectors after inspecting real Apple DOM variations.
-3. Refine application field categories across real application steps.
-4. Refine login/session-state detection and stronger confirmation-state detection across more real site variants.
-5. Add configurable auto-apply criteria for `Likely match`, `Review`, and `Unknown`.
+- Apple/TikTok/ByteDance automation depends on those sites' current DOM and may stop for review when a page changes or a success signal cannot be confirmed.
+- Generic autofill handles one visible page per click and cannot confirm what happens after it clicks Submit.
+- Resume extraction accepts PDF only, and OpenAI is the only LLM provider.
+- The model field is free-form; an unsupported model is detected only when OpenAI rejects a request.
+- Fixed personal application answers are not yet configurable across all automation paths.
+- CLI auto-apply and direct CLI `apply` remain experimental and should be monitored.
+- Long-running MV3 scan recovery, stop ordering, and standalone application-tab ownership still need additional hardening.

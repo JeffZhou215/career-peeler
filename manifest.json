@@ -8,8 +8,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "scripting", "tabs", "sidePanel"],
-  "optional_permissions": ["debugger"],
+  "permissions": ["storage", "scripting", "tabs", "sidePanel", "debugger"],
   "host_permissions": ["<all_urls>"],
   "action": {},
   "side_panel": {

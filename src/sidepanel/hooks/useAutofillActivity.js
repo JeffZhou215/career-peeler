@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const DEFAULT_ACTIVITY = { running: false, steps: [] };
+const DEFAULT_ACTIVITY = { running: false, steps: [], cycles: [] };
 
 // Mirrors useScanStatus.js's chrome.storage.onChanged pattern, generalized to any {running, steps}
 // storage key -- genericAutofill/loop.js and background.js's runApplicationWorkflow both write steps

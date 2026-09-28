@@ -8,3 +8,4 @@ those files directly if you want the full context instead of just this index.
 @rules/implementation.md
 @rules/browser-agent.md
 @rules/ui.md
+@rules/clarification.md

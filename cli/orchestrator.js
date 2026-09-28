@@ -250,8 +250,29 @@ async function scanJobLink(context, store, link) {
       });
 
     let job = await core.applyLlmMatch(extracted, store.scanState.userProfile, { onError: store.rememberError });
+    store.scanState.stats.apiCalls = core.getOpenAiCallCount();
     job = { ...job, site: job.site || site, siteLabel: job.siteLabel || siteLabel };
     job = core.applyRequiredYoeHardSkip(job, store.scanState.userProfile);
+
+    // Mirrors background.js's scanJobLink -- an LLM call that was attempted and failed must not
+    // silently resolve to whatever the local-only decision happened to be (see applyLlmMatch's catch
+    // block), unless an independent hard-disqualifier already applies regardless of the LLM.
+    if (job.llmError && !core.isLocalHardSkip(job)) {
+      store.rememberNeedsReview({
+        jobId: job.jobId,
+        site: job.site,
+        siteLabel: job.siteLabel,
+        title: job.title,
+        url: job.url,
+        reason: `LLM matching failed: ${job.llmError}`
+      });
+      store.saveJobRecord({ ...job, failureReason: job.llmError }, "needs_review");
+      core.incrementStatsForStatus(store.scanState.stats, "needs_review");
+      store.scanState.scanned += 1;
+      store.saveScanState();
+      return;
+    }
+
     const status = job.alreadySubmitted ? "submitted" : core.statusFromDecision(job.decision);
     let finalStatus = status;
     let applicationResult = null;
@@ -653,12 +674,20 @@ async function startScan(context, store, listUrl, userProfile) {
   }
 
   const normalizedProfile = core.normalizeUserProfile(userProfile);
+  if (normalizedProfile.scanMode === "auto_apply") {
+    const applicationAnswersError = core.getRequiredApplicationAnswersReadinessError(normalizedProfile);
+    if (applicationAnswersError) {
+      return { ok: false, error: applicationAnswersError };
+    }
+  }
 
   store.compactStoredJobRecords();
   store.resetProcessedTracking();
   store.hydrateProcessedFromStorage();
 
   const listPage = await browser.openPage(context, listUrl);
+
+  core.resetOpenAiCallCount();
 
   store.scanState = {
     ...core.createIdleState(),
@@ -675,12 +704,12 @@ async function startScan(context, store, listUrl, userProfile) {
 
   await runScanLoop(context, store, listPage);
 
-  return { ok: true, status: store.scanState };
+  return { ok: true, status: store.getPublicScanState() };
 }
 
 function stopScan(store) {
   store.updateScanState({ running: false, phase: "Stopped", currentJob: null, completedAt: new Date().toISOString() });
-  return { ok: true, status: store.scanState };
+  return { ok: true, status: store.getPublicScanState() };
 }
 
 module.exports = {

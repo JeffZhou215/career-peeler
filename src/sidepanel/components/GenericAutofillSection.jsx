@@ -1,12 +1,17 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { GenericAutofillResultPanel } from "./GenericAutofillResultPanel";
 import { AutofillActivityLog } from "./AutofillActivityLog";
 import { CandidateProfileSection } from "./CandidateProfileSection";
+import { RequiredApplicationAnswers } from "./RequiredApplicationAnswers";
 import { getActiveTab } from "../lib/format";
 import { useProfileField } from "../hooks/useDraftField";
 import { useResumeExtraction } from "../hooks/useResumeExtraction";
-import { GENERIC_AUTOFILL_ACTIVITY_KEY } from "../lib/profile";
+import {
+  GENERIC_AUTOFILL_ACTIVITY_KEY,
+  getMissingRequiredApplicationAnswers,
+  hasRequiredApplicationAnswers
+} from "../lib/profile";
 
 function TextField({ id, label, type = "text", profile, save }) {
   const field = useProfileField(profile, save, id);
@@ -37,42 +42,12 @@ function YesNoField({ id, label, help, profile, save }) {
   );
 }
 
-function EeoSelectField({ id, label, options, profile, save }) {
-  return (
-    <>
-      <label className="field-label" htmlFor={id}>
-        <span>{label}</span>
-      </label>
-      <select id={id} value={profile[id]} onChange={(event) => save({ [id]: event.target.value })}>
-        <option value="">Not set -- always ask me</option>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </>
-  );
-}
-
 export function GenericAutofillSection({ profile, save, setStatusMessage }) {
   const [autofillBusy, setAutofillBusy] = useState(false);
   const [autofillResult, setAutofillResult] = useState(null);
-  const { extractionStatus, extractionError, handleResumeFileChange, extractProfile } = useResumeExtraction({ profile, save });
-
-  // Some sites' form fields reject a value set via the normal, DOM-level autofill path outright --
-  // background.js's typeViaDebugger falls back to real CDP keyboard input for exactly those fields,
-  // but chrome.debugger is a sensitive, optional permission (see manifest.json), so it's requested
-  // here rather than bundled into the install-time grant. This is the ONLY place that can request it:
-  // chrome.permissions.request() needs an active user gesture, which this button click is and a
-  // message handler deep in the autofill sweep is not, and content scripts can't call the permissions
-  // API at all. A decline isn't fatal -- it just means that fallback won't be available this run;
-  // fields that would have needed it get flagged for manual review instead, same as before this
-  // existed.
-  async function ensureDebuggerPermission() {
-    const alreadyGranted = await chrome.permissions.contains({ permissions: ["debugger"] }).catch(() => false);
-    return alreadyGranted || (await chrome.permissions.request({ permissions: ["debugger"] }).catch(() => false));
-  }
+  const settingsRef = useRef(null);
+  const requiredAnswersRef = useRef(null);
+  const { extractionStatus, extractionError, resumeFileError, handleResumeFileChange, extractProfile } = useResumeExtraction({ profile, save });
 
   async function runGenericAutofill() {
     setAutofillBusy(true);
@@ -86,9 +61,26 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
         return;
       }
 
-      await ensureDebuggerPermission();
+      const hostname = new URL(tab.url).hostname.toLowerCase();
+      const isWorkday = ["myworkdayjobs.com", "myworkdaysite.com"].some(
+        (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`)
+      );
+      if (isWorkday) {
+        setStatusMessage("Running Workday auto-apply across application steps...");
+      }
 
       const savedProfile = await save();
+
+      if (savedProfile.scanMode === "auto_apply" && !hasRequiredApplicationAnswers(savedProfile)) {
+        settingsRef.current.open = true;
+        const firstMissing = getMissingRequiredApplicationAnswers(savedProfile)[0]?.key;
+        window.setTimeout(() => {
+          const target = requiredAnswersRef.current?.querySelector?.(`[data-required-answer="${firstMissing}"]`);
+          (target?.matches?.("select, input, summary") ? target : target?.querySelector?.("select, input, summary"))?.focus();
+        }, 0);
+        setStatusMessage("Complete Required Application Answers before running auto-apply. Optional questions will still be skipped.");
+        return;
+      }
 
       const response = await chrome.runtime.sendMessage({
         type: "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW",
@@ -103,12 +95,21 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
       setAutofillResult(response.data);
       if (response.data.clickedApplyEntry) {
         setStatusMessage(`Clicked "${response.data.applyEntryLabel}" to start the application. Click Autofill again once the form loads.`);
-      } else {
+      } else if (response.data.confirmationPending) {
         setStatusMessage(
-          response.data.submitted
-            ? "Autofill complete and submitted."
-            : `Autofill complete. ${response.data.flaggedFields.length} field(s) need your review before you submit.`
+          response.data.workdayPagesProcessed
+            ? `Workday auto-apply reached Submit after ${response.data.workdayPagesProcessed} page(s); confirmation pending.`
+            : "Autofill complete. Submit clicked; confirmation pending."
         );
+      } else if (response.data.submitAttempted) {
+        setStatusMessage("Autofill complete, but the Submit button could not be clicked.");
+      } else if (response.data.flaggedFields.length > 0) {
+        setStatusMessage(
+          `${response.data.workdayPagesProcessed ? "Workday auto-apply stopped" : "Autofill complete"}. ` +
+            `${response.data.flaggedFields.length} field(s) need your review before you submit.`
+        );
+      } else {
+        setStatusMessage("Autofill complete. Submit was not clicked.");
       }
     } catch (error) {
       setStatusMessage(error?.message || "Could not autofill this page.");
@@ -127,9 +128,9 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
         </h2>
       </summary>
       <div className="mode-section-body">
-        <details className="settings">
+        <details ref={settingsRef} className="settings">
           <summary>
-            Autofill profile
+            Autofill Profile
             <HelpTooltip text="Any field left blank is skipped and flagged for you to fill in yourself." />
           </summary>
           <div className="settings-fields">
@@ -149,9 +150,10 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
 
             <label className="field-label" htmlFor="genericResumeFile">
               <span>Resume file</span>
-              <HelpTooltip text="Stored locally in Chrome storage and attached to a resume upload field, if one is found, by handing the page a real file object -- no debugger permission or file path needed. Also used for automatic profile extraction, same as the Apple/TikTok/ByteDance section's copy -- one shared resume across both." />
+              <HelpTooltip text="Stored locally in Chrome storage and attached to a resume upload field, if one is found, by handing the page a real file object -- no file path needed. Also used for automatic profile extraction, same as the Apple/TikTok/ByteDance section's copy -- one shared resume across both." />
             </label>
-            <input id="genericResumeFile" type="file" accept=".pdf,.doc,.docx" onChange={handleResumeFileChange} />
+            <input id="genericResumeFile" type="file" accept="application/pdf,.pdf" onChange={handleResumeFileChange} />
+            {resumeFileError && <p className="muted">{resumeFileError}</p>}
             <p className="muted">{profile.resumeFileName ? `Current resume: ${profile.resumeFileName}` : "No resume selected."}</p>
             <CandidateProfileSection
               profile={profile}
@@ -171,50 +173,12 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
             />
             <YesNoField id="requiresSponsorship" label="Requires visa sponsorship?" profile={profile} save={save} />
 
-            <EeoSelectField
-              id="eeoGender"
-              label="Gender (EEO)"
-              options={["Male", "Female", "Non-binary", "Decline to self-identify"]}
+            <RequiredApplicationAnswers
               profile={profile}
               save={save}
-            />
-            <EeoSelectField
-              id="eeoRaceEthnicity"
-              label="Race / ethnicity (EEO)"
-              options={[
-                "Hispanic or Latino",
-                "White (Not Hispanic or Latino)",
-                "Black or African American (Not Hispanic or Latino)",
-                "Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)",
-                "Asian (Not Hispanic or Latino)",
-                "Native American or Alaska Native (Not Hispanic or Latino)",
-                "Two or More Races (Not Hispanic or Latino)",
-                "Decline to self-identify"
-              ]}
-              profile={profile}
-              save={save}
-            />
-            <EeoSelectField
-              id="eeoVeteranStatus"
-              label="Veteran status (EEO)"
-              options={[
-                "I am not a protected veteran",
-                "I identify as one or more classifications of a protected veteran",
-                "I don't wish to answer"
-              ]}
-              profile={profile}
-              save={save}
-            />
-            <EeoSelectField
-              id="eeoDisabilityStatus"
-              label="Disability status (EEO)"
-              options={[
-                "Yes, I have a disability, or have had one in the past",
-                "No, I do not have a disability and have not had one in the past",
-                "I do not want to answer"
-              ]}
-              profile={profile}
-              save={save}
+              idPrefix="generic-"
+              sectionRef={requiredAnswersRef}
+              emphasizeMissing={profile.scanMode === "auto_apply"}
             />
 
             <TextField id="desiredSalary" label="Desired salary" profile={profile} save={save} />
@@ -225,7 +189,7 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
         <div className="actions primary-actions">
           <div className="button-with-help">
             <button type="button" className="primary" disabled={autofillBusy} onClick={runGenericAutofill}>
-              Autofill this page
+              Autofill This Page
             </button>
             <HelpTooltip text="Fills what it can confidently match from your autofill profile above, drafts an answer for open-ended questions, and flags anything else for you to review." />
           </div>

@@ -25,7 +25,9 @@ instead of import/export:
   bottom to publish its own exports.
 - **Load order matters and is declared in two places that must stay in sync**: `background.js`'s
   `GENERIC_AUTOFILL_FILES` array, and `tests/genericAutofill.test.js`'s own copy of that same array
-  (`domHelpers → classify → actions → snapshot → prompt → loop → agent`).
+  (`domHelpers → classify → actions → workdayExperience → snapshot → prompt → loop → agent`).
+- `mainWorldBridge.js` is intentionally not part of that shared-namespace list. `background.js` injects
+  it separately with `world: "MAIN"`; it has its own idempotent guard and no `GA` dependency.
 - When you add a new function meant to be used by another file in this family, **you must add it to the
   `Object.assign(GA, {...})` call at the bottom of its defining file** - forgetting this produces a
   silent-until-runtime `"X is not a function"` error in whichever file destructures it, since nothing
@@ -61,9 +63,9 @@ confirmation) from answer-elicitation, and should not be removed.
 
 ## Resume/profile data
 
-`profile.resumeProfile` (a saved free-text summary) is the **existing** "read the resume" abstraction
-fed to the LLM (`lib/core.js`'s `generateFreeTextAnswer`, already grounded + anti-fabrication-guarded).
-`profile.resumeFileDataUrl` is only the raw uploaded file bytes, used solely for the
-`DataTransfer`-based file-upload trick - it is never parsed for text. There is no PDF/DOCX text
-extraction anywhere in this repo; don't assume one exists, and don't add one without discussing it
-first (it's a real new subsystem, not a small change).
+`profile.resumeProfile` is the saved free-text fallback fed to the LLM. The canonical personalized
+path is `profile.candidateProfile`, extracted by sending `profile.resumeFileDataUrl` directly to
+OpenAI as a file content part; there is no local PDF text parser. Resume upload/extraction is PDF-only.
+The same raw PDF bytes are also used by generic autofill's `DataTransfer`-based file-upload path.
+Do not add a local PDF parser or broaden supported resume formats without discussing it first - either
+would be a real new subsystem, not a small change.

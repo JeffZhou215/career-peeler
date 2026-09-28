@@ -7,9 +7,13 @@ side by side on purpose - do not merge them or route one through the other:
    exactly three sites: Apple (`jobs.apple.com`), TikTok, ByteDance. Site identity, URL patterns, and
    button-label regexes live in a `SITE_CONFIGS` object. `content.js` also does job-description scoring
    (`extractJobDetails`, `analyzeLocalMatch`) and list-page scanning/pagination for these sites.
-2. **Generic autofill** (`genericAutofill/*.js`) - a single-page "snapshot the form, classify each field,
-   act" sweep used by the "Autofill this page" button for **any other site**. Deterministic pattern
-   classification, not an LLM choosing actions turn by turn - see `browser-agent.md` for the internals.
+2. **Generic autofill** (`genericAutofill/*.js`) - a "snapshot the form, classify each field, act" sweep
+   used by the "Autofill this page" button for **any other site**. Unknown sites remain single-page.
+   Workday candidate hosts (`myworkdayjobs.com` / `myworkdaysite.com`) are the sole bounded multi-page
+   exception: `background.js` re-runs a fresh generic sweep before each exact-label Continue/Next/
+   Submit action, with a page cap and no-progress guard. Deterministic mappings run first; unresolved
+   questions can use the shared bounded background question agent, while the local action layer retains
+   all DOM authority and verification - see `browser-agent.md` for the internals.
 
 `SITE_CONFIGS` is duplicated (not imported) between `content.js` and `lib/core.js` - keep both in sync
 by hand when adding/changing a supported site.
@@ -24,6 +28,10 @@ hard-skips, LLM prompts/calls, job-record shaping) so it loads two different way
   orchestration, for running scans headlessly outside the extension (`cli/browser.js`,
   `cli/store.js`, `cli/index.js`).
 
+The extension is the primary runtime. CLI auto-apply and the direct CLI `apply` command are
+experimental: preserve their shared-core compatibility, but do not assume they have the same runtime
+verification coverage as the extension without explicit Playwright testing.
+
 **Never add a `chrome.*` call or DOM access to `lib/core.js`** - it would break the CLI half. If new
 logic needs the DOM, it belongs in `content.js` or `genericAutofill/`, and background.js/cli should call
 into it via message-passing / page-evaluation respectively.
@@ -35,7 +43,10 @@ into it via message-passing / page-evaluation respectively.
   `chrome.tabs.sendMessage` / `chrome.scripting.executeScript`.
 - `manifest.json` - `content.js` is statically declared for the three known-site hosts only.
   `genericAutofill/*.js` is **never** declared in `content_scripts` - it's injected on demand, only when
-  the user clicks "Autofill this page" (see `background.js`'s `GENERIC_AUTOFILL_FILES` array).
+  the user clicks "Autofill this page". The shared pipeline uses `background.js`'s
+  `GENERIC_AUTOFILL_FILES` array in Chrome's isolated world; `mainWorldBridge.js` is the separate,
+  idempotent page-world endpoint used only for already-resolved Workday controlled-text commits and
+  locally matched dropdown trigger/option clicks.
 - `src/sidepanel/` - React 19 + Vite side panel UI (persistent panel, not a popup). Mid-migration off a
   single `sidepanel.js` + `styles.css` (both marked for deletion) onto `hooks/`, `lib/`, `components/`.
   Don't add new code to the old files.

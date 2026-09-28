@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { TagInput } from "./TagInput";
 import { ScanStatusPanel } from "./ScanStatusPanel";
@@ -7,6 +7,7 @@ import { ApplicationAnalysisPanel } from "./ApplicationAnalysisPanel";
 import { ApiKeyValidationStatus } from "./ApiKeyValidationStatus";
 import { AutofillActivityLog } from "./AutofillActivityLog";
 import { CandidateProfileSection } from "./CandidateProfileSection";
+import { RequiredApplicationAnswers } from "./RequiredApplicationAnswers";
 import { getActiveTab, isSupportedCareersUrl, sendMessageWithFallback } from "../lib/format";
 import { useProfileField } from "../hooks/useDraftField";
 import { useApiKeyValidation } from "../hooks/useApiKeyValidation";
@@ -17,6 +18,8 @@ import {
   isApiKeyValidated,
   isCandidateProfileFreshForResume,
   requiresValidatedApiKeyForScan,
+  getMissingRequiredApplicationAnswers,
+  hasRequiredApplicationAnswers,
   fingerprintText
 } from "../lib/profile";
 
@@ -24,6 +27,9 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
   const [extractResult, setExtractResult] = useState(null);
   const [applicationAnalysis, setApplicationAnalysis] = useState(null);
   const [busy, setBusy] = useState({});
+  const resumeFileInputRef = useRef(null);
+  const settingsRef = useRef(null);
+  const requiredAnswersRef = useRef(null);
 
   // See src/sidepanel/hooks/useDraftField.js -- these three are the same "save() trims on every
   // keystroke" bug as GenericAutofillSection's TextField, just written as raw inputs here instead of
@@ -37,6 +43,73 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
   function setFieldBusy(key, value) {
     setBusy((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function revealMissingRequiredAnswers(savedProfile) {
+    settingsRef.current.open = true;
+    const firstMissing = getMissingRequiredApplicationAnswers(savedProfile)[0]?.key;
+    window.setTimeout(() => {
+      const target = requiredAnswersRef.current?.querySelector?.(`[data-required-answer="${firstMissing}"]`);
+      (target?.matches?.("select, input, summary") ? target : target?.querySelector?.("select, input, summary"))?.focus();
+    }, 0);
+  }
+
+  // A list scan and an error-only retry can both submit, so they must share the same consent,
+  // provider-validation, and current-resume extraction gate. requiresValidatedApiKeyForScan remains
+  // false for local-only auto-apply; retrying errors must not accidentally make an API key mandatory
+  // for that existing mode.
+  async function prepareKnownSiteRunProfile() {
+    let savedProfile = await save();
+
+    if (savedProfile.scanMode === "auto_apply" && !savedProfile.autoApplyConsent) {
+      setStatusMessage("Confirm the auto-apply acknowledgement before starting an auto-apply run.");
+      return null;
+    }
+
+    if (savedProfile.scanMode === "auto_apply" && !hasRequiredApplicationAnswers(savedProfile)) {
+      revealMissingRequiredAnswers(savedProfile);
+      setStatusMessage("Complete Required Application Answers before starting auto-apply. Optional questions will still be skipped.");
+      return null;
+    }
+
+    if (!requiresValidatedApiKeyForScan(savedProfile)) {
+      return savedProfile;
+    }
+
+    if (!hasLlmProviderConfigured(savedProfile) || !isApiKeyValidated(savedProfile)) {
+      setStatusMessage("Auto-apply job matching requires a valid API key. Configure and test it above, then try again.");
+      return null;
+    }
+
+    if (!savedProfile.resumeFileDataUrl || isCandidateProfileFreshForResume(savedProfile)) {
+      return savedProfile;
+    }
+
+    setStatusMessage("Preparing your candidate profile from your resume...");
+
+    const extraction = await chrome.runtime
+      .sendMessage({
+        type: "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE",
+        resumeFileDataUrl: savedProfile.resumeFileDataUrl,
+        resumeFileName: savedProfile.resumeFileName,
+        apiKey: savedProfile.llmApiKey,
+        model: savedProfile.llmModel
+      })
+      .catch((error) => ({ ok: false, error: error?.message }));
+
+    if (!extraction?.ok) {
+      setStatusMessage(extraction?.error || "Could not prepare your candidate profile from the resume.");
+      return null;
+    }
+
+    // The extraction belongs to this exact PDF. Both full scans and saved-error retries share this
+    // gate so neither can run LLM matching against a stale profile after the resume changes.
+    savedProfile = await save({
+      candidateProfile: extraction.candidateProfile,
+      candidateProfileResumeFingerprint: fingerprintText(savedProfile.resumeFileDataUrl)
+    });
+
+    return savedProfile;
   }
 
   async function extractCurrentPage() {
@@ -115,6 +188,11 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
     try {
       const tab = await getActiveTab();
+      const savedProfile = await prepareKnownSiteRunProfile();
+
+      if (!savedProfile) {
+        return;
+      }
 
       if (!tab?.id || !isSupportedCareersUrl(tab.url)) {
         setStatusMessage("Open an Apple, TikTok, or ByteDance careers job or application page, then try again.");
@@ -136,7 +214,8 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
       const response = await chrome.runtime.sendMessage({
         type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
-        tab
+        tab,
+        userProfile: savedProfile
       });
 
       if (!response?.ok) {
@@ -164,55 +243,10 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
     try {
       const tab = await getActiveTab();
-      let savedProfile = await save();
+      const savedProfile = await prepareKnownSiteRunProfile();
 
-      if (savedProfile.scanMode === "auto_apply" && !savedProfile.autoApplyConsent) {
-        setStatusMessage("Confirm the auto-apply acknowledgement before starting an auto-apply scan.");
+      if (!savedProfile) {
         return;
-      }
-
-      // Auto-apply's LLM-ASSISTED job matching depends on a usable, validated LLM provider and (when
-      // a resume is uploaded) an up-to-date CandidateProfile -- both must be ready BEFORE the first
-      // job is evaluated, not discovered mid-scan. Gated on llmEnabled specifically, not just
-      // scanMode: "auto_apply" -- local-only auto-apply (llmEnabled left off) is an existing, fully
-      // supported mode (see the status message below, and shouldAutoApply/getLlmMatch's own graceful
-      // "LLM matching is disabled" skip) that has never needed an API key and must keep not needing
-      // one. background.js never writes to the stored user profile itself (only this side panel does,
-      // via save()), so this happens here rather than inside startScan -- reusing the exact same
-      // APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE message and gating GenericAutofillSection.jsx already
-      // triggers on resume upload, not a second extraction path.
-      if (requiresValidatedApiKeyForScan(savedProfile)) {
-        if (!hasLlmProviderConfigured(savedProfile) || !isApiKeyValidated(savedProfile)) {
-          setStatusMessage("Auto-apply job matching requires a valid API key. Configure and test it above, then try again.");
-          return;
-        }
-
-        if (savedProfile.resumeFileDataUrl && !isCandidateProfileFreshForResume(savedProfile)) {
-          setStatusMessage("Preparing your candidate profile from your resume...");
-
-          const extraction = await chrome.runtime
-            .sendMessage({
-              type: "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE",
-              resumeFileDataUrl: savedProfile.resumeFileDataUrl,
-              resumeFileName: savedProfile.resumeFileName,
-              apiKey: savedProfile.llmApiKey,
-              model: savedProfile.llmModel
-            })
-            .catch((error) => ({ ok: false, error: error?.message }));
-
-          if (!extraction?.ok) {
-            setStatusMessage(extraction?.error || "Could not prepare your candidate profile from the resume.");
-            return;
-          }
-
-          // Cached against a fingerprint of THIS resume -- a later scan against the same resume sees
-          // isCandidateProfileFreshForResume as already true and skips extraction entirely; uploading
-          // a different resume changes the fingerprint and makes this run again.
-          savedProfile = await save({
-            candidateProfile: extraction.candidateProfile,
-            candidateProfileResumeFingerprint: fingerprintText(savedProfile.resumeFileDataUrl)
-          });
-        }
       }
 
       const response = await chrome.runtime.sendMessage({
@@ -240,6 +274,41 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
     }
   }
 
+  async function retryErrorJobs() {
+    setFieldBusy("retryErrors", true);
+    setStatusMessage("Preparing to retry saved error jobs...");
+
+    try {
+      const savedProfile = await prepareKnownSiteRunProfile();
+
+      if (!savedProfile) {
+        return;
+      }
+
+      const tab = await getActiveTab();
+      const response = await chrome.runtime.sendMessage({
+        type: "APPLE_CAREERS_RETRY_ERROR_JOBS",
+        tab,
+        userProfile: savedProfile
+      });
+
+      if (!response?.ok) {
+        throw new Error(response?.error || "Could not retry the saved error jobs.");
+      }
+
+      await refreshScanStatus();
+      setStatusMessage(
+        savedProfile.scanMode === "scan_only"
+          ? `Rechecking ${response.retryCount} saved error job${response.retryCount === 1 ? "" : "s"} without applying.`
+          : `Retrying ${response.retryCount} saved error job${response.retryCount === 1 ? "" : "s"}.`
+      );
+    } catch (error) {
+      setStatusMessage(error?.message || "Could not retry the saved error jobs.");
+    } finally {
+      setFieldBusy("retryErrors", false);
+    }
+  }
+
   async function stopListScan() {
     setFieldBusy("stopScan", true);
 
@@ -255,7 +324,69 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
     }
   }
 
+  async function clearAppliedJobs() {
+    const confirmed = window.confirm(
+      "Clear the saved applied-job ledger? Those jobs can be discovered and processed again on a future scan."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setFieldBusy("clearApplied", true);
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CLEAR_APPLIED_JOBS" });
+
+      if (!response?.ok) {
+        throw new Error(response?.error || "Could not clear applied jobs.");
+      }
+
+      await refreshScanStatus();
+      setStatusMessage("Saved applied jobs cleared.");
+    } catch (error) {
+      setStatusMessage(error?.message || "Could not clear applied jobs.");
+    } finally {
+      setFieldBusy("clearApplied", false);
+    }
+  }
+
+  async function clearErrorJobs() {
+    const confirmed = window.confirm(
+      "Clear the saved error-job ledger? Those jobs can be discovered again, but they will no longer appear in Retry Error Jobs."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setFieldBusy("clearErrors", true);
+
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CLEAR_ERROR_JOBS" });
+
+      if (!response?.ok) {
+        throw new Error(response?.error || "Could not clear error jobs.");
+      }
+
+      await refreshScanStatus();
+      setStatusMessage("Saved error jobs cleared.");
+    } catch (error) {
+      setStatusMessage(error?.message || "Could not clear error jobs.");
+    } finally {
+      setFieldBusy("clearErrors", false);
+    }
+  }
+
   async function clearHistory() {
+    const confirmed = window.confirm(
+      "Clear all saved job history, including applied jobs, error jobs, detailed logs, and scan progress?"
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
     setFieldBusy("clearHistory", true);
 
     try {
@@ -275,6 +406,40 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
   }
 
   const running = Boolean(status.running);
+  const retryableErrorCount =
+    status.retryableErrorCount ??
+    new Set(
+      (status.errors || [])
+        .map((error) => ({
+          error,
+          retryUrl: [error?.url, error?.manualReviewUrl].find((url) => isSupportedCareersUrl(url))
+        }))
+        .filter(({ retryUrl }) => retryUrl)
+        .map(({ error, retryUrl }) => `${error.site || "unknown"}:${error.jobId || retryUrl}`)
+    ).size;
+  const savedAppliedCount = status.savedAppliedCount || 0;
+  const savedErrorCount = status.savedErrorCount ?? status.errors?.length ?? 0;
+  const scanModeLabel = profile.scanMode === "auto_apply" ? "Auto Apply" : "Scan Only";
+  const matchingModeLabel = profile.llmEnabled
+    ? (profile.llmModel || "AI Matching").replace(/^gpt/i, "GPT")
+    : "Local Matching";
+  const resumeProfileIsCurrent = isCandidateProfileFreshForResume(profile);
+  const resumeStatusLabel =
+    resumeExtraction.extractionStatus === "extracting"
+      ? "Extracting"
+      : !profile.resumeFileDataUrl
+        ? "Not Added"
+        : resumeProfileIsCurrent
+          ? "Ready"
+          : "Profile Pending";
+  const resumeSummaryLabel =
+    resumeExtraction.extractionStatus === "extracting"
+      ? "Resume Extracting"
+      : !profile.resumeFileDataUrl
+        ? "Resume Needed"
+        : resumeProfileIsCurrent
+          ? "Resume Ready"
+          : "Resume Uploaded";
 
   return (
     <details name="autofillMode" className="mode-section" open>
@@ -285,153 +450,238 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
         </h2>
       </summary>
       <div className="mode-section-body">
-        <details className="settings">
-          <summary>Matching and application settings</summary>
-          <div className="settings-fields">
-            <label className="field-label" htmlFor="userYearsOfExperience">
-              <span>Years of experience</span>
-              <HelpTooltip text="Used to skip roles whose required years of experience are above your profile." />
-            </label>
-            <input
-              id="userYearsOfExperience"
-              type="number"
-              min="0"
-              max="50"
-              step="0.5"
-              value={profile.userYearsOfExperience}
-              onChange={(event) => save({ userYearsOfExperience: event.target.value })}
-            />
+        <details ref={settingsRef} className="settings">
+          <summary className="settings-summary">
+            <span>Matching And Application Settings</span>
+            <span className="settings-summary-meta">{`${scanModeLabel} · ${matchingModeLabel} · ${resumeSummaryLabel}`}</span>
+          </summary>
+          <div className="settings-groups">
+            <section className="settings-group" aria-labelledby="application-settings-title">
+              <p id="application-settings-title" className="settings-group-title">
+                Application
+              </p>
+              <div className="settings-group-fields">
+                <label className="field-label" htmlFor="scanMode">
+                  <span>Scan Mode</span>
+                  <HelpTooltip text="Scan only records decisions without submitting applications. Auto apply submits likely matches and review jobs." />
+                </label>
+                <select id="scanMode" value={profile.scanMode} onChange={(event) => save({ scanMode: event.target.value })}>
+                  <option value="scan_only">Scan Only</option>
+                  <option value="auto_apply">Auto Apply: Match &amp; Review</option>
+                </select>
 
-            <label className="field-label" htmlFor="scanMode">
-              <span>Scan mode</span>
-              <HelpTooltip text="Scan only records decisions without submitting applications. Auto apply submits likely matches and review jobs." />
-            </label>
-            <select id="scanMode" value={profile.scanMode} onChange={(event) => save({ scanMode: event.target.value })}>
-              <option value="scan_only">Scan only, do not apply</option>
-              <option value="auto_apply">Auto apply likely match and review jobs</option>
-            </select>
+                <div className="compact-setting-row">
+                  <label htmlFor="userYearsOfExperience">Experience</label>
+                  <div className="experience-control">
+                    <input
+                      id="userYearsOfExperience"
+                      type="number"
+                      min="0"
+                      max="50"
+                      step="0.5"
+                      value={profile.userYearsOfExperience}
+                      onChange={(event) => save({ userYearsOfExperience: event.target.value })}
+                    />
+                    <span>Years</span>
+                  </div>
+                </div>
 
-            <label className="checkbox-row">
-              <input
-                id="autoApplyConsent"
-                type="checkbox"
-                checked={profile.autoApplyConsent}
-                onChange={(event) => save({ autoApplyConsent: event.target.checked })}
-              />
-              <span>I understand auto-apply can submit real applications</span>
-              <HelpTooltip text="Required before auto-apply mode can submit matching jobs. Leave unchecked for scan-only use." />
-            </label>
+                {profile.scanMode === "auto_apply" && (
+                  <label className="checkbox-row consent-row">
+                    <input
+                      id="autoApplyConsent"
+                      type="checkbox"
+                      checked={profile.autoApplyConsent}
+                      onChange={(event) => save({ autoApplyConsent: event.target.checked })}
+                    />
+                    <span>I Understand This Can Submit Applications</span>
+                    <HelpTooltip text="Required before auto-apply mode can submit matching jobs. Leave unchecked for scan-only use." />
+                  </label>
+                )}
+              </div>
+            </section>
 
-            <label className="checkbox-row">
-              <input
-                id="llmEnabled"
-                type="checkbox"
-                checked={profile.llmEnabled}
-                onChange={(event) => save({ llmEnabled: event.target.checked })}
-              />
-              <span>Use LLM-assisted matching</span>
-              <HelpTooltip text="Sends the job text and your resume summary to OpenAI for a second opinion. Local matching is still used as the fallback." />
-            </label>
-
-            <label className="field-label" htmlFor="llmApiKey">
-              <span>OpenAI API key</span>
-              <HelpTooltip text="Stored locally in Chrome storage and used only from this extension to call OpenAI when LLM matching is enabled." />
-            </label>
-            <input
-              id="llmApiKey"
-              type="password"
-              placeholder="sk-..."
-              autoComplete="off"
-              {...llmApiKeyField}
-              onBlur={(event) => {
-                llmApiKeyField.onBlur(event);
-                apiKeyValidation.testNow();
-              }}
-            />
-            <ApiKeyValidationStatus
-              status={apiKeyValidation.status}
-              message={apiKeyValidation.message}
-              testing={apiKeyValidation.status === "testing"}
-              onTest={apiKeyValidation.testNow}
-            />
-
-            <label className="field-label" htmlFor="llmModel">
-              <span>LLM model</span>
-              <HelpTooltip text="The OpenAI model used for matching. gpt-4o-mini is a good low-cost default." />
-            </label>
-            <input id="llmModel" type="text" {...llmModelField} />
-
-            <label className="field-label" htmlFor="knownSiteResumeFile">
-              <span>Resume file</span>
-              <HelpTooltip text="Extracted into a structured candidate profile (skills, experience, technologies) and used to decide apply-vs-skip for every job this scan reads -- prepared once per scan, not re-extracted per job. Requires a valid API key above." />
-            </label>
-            <input
-              id="knownSiteResumeFile"
-              type="file"
-              accept=".pdf,.doc,.docx"
-              onChange={resumeExtraction.handleResumeFileChange}
-            />
-            <p className="muted">{profile.resumeFileName ? `Current resume: ${profile.resumeFileName}` : "No resume selected."}</p>
-            <CandidateProfileSection
+            <RequiredApplicationAnswers
               profile={profile}
               save={save}
-              extractionStatus={resumeExtraction.extractionStatus}
-              extractionError={resumeExtraction.extractionError}
-              onExtractNow={resumeExtraction.extractProfile}
               idPrefix="knownsite-"
+              sectionRef={requiredAnswersRef}
+              emphasizeMissing={profile.scanMode === "auto_apply"}
             />
 
-            <label className="field-label" htmlFor="resumeProfile">
-              <span>Resume/profile summary (fallback)</span>
-              <HelpTooltip text="Used for matching only when no resume file has been uploaded/extracted above -- a quicker, manual alternative to the structured extraction, not a second source combined with it." />
-            </label>
-            <textarea
-              id="resumeProfile"
-              rows={5}
-              placeholder="Paste a concise resume summary, target roles, and strongest skills."
-              {...resumeProfileField}
-            />
+            <section className="settings-group" aria-labelledby="ai-settings-title">
+              <div className="settings-group-heading">
+                <p id="ai-settings-title" className="settings-group-title">
+                  AI Matching
+                </p>
+                <label className="settings-toggle" htmlFor="llmEnabled">
+                  <input
+                    id="llmEnabled"
+                    type="checkbox"
+                    checked={profile.llmEnabled}
+                    onChange={(event) => save({ llmEnabled: event.target.checked })}
+                  />
+                  <span>{profile.llmEnabled ? "On" : "Off"}</span>
+                </label>
+              </div>
 
-            <label className="field-label" htmlFor="noMatchKeywordsInput">
-              <span>No-matching keywords</span>
-              <HelpTooltip text="Pick from common tech keywords or type your own and press Enter. If a job posting mentions any of these, it's hard-skipped locally before the LLM is ever called, saving API cost." />
-            </label>
-            <TagInput
-              inputId="noMatchKeywordsInput"
-              value={profile.noMatchKeywords}
-              onChange={(next) => save({ noMatchKeywords: next })}
-            />
+              {profile.llmEnabled ? (
+                <div className="settings-group-fields">
+                  <label className="field-label" htmlFor="llmApiKey">
+                    <span>OpenAI API Key</span>
+                    <HelpTooltip text="Stored locally in Chrome storage and used only from this extension to call OpenAI when LLM matching is enabled." />
+                  </label>
+                  <input
+                    id="llmApiKey"
+                    type="password"
+                    placeholder="sk-..."
+                    autoComplete="off"
+                    {...llmApiKeyField}
+                    onBlur={(event) => {
+                      llmApiKeyField.onBlur(event);
+                      apiKeyValidation.testNow();
+                    }}
+                  />
+                  <ApiKeyValidationStatus
+                    status={apiKeyValidation.status}
+                    message={apiKeyValidation.message}
+                    testing={apiKeyValidation.status === "testing"}
+                    onTest={apiKeyValidation.testNow}
+                    buttonLabel={apiKeyValidation.status === "valid" ? "Retest" : "Test API Key"}
+                  />
+
+                  <div className="compact-setting-row">
+                    <label htmlFor="llmModel">Model</label>
+                    <input id="llmModel" className="model-control" type="text" {...llmModelField} />
+                  </div>
+                </div>
+              ) : (
+                <p className="settings-group-description">Jobs use the fast local matcher only.</p>
+              )}
+            </section>
+
+            <section className="settings-group" aria-labelledby="resume-settings-title">
+              <p id="resume-settings-title" className="settings-group-title">
+                Resume
+              </p>
+              <div className="resume-file-row">
+                <div className="resume-file-copy">
+                  <strong className="resume-file-name" title={profile.resumeFileName || "No Resume Selected"}>
+                    {profile.resumeFileName || "No Resume Selected"}
+                  </strong>
+                  <span className={`resume-file-status${resumeStatusLabel === "Ready" ? " resume-file-status--ready" : ""}`}>
+                    {resumeStatusLabel}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="secondary file-picker-button"
+                  onClick={() => resumeFileInputRef.current?.click()}
+                >
+                  {profile.resumeFileDataUrl ? "Replace Resume" : "Choose Resume"}
+                </button>
+                <input
+                  ref={resumeFileInputRef}
+                  className="visually-hidden"
+                  id="knownSiteResumeFile"
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  onChange={resumeExtraction.handleResumeFileChange}
+                />
+              </div>
+              {resumeExtraction.resumeFileError && <p className="muted">{resumeExtraction.resumeFileError}</p>}
+              <CandidateProfileSection
+                profile={profile}
+                save={save}
+                extractionStatus={resumeExtraction.extractionStatus}
+                extractionError={resumeExtraction.extractionError}
+                onExtractNow={resumeExtraction.extractProfile}
+                idPrefix="knownsite-"
+              />
+            </section>
+
+            <details className="settings-advanced">
+              <summary>Advanced Matching Details</summary>
+              <div className="settings-fields">
+                <label className="field-label" htmlFor="resumeProfile">
+                  <span>Resume/Profile Summary (Fallback)</span>
+                </label>
+                <textarea
+                  id="resumeProfile"
+                  rows={5}
+                  placeholder="Paste a concise resume summary, target roles, and strongest skills."
+                  {...resumeProfileField}
+                />
+
+                <label className="field-label" htmlFor="noMatchKeywordsInput">
+                  <span>No-Matching Keywords</span>
+                </label>
+                <TagInput
+                  inputId="noMatchKeywordsInput"
+                  value={profile.noMatchKeywords}
+                  onChange={(next) => save({ noMatchKeywords: next })}
+                />
+              </div>
+            </details>
           </div>
         </details>
 
-        <div className="actions primary-actions">
-          <button type="button" className="primary" disabled={running} onClick={startListScan}>
-            {running ? "Scan Running" : "Scan visible job list"}
+        <div className="actions primary-actions known-site-actions">
+          <button type="button" className="primary action-wide" disabled={running} onClick={startListScan}>
+            {running ? "Scan Running" : "Scan Visible Job List"}
           </button>
           {running && (
-            <button type="button" className="danger" disabled={busy.stopScan} onClick={stopListScan}>
-              Stop scan
+            <button type="button" className="danger action-wide" disabled={busy.stopScan} onClick={stopListScan}>
+              Stop Scan
             </button>
           )}
-          <button type="button" className="secondary" disabled={running || busy.clearHistory} onClick={clearHistory}>
-            Clear job history
+          <button
+            type="button"
+            className="secondary"
+            disabled={running || busy.clearApplied || savedAppliedCount === 0}
+            onClick={clearAppliedJobs}
+          >
+            Clear Applied Jobs ({savedAppliedCount})
           </button>
+          <button type="button" className="secondary" disabled={running || busy.clearHistory} onClick={clearHistory}>
+            Clear Job History
+          </button>
+          {savedErrorCount > 0 && (
+            <div className="known-site-error-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={running || busy.retryErrors || retryableErrorCount === 0}
+                onClick={retryErrorJobs}
+              >
+                Retry Error Jobs ({retryableErrorCount})
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={running || busy.clearErrors}
+                onClick={clearErrorJobs}
+              >
+                Clear Error Jobs ({savedErrorCount})
+              </button>
+            </div>
+          )}
         </div>
 
         <AutofillActivityLog storageKey={KNOWN_SITE_ACTIVITY_KEY} />
         <ScanStatusPanel status={status} />
 
         <details className="advanced">
-          <summary>Advanced tools</summary>
+          <summary>Advanced Tools</summary>
           <div className="actions">
             <button type="button" className="secondary" disabled={busy.extract} onClick={extractCurrentPage}>
-              Extract current page
+              Extract Current Page
             </button>
             <button type="button" className="secondary" disabled={busy.analyze} onClick={analyzeApplicationPage}>
-              Analyze application page
+              Analyze Application Page
             </button>
             <button type="button" className="secondary" disabled={busy.workflow} onClick={runApplicationWorkflow}>
-              Run current job workflow (can submit)
+              Run Current Job Workflow (Can Submit)
             </button>
           </div>
         </details>

@@ -11,7 +11,9 @@
     getActionLabel,
     isEssayQuestionLabel,
     isWorkAuthorizationQuestion,
+    isCategoricalWorkAuthorizationStatusQuestion,
     isVisaSponsorshipQuestion,
+    isCriminalHistoryQuestion,
     isPreviousEmploymentQuestion,
     isReferralSourceQuestion
   } = GA;
@@ -49,6 +51,58 @@
     { profileKey: "availableStartDate", pattern: /\b(start date|available to start|earliest start)\b/i }
   ];
 
+  function isWorkdayHostname(hostname) {
+    const normalized = String(hostname || "").trim().toLowerCase();
+    return ["myworkdayjobs.com", "myworkdaysite.com"].some(
+      (suffix) => normalized === suffix || normalized.endsWith(`.${suffix}`)
+    );
+  }
+
+  function isPhoneExtensionField(label) {
+    return /\b(?:phone|telephone|mobile)\s+(?:number\s+)?extension\b|\bextension\s+(?:for\s+)?(?:phone|telephone|mobile)\b/i.test(
+      String(label || "")
+    );
+  }
+
+  function isPhoneCountryCodeField(label) {
+    const text = String(label || "");
+    return (
+      /\b(?:phone|telephone|mobile)\b.{0,30}\bcountry\s+code\b/i.test(text) ||
+      /\bcountry\s+code\b.{0,30}\b(?:phone|telephone|mobile)\b/i.test(text) ||
+      /\bcountry\s+(?:phone|telephone|mobile)\s+code\b/i.test(text)
+    );
+  }
+
+  function isPhoneDeviceTypeField(label) {
+    return /\b(?:phone|telephone|mobile)\s+(?:device\s+)?type\b/i.test(String(label || ""));
+  }
+
+  function isWorkdayDropdownStatusLabel(label) {
+    return /^(?:\d+\s+)?items?\s+selected[.:]?$/i.test(normalizeText(label || ""));
+  }
+
+  function getWorkdayProgressActionKind(label) {
+    const normalized = normalizeText(label || "").toLowerCase();
+    if (["submit", "submit application"].includes(normalized)) {
+      return "submit";
+    }
+    if (
+      [
+        "continue",
+        "next",
+        "save and continue",
+        "apply",
+        "apply now",
+        "apply for this job",
+        "start application",
+        "begin application"
+      ].includes(normalized)
+    ) {
+      return "continue";
+    }
+    return null;
+  }
+
   // Pure classification: label -> { action, profileKey | value } | null. No profile/element access,
   // so this (and the option-matching helpers below) are directly unit-testable.
   //
@@ -59,24 +113,46 @@
   // previous-employment/referral-source questions are routinely phrased as literal questions ending
   // in "?", which the essay pattern's bare "\?" alternative would otherwise swallow first.
   //
-  // action:"fixed" carries a literal `value` instead of a profileKey -- for concepts that have one
-  // correct answer regardless of the user's saved profile (previous employment is always "No"; the
-  // referral-source question is always "LinkedIn"), rather than something looked up per-user.
-  function inferGenericFieldMapping(label) {
+  // action:"fixed" carries a literal `value` instead of a profileKey. Previous-employer questions
+  // deliberately use action:"candidate_employment" instead: their truthful Yes/No answer must be
+  // resolved from candidateProfile.experience, never from a global fixed policy.
+  function inferGenericFieldMapping(label, context = {}) {
+    const isWorkday = isWorkdayHostname(context.hostname);
+
+    if (isWorkday && isPhoneDeviceTypeField(label)) {
+      return { action: "fixed", value: "Mobile" };
+    }
+
+    if (isWorkday && isPhoneCountryCodeField(label)) {
+      return { action: "fixed", value: "United States of America (+1)" };
+    }
+
+    if (isCategoricalWorkAuthorizationStatusQuestion(label)) {
+      return /\bsingapore\b/i.test(label) ? { action: "fixed", value: "Foreigner" } : null;
+    }
+
     if (isWorkAuthorizationQuestion(label)) {
-      return { action: "map", profileKey: "workAuthorized" };
+      return { action: "fixed", value: "Yes" };
     }
 
     if (isVisaSponsorshipQuestion(label)) {
-      return { action: "map", profileKey: "requiresSponsorship" };
+      return { action: "fixed", value: "Yes" };
     }
 
-    if (isPreviousEmploymentQuestion(label)) {
+    if (isCriminalHistoryQuestion(label)) {
       return { action: "fixed", value: "No" };
     }
 
+    if (isPreviousEmploymentQuestion(label)) {
+      return { action: "candidate_employment" };
+    }
+
     if (isReferralSourceQuestion(label)) {
-      return { action: "fixed", value: "LinkedIn" };
+      return { action: "fixed", value: "Other" };
+    }
+
+    if (isWorkday && /\bcountry\b/i.test(label)) {
+      return { action: "fixed", value: "United States of America" };
     }
 
     for (const rule of FIELD_CONCEPT_RULES) {
@@ -117,6 +193,15 @@
   // extractCandidateProfileFromResume) is only ever a fallback for a field the user left blank, never
   // a silent override of something they deliberately entered themselves.
   function resolveProfileValue(profile, profileKey) {
+    const policyValues = {
+      workAuthorized: "Yes",
+      requiresSponsorship: "Yes"
+    };
+
+    if (policyValues[profileKey]) {
+      return policyValues[profileKey];
+    }
+
     if (profileKey === "fullName") {
       const flatFullName = `${profile.firstName || ""} ${profile.lastName || ""}`.trim();
       return flatFullName || profile.candidateProfile?.basicInfo?.fullName || "";
@@ -137,6 +222,7 @@
 
   function buildOptionMatcher(wantedValue) {
     const normalized = String(wantedValue || "").trim().toLowerCase();
+    const normalizedCanonical = normalized.replace(/[_-]+/g, " ");
 
     if (normalized === "yes") {
       return GA.isYesAnswerText;
@@ -146,10 +232,133 @@
       return GA.isNoAnswerText;
     }
 
+    // Referral prompts can contain nested categories such as "Other Job Board". When policy asks
+    // for the top-level Other choice, require that exact offered label so the action layer never
+    // enters another hierarchy by substring accident.
+    if (normalized === "other") {
+      return (text) => normalizeText(text || "").toLowerCase() === "other";
+    }
+
+    if (/\bunited states of america\b/.test(normalized) && /\+?1\b/.test(normalized)) {
+      return (text) => {
+        const candidate = normalizeText(text || "").toLowerCase();
+        return (
+          !/\bminor outlying islands\b/.test(candidate) &&
+          /\bunited states(?: of america)?\b/.test(candidate) &&
+          /(?:\+1\b|\b1\b)/.test(candidate)
+        );
+      };
+    }
+
+    if (normalized === "prefer_not_to_disclose") {
+      return (text) => /\b(?:decline|prefer not|do not wish|don't wish|do not want|don't want|not disclose)\b/i.test(
+        normalizeText(text)
+      );
+    }
+
+    const canonicalMatchers = {
+      male: (text) => /\b(?:male|man)\b/i.test(text) && !/\b(?:female|woman)\b/i.test(text),
+      female: (text) => /\b(?:female|woman)\b/i.test(text),
+      "non binary": (text) => /\b(?:non[\s-]?binary|genderqueer|gender nonconforming)\b/i.test(text),
+      asian: (text) => /\basian\b/i.test(text),
+      white: (text) => /\bwhite\b/i.test(text),
+      "black or african american": (text) => /\bblack\b|\bafrican american\b/i.test(text),
+      "hispanic or latino": (text) => /\bhispanic\b|\blatino\b|\blatina\b|\blatinx\b/i.test(text),
+      "native american or alaska native": (text) => /\bnative american\b|\balaska native\b|\bamerican indian\b/i.test(text),
+      "native hawaiian or pacific islander": (text) => /\bnative hawaiian\b|\bpacific islander\b/i.test(text),
+      "middle eastern or north african": (text) => /\bmiddle eastern\b|\bnorth african\b/i.test(text),
+      "two or more races": (text) => /\btwo or more races\b|\bmore than one race\b|\bmultiracial\b/i.test(text),
+      "not protected veteran": (text) =>
+        /^no\.?$/i.test(text.trim()) || /\bnot (?:a )?(?:protected )?veteran\b|\bnon[\s-]?veteran\b|\bnot a veteran\b/i.test(text),
+      "protected veteran": (text) =>
+        /^yes\.?$/i.test(text.trim()) ||
+        (!/\bnot\b/i.test(text) && (/\bprotected veteran\b/i.test(text) || /\bone or more classifications\b/i.test(text))),
+      "no current or past": (text) =>
+        /^no\.?$/i.test(text.trim()) ||
+        /\bno\b.*\bdisabil|\bdo not have\b.*\bdisabil|\bnot disabled\b|\bnever had\b.*\bdisabil/i.test(text),
+      "yes current or past": (text) =>
+        /^yes\.?$/i.test(text.trim()) || /\byes\b.*\bdisabil|\bhave (?:a )?disabil|\bhad (?:a )?disabil/i.test(text)
+    };
+    if (canonicalMatchers[normalizedCanonical]) {
+      return (text) => {
+        const candidate = normalizeText(text || "");
+        return !/\b(?:decline|prefer not|do not wish|don't wish|do not want|don't want|not disclose)\b/i.test(candidate) &&
+          canonicalMatchers[normalizedCanonical](candidate);
+      };
+    }
+
+    if (/\bnot (?:a )?(?:protected )?veteran\b/i.test(normalized)) {
+      return (text) => /\bnot (?:a )?(?:protected )?veteran\b/i.test(normalizeText(text)) && !/\bdecline|prefer not\b/i.test(text);
+    }
+
+    if (/\bdo not have a disability\b|\bno\b.*\bdisabil/i.test(normalized)) {
+      return (text) =>
+        /\bno\b.*\bdisabil|\bdo not have a disability\b|\bnot disabled\b/i.test(normalizeText(text)) &&
+        !/\bdecline|prefer not\b/i.test(text);
+    }
+
     return (text) => {
       const lower = normalizeText(text || "").toLowerCase();
       return Boolean(lower) && (lower.includes(normalized) || normalized.includes(lower));
     };
+  }
+
+  // Workday tenants organize referral sources differently. Once the action layer has exposed a set
+  // of choices from the current level, prefer literal LinkedIn when present; otherwise use the
+  // shortest offered answer containing LinkedIn so selection stays deterministic.
+  function choosePreferredLinkedInSourceLabel(optionLabels) {
+    const candidates = Array.from(new Set(
+      (Array.isArray(optionLabels) ? optionLabels : [])
+        .map((label) => normalizeText(label || ""))
+        .filter((label) => label.toLowerCase().includes("linkedin"))
+    ));
+
+    candidates.sort((left, right) => {
+      const leftExact = left.toLowerCase() === "linkedin" ? 0 : 1;
+      const rightExact = right.toLowerCase() === "linkedin" ? 0 : 1;
+      return leftExact - rightExact || left.length - right.length || left.localeCompare(right);
+    });
+
+    return candidates[0] || "";
+  }
+
+  function choosePreferredWorkdaySourceLabel(optionLabels) {
+    const candidates = Array.from(new Set(
+      (Array.isArray(optionLabels) ? optionLabels : [])
+        .map((label) => normalizeText(label || ""))
+        .filter(Boolean)
+    ));
+    const exactOther = candidates.find((label) => label.toLowerCase() === "other");
+    return exactOther || choosePreferredLinkedInSourceLabel(candidates);
+  }
+
+  function choosePreferredWorkdaySourceParentLabel(optionLabels) {
+    const candidates = Array.from(new Set(
+      (Array.isArray(optionLabels) ? optionLabels : [])
+        .map((label) => normalizeText(label || ""))
+        .filter(Boolean)
+    ));
+    const parentPatterns = [
+      /^external career site sources?$/i,
+      /^job boards?$/i,
+      /\bexternal\b.*\bcareer\b.*\bsite\b/i,
+      /\bjob\b.*\bboard\b/i
+    ];
+
+    for (const pattern of parentPatterns) {
+      const matches = candidates
+        .filter((label) => pattern.test(label))
+        .sort((left, right) => left.length - right.length || left.localeCompare(right));
+      if (matches.length > 0) {
+        return matches[0];
+      }
+    }
+
+    return "";
+  }
+
+  function isSensitiveProfileKey(profileKey) {
+    return ["eeoGender", "eeoRaceEthnicity", "eeoVeteranStatus", "eeoDisabilityStatus"].includes(profileKey);
   }
 
   // Verbs describing an operation (edit this entry, remove this file, add another link), not a
@@ -169,7 +378,7 @@
   // all. Recognize both: prefer real radios where present (native semantics, most reliable), and
   // fall back to short-labeled buttons/role='radio' elements otherwise.
   function getOptionControls(container) {
-    const radios = Array.from(container.querySelectorAll("input[type='radio']")).filter(
+    const radios = Array.from(container.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='checkbox']")).filter(
       (radio) => isElementVisible(radio) && !isActionDisabled(radio)
     );
 
@@ -207,7 +416,7 @@
   function isPlausibleQuestionContainer(element) {
     const text = element.innerText || "";
     const options = getOptionControls(element);
-    return text.length > 0 && text.length <= 300 && options.length >= 2 && options.length <= 10;
+    return text.length > 0 && text.length <= 500 && options.length >= 2 && options.length <= 12;
   }
 
   // The smallest container that wraps a question's options (see findAllQuestionContainers) is often
@@ -256,9 +465,19 @@
   }
 
   Object.assign(GA, {
+    isWorkdayHostname,
+    isPhoneExtensionField,
+    isPhoneCountryCodeField,
+    isPhoneDeviceTypeField,
+    isWorkdayDropdownStatusLabel,
+    getWorkdayProgressActionKind,
     inferGenericFieldMapping,
     resolveProfileValue,
     buildOptionMatcher,
+    choosePreferredLinkedInSourceLabel,
+    choosePreferredWorkdaySourceLabel,
+    choosePreferredWorkdaySourceParentLabel,
+    isSensitiveProfileKey,
     getOptionControls,
     getQuestionLabel,
     isPlausibleQuestionContainer,

@@ -1,198 +1,264 @@
-# Test Cases
+# Private Beta Test Cases
 
-Use this checklist before publishing or sharing the extension. Prefer testing in a fresh Chrome profile with the extension reloaded from `chrome://extensions` after each code change.
+Use this checklist before uploading or sharing a private-beta package. Test in a dedicated Chrome profile with the extension loaded from a fresh `dist/` build. Reload the unpacked extension after every code change.
 
-## 1. Install And Permissions
+Automated release checks:
 
-- [ ] **I-01: Fresh install**
-  - Steps: Load unpacked extension from this folder.
-  - Expected: Extension loads without manifest errors.
-- [ ] **I-02: Host permission scope**
-  - Steps: Open a non-Apple site and open the popup.
-  - Expected: Extension does not try to scan or inject into unrelated sites.
-- [ ] **I-03: Apple Careers host**
-  - Steps: Open `https://jobs.apple.com/` and open popup.
-  - Expected: Popup accepts the page as an Apple Careers page.
-- [ ] **I-04: Alternate Apple Careers host**
-  - Steps: Open `https://www.apple.com/careers/` and open popup.
-  - Expected: Popup accepts the page as an Apple Careers page.
-- [ ] **I-05: Reload behavior**
-  - Steps: Reload the extension while a previous scan state exists.
-  - Expected: Popup renders without crashing; stale scan can be replaced by starting a new scan.
+```bash
+npm test
+npm run test:cli
+npm run check
+```
 
-## 2. Job List Scanning
+`npm run check` performs syntax checks and a production Vite build. There is no separate lint or typecheck script.
 
-- [ ] **S-01: Start from first results page**
-  - Steps: Open Apple Careers list page and click `Scan visible job list`.
-  - Expected: Scan starts, phase changes, queued count appears in details.
-- [ ] **S-02: Start from later results page**
-  - Steps: Manually go to page 3+, then click `Scan visible job list`.
-  - Expected: Detailed `Pages` counter reflects the current page if Apple exposes it in URL/UI.
-- [ ] **S-03: End of page pagination**
-  - Steps: Let scan finish all visible jobs on a page.
-  - Expected: Extension advances to next page when enabled `Next` exists.
-- [ ] **S-04: End of all pages**
-  - Steps: Let scan reach final page with no enabled `Next`.
-  - Expected: Scan ends with `Complete`; no infinite loop.
-- [ ] **S-05: Duplicate links**
-  - Steps: Start scan on a list with repeated job links.
-  - Expected: Same URL is processed only once per scan run.
-- [ ] **S-05b: Cross-session duplicate skip**
-  - Steps: Scan a list once, stop, then scan the same list again without clearing history.
-  - Expected: Previously stored jobs are skipped without reopening detail tabs; `Skipped (stored)` increases in detailed stats.
+## 1. Install and permissions
+
+- [ ] **I-01: Fresh production build**
+  - Steps: Run `npm run build`, load `dist/` from `chrome://extensions`, and open the toolbar action.
+  - Expected: No manifest/runtime error; the persistent Career Peeler side panel opens.
+- [ ] **I-02: Supported-site recognition**
+  - Steps: Visit one Apple, TikTok, and ByteDance list URL declared in `manifest.json`.
+  - Expected: `Scan Visible Job List` accepts each page and starts the corresponding known-site scanner.
+- [ ] **I-03: Passive unrelated-page behavior**
+  - Steps: Visit an unrelated HTTP/HTTPS page without clicking Career Peeler actions.
+  - Expected: No generic script is injected and no page field is read or changed merely because the extension is installed.
+- [ ] **I-04: User-invoked generic injection**
+  - Steps: Open an unrelated test application, expand `Other Job Sites`, and click `Autofill This Page`.
+  - Expected: Generic scripts are injected only into the selected tab after the click.
+- [ ] **I-05: Workday controlled-input commit**
+  - Steps: On two different Workday tenants, autofill a required text field, a month/year field, and a value that Workday had already marked required/empty.
+  - Expected: Ordinary values are committed through the page-context browser-editing pipeline and survive blur/page settle. After Continue exposes an explicitly rejected visible text value, Career Peeler focuses and fully selects only that field, performs one trusted Backspace plus bounded text insertion, freshly verifies the exact value and cleared error, and retries the same Continue no more than once. Chrome may briefly show its debugging banner during rejected-field repair. A failed repair stops for review rather than looping.
+- [ ] **I-06: Workday responsive referral prompt**
+  - Steps: On at least two Workday tenants whose required `How Did You Hear About Us?` fields use different nested responsive-prompt hierarchies, run autofill with no source selected. Include one tenant offering exact `Other` and Salesforce with only `External Career Site Sources` → `LinkedIn Connection Post`.
+  - Expected: Before ordinary text autofill, Career Peeler reuses a source prompt that is already open; it does not toggle that prompt closed on a rerun. Otherwise it opens and freshly re-reads the prompt. It selects exact `Other` whenever offered. When Salesforce has no exact `Other`, it first applies the captured page-context sequence to the type-2 `External Career Site Sources` row and inventories the replacement level. If verification shows that the branch did not open, it performs one bounded trusted retry centered on the inner rendered `promptOption` text node observed in a successful manual click. It follows the same verified sequence for the type-1 `LinkedIn Connection Post` leaf. On the Job Board fixture it opens `Job Board` and selects its LinkedIn-containing leaf. The source text input remains empty throughout. Every branch transition is proven by a changed non-empty option inventory, and every selected value is freshly verified through a matching selected-item chip. The collapsed `Select` activity detail lists every child option observed after opening the branch; zero visible options are never reported as an opened branch. If the branch does not open, the detail explicitly says so and lists the unchanged root options. A discovered leaf that does not commit is reported as such instead of being rewritten as “no matching child.” If an Other/LinkedIn-labelled match opens another child category, Career Peeler follows only newly rendered preferred children and stops after at most four levels. Chrome may briefly show its debugging banner for trusted input. The extension stops for review if no recognized source parent/preferred leaf is offered or the final chip cannot be verified.
+- [ ] **I-07: Reload recovery**
+  - Steps: Reload the extension with saved settings/history and reopen the side panel.
+  - Expected: The side panel renders without crashing and displays persisted profile/history state.
+
+## 2. Known-site scanning
+
+- [ ] **S-01: Apple discovery and pagination**
+  - Steps: Start from an Apple list with multiple results/pages.
+  - Expected: Visible unique jobs are queued, duplicates are ignored, and enabled pagination advances until the last page.
+- [ ] **S-02: TikTok discovery and pagination**
+  - Steps: Repeat on TikTok Careers, including a client-side-rendered next page.
+  - Expected: The scanner waits for list rendering and does not stop merely because navigation is client-side.
+- [ ] **S-03: ByteDance discovery and pagination**
+  - Steps: Repeat on a ByteDance or Join ByteDance list using its current numbered/next controls.
+  - Expected: Pages advance without an unbounded retry loop.
+- [ ] **S-04: Workflow-tab activation without window focus**
+  - Steps: Keep another desktop application in front while a TikTok/ByteDance scan opens a job/application tab.
+  - Expected: Chrome activates the workflow tab inside its own window so the page renders, but does not bring the Chrome window to the foreground; the list tab is reactivated afterward.
+- [ ] **S-05: Stored duplicate skip**
+  - Steps: Finish or stop a scan, then scan the same list again without clearing history.
+  - Expected: Stored jobs are not reopened; `Skipped (stored)` increases.
 - [ ] **S-06: Stop scan**
-  - Steps: Click `Stop scan` while scan is running.
-  - Expected: Scan stops after current safe point; popup shows stopped state.
-- [ ] **S-07: Popup reopen during scan**
-  - Steps: Close and reopen popup during active scan.
-  - Expected: Live stats resume updating.
-- [ ] **S-08: Default scan mode**
-  - Steps: Install fresh extension and open the popup.
-  - Expected: Scan mode defaults to `Scan only, do not apply`.
-- [ ] **S-09: Auto-apply acknowledgement**
-  - Steps: Select auto-apply mode but leave the acknowledgement unchecked, then click `Scan visible job list`.
-  - Expected: Scan does not start and the popup asks for acknowledgement.
+  - Steps: Click `Stop scan` while a job is being processed.
+  - Expected: The scanner stops at a safe checkpoint and does not begin another job.
+- [ ] **S-07: End of list**
+  - Steps: Reach a page with no usable next control.
+  - Expected: Phase ends as complete; no polling or navigation loop continues.
+- [ ] **S-08: Retry saved error jobs without rescanning the list**
+  - Steps: Produce two job-specific Errors, then click `Retry Error Jobs` without reopening the original list page. Stop after the first job and start the retry again.
+  - Expected: Only saved supported-site error URLs are opened; collection and pagination do not run. Successfully reprocessed jobs leave the Errors list, newly failing jobs remain, and an unattempted second job survives Stop for the next retry.
+- [ ] **S-09: Durable applied/error ledgers and independent clears**
+  - Steps: Confirm one Apple application, record one TikTok/ByteDance job error, restart Chrome, and reopen the side panel. Re-scan the Apple list, then test `Clear Applied Jobs` and `Clear Error Jobs` separately.
+  - Expected: Both saved counts survive restart; the applied job is skipped by its site-qualified ID even if compact history has been pruned; each clear action requires confirmation, clears only its own ledger and related compact records, and makes those jobs discoverable again.
 
-## 3. Local Matching
+## 3. Matching, OpenAI, and CandidateProfile
 
-- [ ] **M-01: Backend/API role**
-  - Example signals: C#/.NET, API, services, AWS, queues.
-  - Expected: `Likely match` or `Review`; eligible for auto-apply.
-- [ ] **M-02: Full-stack role**
-  - Example signals: Angular, TypeScript, API, web app, backend.
-  - Expected: `Likely match` or `Review`; eligible for auto-apply.
-- [ ] **M-03: QA automation role**
-  - Example signals: QA, test automation, Jasmine, MSTest, integration testing.
-  - Expected: `Likely match` or `Review`; eligible for auto-apply.
-- [ ] **M-04: ML/AI role**
-  - Example signals: Python, PyTorch, RAG, LLM, VLM, embeddings.
-  - Expected: `Likely match`; eligible for auto-apply.
-- [ ] **M-05: Senior title**
-  - Example signals: `Senior`, `Staff`, `Principal`, or `Lead` in title.
-  - Expected: `Likely skip`; not auto-applied.
-- [ ] **M-06: iOS app role**
-  - Example signals: iOS, Swift, Objective-C, UIKit, SwiftUI, Xcode.
-  - Expected: `Likely skip`; not auto-applied.
-- [ ] **M-07: Firmware/driver role**
-  - Example signals: firmware, kernel, device driver, embedded.
-  - Expected: `Likely skip` unless clearly overridden by relevant domain.
-- [ ] **M-08: High required YOE**
-  - Example signals: `5+ years required`, `7 years minimum`.
-  - Expected: `Likely skip`.
-- [ ] **M-09: Preferred YOE only**
-  - Example signals: `3+ years preferred`.
-  - Expected: Should not hard-skip solely due to preferred wording.
-- [ ] **M-10: Generic software role**
-  - Example signals: Generic software wording with weak stack overlap.
-  - Expected: `Unknown` or `Review`; only `Review` can auto-apply.
+- [ ] **M-01: Scan-only default**
+  - Steps: Clear extension storage and reopen settings.
+  - Expected: Scan mode is `Scan only, do not apply`; auto-apply consent is unchecked; LLM matching is off.
+- [ ] **M-02: Deterministic hard skip**
+  - Steps: Evaluate manager/senior/staff/principal/lead/intern titles, an explicit no-match keyword, and a required-YOE overage.
+  - Expected: Final result is a reasoned skip and the LLM is not called.
+- [ ] **M-03: Preferred YOE is not a hard requirement**
+  - Steps: Evaluate a role where higher YOE appears only as preferred/nice-to-have.
+  - Expected: It is not hard-skipped solely for preferred YOE.
+- [ ] **M-04: Local and LLM activity are distinct**
+  - Steps: Enable LLM matching and evaluate a non-hard-skipped job.
+  - Expected: Activity shows separate `Local match`, `LLM match`, and `Evaluate job match` entries; the final entry includes apply/skip and its reason.
+- [ ] **M-05: 70% recall threshold**
+  - Steps: Use a result at or above 70% with only limited learnable-tool gaps and no hard disqualifier.
+  - Expected: The reconciled result may become `Review`, making it eligible for acknowledged auto-apply; the LLM's raw reason/gaps remain visible.
+- [ ] **M-06: LLM failure is not a silent skip/apply**
+  - Steps: Force a timeout, provider error, or malformed response for a job without a deterministic hard skip.
+  - Expected: The job becomes `needs_review`, an error is visible, and no application workflow starts.
+- [ ] **M-07: API-key validation states**
+  - Steps: Test an absent key, rejected key, temporary provider/network failure, and valid key.
+  - Expected: UI distinguishes not-tested, invalid, error, and valid states without exposing the key in activity/log output.
+- [ ] **M-08: LLM-assisted auto-apply readiness**
+  - Steps: Enable auto-apply plus LLM matching with an unvalidated key.
+  - Expected: Scan does not start and asks for a valid tested key. Disable LLM matching and repeat.
+  - Expected: Local-only auto-apply remains available after consent.
+- [ ] **M-09: PDF-only resume**
+  - Steps: Attempt DOC/DOCX and then PDF selection in both resume pickers.
+  - Expected: Non-PDF files are rejected and cleared; the PDF is stored once and shown as the shared current resume.
+- [ ] **M-10: CandidateProfile extraction and reuse**
+  - Steps: With a valid OpenAI configuration, select a PDF and extract the profile; start another scan with the same PDF.
+  - Expected: Structured fields are populated and editable; the matching scan reuses the fresh profile instead of extracting once per job.
+- [ ] **M-11: CandidateProfile invalidation**
+  - Steps: Replace the PDF while an old CandidateProfile exists.
+  - Expected: The old extraction is treated as stale and is not used for matching or questions; the new PDF requires extraction.
+- [ ] **M-12: API-call count**
+  - Steps: Run several LLM-matched jobs and inspect Scan Progress.
+  - Expected: `API calls` increases for actual completion calls and does not count the free key-validation probe.
 
-## 4. Auto-Apply Workflow
+## 4. Known-site auto-apply
 
-- [ ] **A-01: Standard flow in acknowledged auto-apply mode**
-  - Steps: Detail page has `Submit Resume`, then profile pages, then final `Submit`.
-  - Expected: Application submits; detail tab closes; `Applied` increments.
-- [ ] **A-02: Already submitted on detail page**
-  - Steps: Detail page shows `Submitted`.
-  - Expected: Job is marked `submitted`; tab closes; no apply failure.
-- [ ] **A-02b: TikTok already-applied dialog**
-  - Steps: Submit a TikTok application that has already been submitted and shows `Application Failed` / `You've already applied for this job`.
-  - Expected: Application tab closes, job is marked `submitted`, exported log includes `errorType: already_applied`, and no apply failure is counted.
-- [ ] **A-03: Already submitted but no Submit Resume**
-  - Steps: Detail page lacks `Submit Resume` and shows submitted state.
-  - Expected: Job is marked `submitted`, not `*_apply_failed`.
-- [ ] **A-04: Questionnaire absent**
-  - Steps: Application has no questionnaire step.
-  - Expected: Workflow continues normally.
-- [ ] **A-05: Questionnaire present**
-  - Steps: Questionnaire asks work authorization and visa sponsorship.
-  - Expected: Selects `Yes` for both, continues, then submits.
-- [ ] **A-05b: Questionnaire incomplete**
-  - Steps: Make one known TikTok authorization dropdown fail selection or verification.
-  - Expected: Final Submit is not clicked; error log/export include `errorType: questionnaire_incomplete`, page heading, last step, visible buttons, and manual recovery URL.
-- [ ] **A-06: Questionnaire with unexpected extra question**
-  - Steps: Additional radio question appears.
-  - Expected: Known questions are answered; workflow logs error if required unknown question blocks progress.
-- [ ] **A-07: Session expired/sign-in**
-  - Steps: Application redirects to sign-in or page lacks workflow buttons.
-  - Expected: Scan logs `errorType: session_or_login_required` with page heading and visible buttons; no infinite loop.
-- [ ] **A-08: Missing final Submit**
-  - Steps: Review page does not expose final `Submit`.
-  - Expected: Error log records last page heading, last step, and visible buttons.
-- [ ] **A-09: Repeated no-progress flow**
-  - Steps: Same step repeats until max attempts.
-  - Expected: Workflow stops at max attempts and logs `errorType: workflow_timeout` with recent attempts instead of looping forever.
-- [ ] **A-09b: Application tab cleanup**
-  - Steps: Let a TikTok application open a separate `/resume/.../apply` tab, then force a workflow stop on a personal-info/questionnaire step.
-  - Expected: The extension closes workflow-owned application tabs before moving to the next job; the next application does not interrupt a previous leftover tab.
-- [ ] **A-10: Manual workflow diagnostic**
-  - Steps: Click `Run current job workflow (can submit)` from Advanced tools.
-  - Expected: Popup shows a browser confirmation before any workflow clicks happen. Cancelling leaves the page unchanged.
+- [ ] **A-01: Consent guard**
+  - Steps: Select auto-apply without checking its acknowledgement and start a scan.
+  - Expected: The scan does not start and no application control is clicked.
+- [ ] **A-02: Confirmed successful application**
+  - Steps: Complete a test application that exposes a known success signal.
+  - Expected: The job becomes `applied`, `Applied` increments exactly once, `Last applied` updates, and the owned workflow tab closes.
+- [ ] **A-03: ByteDance success page**
+  - Steps: Reach the page containing `Thanks for your interest in ByteDance` and `We have received your resume`.
+  - Expected: Submission is confirmed without a false `confirmation pending` error.
+- [ ] **A-04: TikTok already-applied dialog**
+  - Steps: Reach `Application Failed` / `You've already applied for this job. Unable to apply again.`
+  - Expected: Detection happens before unrelated work-auth filling; the job becomes `submitted`, no apply failure is counted, and the workflow tab closes.
+- [ ] **A-05: Other already-submitted signal**
+  - Steps: Open a detail or application page already showing Submitted/Applied.
+  - Expected: The workflow exits without clicking Submit again.
+- [ ] **A-06: Optional question**
+  - Steps: Include an unanswered optional radio, select, checkbox, or text question such as Apple's resume-parsing feedback.
+  - Expected: It remains unanswered, does not invoke the question agent, and does not block the next step.
+- [ ] **A-07: Fixed required question**
+  - Steps: Present a required recognized authorization/date/EEO question whose offered option matches the configured current policy.
+  - Expected: The deterministic policy is applied and verified without an OpenAI call.
+- [ ] **A-07b: ByteDance authorization module without required markers**
+  - Steps: Use the ByteDance `Work Authorization` Formily variant whose authorization and sponsorship fields have `data-form-field-i18n-name` labels and read-only `.ud__select__selector` controls, but no `required`, `aria-required`, or asterisk marker.
+  - Expected: A visible Submit button does not make the live one-page form look like a read-only review step. The two recognized authorization questions receive the fixed Yes policies and are verified; Activity shows each Select result. If deterministic selection fails, the blank dropdown remains available to the bounded question-agent fallback. Unrelated unmarked or explicitly optional questions remain skipped.
+- [ ] **A-08: Unknown required question**
+  - Steps: Present a required why-company or other unsupported question with LLM capability available.
+  - Expected: Activity shows `Question agent` only when the unresolved question blocks progress; the answer is resume-grounded and verified before continuing.
+- [ ] **A-09: Question-agent failure**
+  - Steps: Make the resolver skip, return an invalid option, or fail verification.
+  - Expected: Final Submit is not clicked; the job stops in needs-review/error state with the question identified.
+- [ ] **A-10: Unconfirmed post-submit state**
+  - Steps: Click final Submit on a known site but suppress every success/already-applied/loading signal.
+  - Expected: The Submit activity remains pending until an outcome is read. The extension does not count the job as applied and records an actionable review/error result. If the click reveals validation errors, Activity reports the failed validation and the workflow stops instead of clicking Submit repeatedly.
+- [ ] **A-11: Session/login failure**
+  - Steps: Expire the login during a workflow.
+  - Expected: The workflow stops with `session_or_login_required`, page context, and a manual recovery URL.
+- [ ] **A-12: Bounded no-progress retry**
+  - Steps: Hold the workflow on an unchanged page/action.
+  - Expected: It terminates at the attempt cap with `workflow_timeout`; no infinite loop occurs.
+- [ ] **A-13: Owned-tab cleanup**
+  - Steps: Force failure after a site opens a separate application tab.
+  - Expected: Workflow-owned tabs close before the next job and the list tab is restored.
+- [ ] **A-14: Advanced manual workflow confirmation**
+  - Steps: Click `Run Current Job Workflow (Can Submit)` and cancel the browser confirmation.
+  - Expected: No application action occurs.
 
-## 5. Popup UI
+## 5. Generic autofill
 
-- [ ] **U-01: Compact stats**
-  - Steps: Start scan and view popup surface.
-  - Expected: Surface shows Phase, Applied, Review, Errors, Last applied, and Current job only.
-- [ ] **U-02: Last applied job**
-  - Steps: Let an application succeed.
-  - Expected: `Last applied` shows cleaned job title, role id, and relative time.
-- [ ] **U-03: Errors dropdown**
-  - Steps: Trigger or observe an error.
-  - Expected: `Errors (N)` opens and shows recent error entries.
-- [ ] **U-04: Error detail**
-  - Steps: Inspect an error entry.
-  - Expected: Entry includes role id/title, message, stopped page heading, last step, and visible buttons if available.
-- [ ] **U-05: Detailed stats dropdown**
-  - Steps: Open `Detailed stats and logs`.
-  - Expected: Shows pages, scanned, queued, submitted, match counts, recent failures, and recent jobs.
-- [ ] **U-06: Clean titles**
-  - Steps: Inspect recent jobs/failures.
-  - Expected: Titles do not include `- Jobs - Careers at Apple`.
-- [ ] **U-07: Settings help text**
-  - Steps: Hover or focus each `?` icon in settings.
-  - Expected: A tooltip explains what that setting does.
+- [ ] **G-01: Unknown-site single-page boundary**
+  - Steps: Run generic autofill on a multi-step non-Workday application entry page.
+  - Expected: At most one apply/continue entry click occurs; the user must click Autofill again after the next page loads. Workday alone uses its separately bounded multi-page controller.
+- [ ] **G-02: Sequential fresh snapshots**
+  - Steps: Use a reactive form where filling one field replaces or reveals another.
+  - Expected: Fields are processed one at a time from fresh snapshots; detached/replaced fields are not treated as successfully filled.
+- [ ] **G-03: Preserve existing values**
+  - Steps: Pre-fill a meaningful value before running the sweep.
+  - Expected: Career Peeler does not overwrite it.
+- [ ] **G-04: Text verification and fallback**
+  - Steps: Test one ordinary field and one field that rejects DOM-level input.
+  - Expected: The first value is verified normally; the second uses the bounded page-context browser-editing fallback or is flagged if fallback is unavailable/unsuccessful.
+- [ ] **G-05: Native and custom dropdown verification**
+  - Steps: Test both dropdown kinds.
+  - Expected: Only an observed offered option is selected, and selected state/display text is verified.
+- [ ] **G-06: Optional questions skipped**
+  - Steps: Include optional text, checkbox, select, radio-group, and custom-dropdown questions.
+  - Expected: They remain unchanged and do not create question-agent activity or a review flag.
+- [ ] **G-07: Required unknown question**
+  - Steps: Include an empty required unknown question.
+  - Expected: The bounded question agent may return text or one observed option; a verified result continues, while no safe answer creates a review flag.
+- [ ] **G-08: Resume upload**
+  - Steps: Include a visible resume input with and without a saved PDF.
+  - Expected: The saved PDF is attached and logged; otherwise the field is flagged for review.
+- [ ] **G-09: Submission guard**
+  - Steps: Leave any required field unresolved and enable acknowledged auto-apply.
+  - Expected: Submit is not clicked. Resolve every required field and repeat.
+  - Expected: Submit may be clicked once.
+- [ ] **G-10: Generic submission wording**
+  - Steps: Allow generic Submit to be clicked.
+  - Expected: Result and status say `Submit clicked; confirmation pending`; neither says submitted/applied.
+- [ ] **G-11: Workday structured experience and education**
+  - Steps: Use a Workday My Experience page with no entries and a CandidateProfile containing complete month/year work records plus education records. Run autofill.
+  - Expected: Entries are added sequentially, required title/company/date/school/degree values are verified, degree selection uses a real offered option, and the next record is not created from a stale row reference. A current role checks `I currently work here`; no month is invented for a profile date containing only a year.
+- [ ] **G-12: Workday preserve, learn, and retry safely**
+  - Steps: Pre-populate Workday work/education entries (manually or with another parser), including location or GPA missing from CandidateProfile, then run autofill twice.
+  - Expected: Existing matching entries are not duplicated. The visible entries enrich `appleCareersUserProfile.candidateProfile` in Chrome local storage, resume-derived conflicting values remain authoritative, and the open side panel reflects the storage update. The second run is idempotent. If a newly-created row cannot be verified, only that row is removed; if removal cannot be confirmed, Workday stops for review.
 
-## 6. Data And Privacy
+## 6. Side-panel activity and progress
 
-- [ ] **P-01: LLM disabled by default**
-  - Steps: Run scan with network inspector open and LLM disabled.
-  - Expected: No resume/job text is sent to third-party APIs.
-- [ ] **P-02: LLM enabled disclosure**
-  - Steps: Enable LLM matching with an API key and resume summary.
-  - Expected: UI clearly states job/profile text may be sent to OpenAI.
-- [ ] **P-03: LLM missing key fallback**
-  - Steps: Enable LLM matching without an API key and scan a role.
-  - Expected: Extension falls back to local matching without crashing.
-- [ ] **P-04: Local storage**
-  - Steps: Inspect extension storage after scan.
-  - Expected: Job records, settings, and scan state are stored locally.
-- [ ] **P-05: Clear state**
-  - Steps: Clear extension storage and reload popup.
-  - Expected: Popup handles missing state cleanly.
+- [ ] **U-01: Current two-mode UI**
+  - Steps: Switch between `Apple / TikTok / ByteDance` and `Other Job Sites`.
+  - Expected: Only one mode section is expanded at a time and shared profile/resume changes remain synchronized.
+- [ ] **U-02: Live activity**
+  - Steps: Run known-site and generic workflows.
+  - Expected: Runtime steps appear as they occur; pending question-agent entries resolve to success/error and the list scrolls to the newest entry.
+- [ ] **U-03: Clickable job links**
+  - Steps: Inspect job-labeled activity, error, needs-review, skipped, and recent-job entries.
+  - Expected: Valid HTTP/HTTPS job titles open the corresponding job in a new tab.
+- [ ] **U-04: Final match clarity**
+  - Steps: Inspect a hard skip and a high-scoring LLM review result.
+  - Expected: `Evaluate job match` states the final apply/skip/review outcome and reason rather than displaying an unexplained local percentage.
+- [ ] **U-05: Applied count**
+  - Steps: Complete multiple confirmed applications in one scan.
+  - Expected: `Applied` increments for every distinct confirmed application and does not remain at one.
+- [ ] **U-06: Needs Review and Errors separation**
+  - Steps: Produce one safety pause and one workflow failure.
+  - Expected: They appear in their respective sections with usable context and are not silently converted into ordinary skips.
+
+## 7. Data and privacy
+
+- [ ] **P-01: LLM disabled network behavior**
+  - Steps: Leave LLM matching disabled and avoid requesting extraction; inspect network activity during a scan.
+  - Expected: No job/resume/profile content is sent to OpenAI.
+- [ ] **P-02: OpenAI operation payloads**
+  - Steps: Separately validate a key, extract a CandidateProfile, match a job, and resolve a required question.
+  - Expected: Each operation sends only the categories documented in `PRIVACY.md`; API keys and raw prompts are absent from activity and console logs.
+- [ ] **P-03: Local storage contents**
+  - Steps: Inspect `chrome.storage.local` after saving a profile/resume and running a scan.
+  - Expected: The documented profile, PDF data URL, CandidateProfile, activity, scan state, compact job records, applied ledger, and error ledger are present; no developer backend receives them.
+- [ ] **P-04: Clear Job History scope**
+  - Steps: After saving applied and error jobs, click `Clear Job History` and accept the confirmation.
+  - Expected: Compact job records, both ledgers, detailed logs, and scan history clear while settings, API key, and resume/profile remain.
+- [ ] **P-05: Fresh storage**
+  - Steps: Clear extension storage and reopen the side panel.
+  - Expected: Defaults load cleanly without stale CandidateProfile/API-validation status.
 - [ ] **P-06: Permission review**
-  - Steps: Review `manifest.json`.
-  - Expected: Permissions are limited to storage, tabs, scripting, Apple Careers hosts, and optional OpenAI access.
-- [ ] **P-07: Clear job history**
-  - Steps: Click `Clear job history` after a scan.
-  - Expected: Job records and scan history clear, while matching settings remain available.
-- [ ] **P-08: Export job logs**
-  - Steps: Click `Export job logs` after a scan.
-  - Expected: A local JSON file downloads with `persistence: chrome_storage_local`, `storedRecordCount`, job IDs, URLs, YOE evidence, tech stack, decisions, decision sources, workflow attempts, error types, and manual recovery URLs when available.
-- [ ] **P-09: Clear persisted logs**
-  - Steps: Click `Clear job history` after a scan, then export logs.
-  - Expected: Stored detailed logs and compact job records are cleared, while matching settings remain available.
+  - Steps: Compare `manifest.json` with `PRIVACY.md` and `store-assets/PRIVATE_LISTING.md`.
+  - Expected: `storage`, `tabs`, `scripting`, `sidePanel`, `debugger`, and `<all_urls>` are all disclosed and justified consistently. The debugger justification is limited to bounded Workday responsive-prompt trusted input, selected-item verification between attempts, and immediate detach behavior.
+- [ ] **P-07: No secrets in package**
+  - Steps: Inspect the ZIP file list and search extracted text for real `sk-` keys, resume names/content, contact data, cookies, browser profiles, and local history.
+  - Expected: None are packaged.
 
-## 7. Chrome Store Readiness
+## 8. Private Chrome Web Store readiness
 
-- [ ] **C-01: Icons**
-  - Expected: `16`, `48`, and `128` px PNG extension icons exist before packaging.
-- [ ] **C-02: Screenshots**
-  - Expected: Store screenshots show popup, progress view, and advanced diagnostics.
-- [ ] **C-03: Privacy copy**
-  - Expected: Store listing states that local matching is default and OpenAI matching is optional.
-- [ ] **C-04: Trademark language**
-  - Expected: Listing does not imply Apple affiliation and does not use Apple logos.
-- [ ] **C-05: Dry-run mode**
-  - Expected: Confirm scan-only mode is the default so users can preview decisions before submit.
-- [ ] **C-06: Hosted privacy policy**
-  - Expected: Publish `PRIVACY.md` as a public URL and add it to the Chrome Web Store listing.
+- [ ] **C-01: Version consistency**
+  - Expected: `package.json`, `manifest.json`, listing draft, and ZIP filename all use the intended current version.
+- [ ] **C-02: Package root**
+  - Steps: Inspect the ZIP.
+  - Expected: `manifest.json` is at the ZIP root; source-only files, tests, Git data, and `node_modules` are absent.
+- [ ] **C-03: Current screenshots**
+  - Expected: Every submitted screenshot is a real current side-panel capture at `1280x800`; obsolete popup-era images are not uploaded.
+- [ ] **C-04: Current promotional images**
+  - Expected: Promotional copy does not claim Apple-only support or show obsolete UI.
+- [ ] **C-05: Hosted privacy policy**
+  - Expected: The submitted privacy-policy URL publicly renders the current `PRIVACY.md` without authentication.
+- [ ] **C-06: Private visibility**
+  - Steps: In the Chrome Web Store Distribution tab, select `Private` and the intended trusted tester accounts or owned Google Group.
+  - Expected: The item is not public or unlisted; only the selected testers can install it.
+- [ ] **C-07: Listing/privacy consistency**
+  - Expected: Supported sites, OpenAI data use, submission behavior, permissions, and limitations match the shipped code and `PRIVACY.md`.
+- [ ] **C-08: Tester policy compatibility**
+  - Steps: Review every fixed required application-answer policy with each invited tester before enabling auto-apply.
+  - Expected: Auto-apply is not used by a tester whose real answers differ. General distribution remains blocked until these answers are configurable.
+- [ ] **C-09: Final automated checks**
+  - Expected: `npm test`, `npm run test:cli`, and `npm run check` all pass against the exact source used to build the ZIP.

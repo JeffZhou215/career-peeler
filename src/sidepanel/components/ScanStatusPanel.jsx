@@ -27,6 +27,16 @@ function renderFailureItem(failure) {
   return `${failure.status}: ${role} - ${cleanJobTitle(failure.title)}. ${failure.reason}.${heading}${actions}`;
 }
 
+function renderAppliedItem(record) {
+  const site = record.siteLabel ? ` ${record.siteLabel}.` : "";
+  const when = record.appliedAt ? ` (${formatRelativeTime(record.appliedAt)})` : "";
+  return [
+    `${record.status || "applied"}:${site} `,
+    <JobLink key="link" jobId={record.jobId} title={record.title} url={record.url} />,
+    when
+  ];
+}
+
 function renderSkippedUnqualifiedItem(entry) {
   const site = entry.siteLabel ? ` ${entry.siteLabel}.` : "";
   const when = entry.skippedAt ? ` (${formatRelativeTime(entry.skippedAt)})` : "";
@@ -73,10 +83,14 @@ export function ScanStatusPanel({ status }) {
         <strong>{status.phase || "Idle"}</strong>
         <span>Applied</span>
         <strong>{stats.applied || 0}</strong>
+        <span>Saved applied</span>
+        <strong>{status.savedAppliedCount || 0}</strong>
         <span>Reviewed</span>
         <strong>{stats.reviewed ?? stats.review ?? 0}</strong>
-        <span>Errors</span>
-        <strong>{stats.errors || 0}</strong>
+        <span>Saved errors</span>
+        <strong>{status.savedErrorCount ?? status.errors?.length ?? 0}</strong>
+        <span>API calls</span>
+        <strong>{stats.apiCalls || 0}</strong>
       </div>
       <p className="last-applied">
         {status.lastApplied
@@ -88,7 +102,19 @@ export function ScanStatusPanel({ status }) {
       </p>
 
       <details className="progress-details">
-        <summary>Errors ({stats.errors || 0})</summary>
+        <summary>Saved Applied Jobs ({status.savedAppliedCount || 0})</summary>
+        <ItemList
+          items={status.appliedJobs || []}
+          emptyMessage="No applied jobs saved yet."
+          renderItem={renderAppliedItem}
+        />
+        {(status.savedAppliedCount || 0) > (status.appliedJobs || []).length && (
+          <p className="muted">Showing the 25 most recently saved applied jobs.</p>
+        )}
+      </details>
+
+      <details className="progress-details">
+        <summary>Errors ({status.savedErrorCount ?? status.errors?.length ?? 0})</summary>
         <ItemList items={status.errors || []} emptyMessage="No errors logged yet." renderItem={renderErrorItem} />
       </details>
 
@@ -102,7 +128,7 @@ export function ScanStatusPanel({ status }) {
       </details>
 
       <details className="progress-details">
-        <summary>Detailed stats and logs</summary>
+        <summary>Detailed Stats And Logs</summary>
         <div className="scan-grid">
           <span>Pages</span>
           <strong>{status.pageCount || 0}</strong>
@@ -130,6 +156,8 @@ export function ScanStatusPanel({ status }) {
           <strong>{stats.skippedUnqualified || 0}</strong>
           <span>Apply failed</span>
           <strong>{stats.applyFailed || 0}</strong>
+          <span>Run errors</span>
+          <strong>{stats.errors || 0}</strong>
           <span>Needs review</span>
           <strong>{stats.needsReview || 0}</strong>
         </div>

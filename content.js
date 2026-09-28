@@ -186,6 +186,8 @@ const SITE_CONFIGS = {
 
 const WORKFLOW_STEP_DELAY_MS = 1800;
 const WORKFLOW_WAIT_TIMEOUT_MS = 12000;
+const MAX_FINAL_SUBMIT_ATTEMPTS = 3;
+const MAX_VALIDATION_RECOVERY_ATTEMPTS = 3;
 const DEFAULT_USER_YOE = 2;
 const TEXT_NODE_TYPE = 3;
 const HIGH_YOE_HARD_SKIP_FLOOR = 8;
@@ -356,11 +358,21 @@ function splitSentences(text) {
     .filter(Boolean);
 }
 
+// A "10+ years" mention isn't always about how much experience the CANDIDATE needs -- postings
+// routinely describe the team/company/platform's own tenure ("10+ years of engineering investment",
+// "8+ years of combined experience across the team") using the exact same years+experience wording a
+// real requirement sentence uses. Left unfiltered, that got misread as a YOE requirement and could
+// hard-skip a strong match on a sentence that was never about the candidate at all -- caught from a
+// live TikTok posting mentioning the team's own experience, not a requirement.
+const NON_CANDIDATE_YEARS_CONTEXT_PATTERN =
+  /\b(?:our|the)\s+(?:team|company|platform|organization|product)\b[^.!?]{0,40}\b(?:has|have)\b|\bcombined\s+(?:years|experience)\b|\bacross\s+the\s+team\b|\byears?\s+in\s+business\b|\bsince\s+(?:our|its)\s+founding\b/i;
+
 function sentenceMentionsRequirement(sentence) {
   const lower = sentence.toLowerCase();
   return (
     /\b(years?|yrs?)\b/.test(lower) &&
-    /\b(experience|professional|industry|software|engineering|development|work)\b/.test(lower)
+    /\b(experience|professional|industry|software|engineering|development|work)\b/.test(lower) &&
+    !NON_CANDIDATE_YEARS_CONTEXT_PATTERN.test(sentence)
   );
 }
 
@@ -753,7 +765,8 @@ function getSubmittedSignal() {
 
     if (
       /^(submitted|application submitted|resume submitted)$/.test(lower) ||
-      /\b(application|resume)?\s*submitted\b/.test(lower)
+      /\b(application|resume)?\s*submitted\b/.test(lower) ||
+      /\bwe (?:have|'ve) received your (?:resume|application)\b/.test(lower)
     ) {
       return {
         text: label,
@@ -775,19 +788,39 @@ function isAlreadyAppliedDialogText(text) {
 }
 
 function getAlreadyAppliedDialog() {
+  // .ud__confirm__content and its .ud__confirm__body child are confirmed ByteDance "Application
+  // Failed" dialog shapes -- body "You've already applied for this job. Unable to apply again.",
+  // buttons "View more jobs"/"Cancel" (neither a
+  // Continue/Submit label). Without a selector match here, getAlreadyAppliedSignal() (checked early in
+  // the workflow step, before the Continue/Submit search below) silently returns null and the workflow
+  // falls all the way through to that later search, which then fails with a confusing "No Continue or
+  // Submit action was found" error instead of correctly recognizing this as already-applied. The
+  // existing .uddialogwrap/.uddialogcontent/.udconfirm selectors (no double underscore) don't match
+  // this BEM naming at all -- a different ByteDance dialog family already had this same gap fixed once
+  // for a toast and once for an inline notice (see getAlreadyAppliedToast/getAlreadyAppliedNotice's own
+  // comments); this is that same class of gap, a third time, for a real modal confirm dialog.
   const dialogs = Array.from(
-    document.querySelectorAll("[role='dialog'], .uddialogwrap, .uddialogcontent, .udconfirm")
+    document.querySelectorAll(
+      "[role='dialog'], .uddialogwrap, .uddialogcontent, .udconfirm, .ud__confirm__content, [class*='confirm__content'], .ud__confirm__body, [class*='confirm__body']"
+    )
   ).filter((element) => isElementVisible(element));
 
   for (const dialog of dialogs) {
-    const text = normalizeText(dialog.innerText || "");
+    const text = normalizeText(dialog.innerText || dialog.textContent || "");
 
     if (isAlreadyAppliedDialogText(text)) {
+      const titleElement = dialog.querySelector(
+        ".udconfirmtitleContent, [class*='confirmtitle'], .ud__confirm__titleContent, [class*='confirm__title']"
+      );
+      const bodyElement = dialog.querySelector(
+        ".udconfirmbody, [class*='confirmbody'], .ud__confirm__body, [class*='confirm__body']"
+      );
+
       return {
         element: dialog,
         text: text.slice(0, 240),
-        title: normalizeText(dialog.querySelector(".udconfirmtitleContent, [class*='confirmtitle']")?.innerText || ""),
-        body: normalizeText(dialog.querySelector(".udconfirmbody, [class*='confirmbody']")?.innerText || "")
+        title: normalizeText(titleElement?.innerText || titleElement?.textContent || ""),
+        body: normalizeText(bodyElement?.innerText || bodyElement?.textContent || "")
       };
     }
   }
@@ -806,7 +839,7 @@ function getAlreadyAppliedToast() {
   ).filter((element) => isElementVisible(element));
 
   for (const toast of toasts) {
-    const text = normalizeText(toast.innerText || "");
+    const text = normalizeText(toast.innerText || toast.textContent || "");
 
     if (isAlreadyAppliedDialogText(text)) {
       return {
@@ -829,7 +862,7 @@ function getAlreadyAppliedNotice() {
   ).filter((element) => isElementVisible(element));
 
   for (const notice of notices) {
-    const text = normalizeText(notice.innerText || "");
+    const text = normalizeText(notice.innerText || notice.textContent || "");
 
     if (isAlreadyAppliedDialogText(text)) {
       return {
@@ -842,20 +875,65 @@ function getAlreadyAppliedNotice() {
   return null;
 }
 
-function getAlreadyAppliedSignal() {
-  return getAlreadyAppliedDialog() || getAlreadyAppliedToast() || getAlreadyAppliedNotice();
+function getAlreadyAppliedPageTextSignal() {
+  if (getSiteConfig()?.id !== "tiktok") {
+    return null;
+  }
+
+  // ByteDance has multiple independently-versioned popup wrappers. The visible message itself is
+  // stable, so use it as a last-resort signal when none of the known dialog/toast/alert selectors
+  // match. Keep the patterns candidate-directed and job-specific so an unrelated "already applied"
+  // phrase elsewhere on the page cannot terminate an application.
+  const pageText = normalizeText(document.body?.innerText || "").replace(/\s+/g, " ");
+  const messagePatterns = [
+    /\byou(?:['’]ve| have)? already applied (?:for|to) this (?:job|position)\b(?:.{0,160}\b(?:unable|cannot|can't|can’t|not able) (?:to )?apply again\b)?/i,
+    /\balready applied (?:for|to) this (?:job|position)\b.{0,160}\b(?:unable|cannot|can't|can’t|not able) (?:to )?apply again\b/i,
+    /\bapplication failed\b.{0,240}\balready applied\b/i
+  ];
+  const match = messagePatterns.map((pattern) => pageText.match(pattern)).find(Boolean);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    element: document.body,
+    text: normalizeText(match[0]).slice(0, 240)
+  };
 }
 
-// Checked immediately before the final Submit click -- deliberately limited to standard, semantic ARIA
-// signals (role=alert, aria-invalid) rather than a broad ".error"/".invalid" class-name guess: a fuzzy
-// class-name match risks false-positives on unrelated styling classes that happen to be present but
-// inactive, which would block a legitimate submission. role=alert and aria-invalid are signals a site
-// sets deliberately to mean "look at this now", the same standard this codebase already trusts
-// elsewhere (genericAutofill/actions.js's isFieldNowInvalid checks the same aria-invalid attribute).
+function getAlreadyAppliedSignal() {
+  return (
+    getAlreadyAppliedDialog() ||
+    getAlreadyAppliedToast() ||
+    getAlreadyAppliedNotice() ||
+    getAlreadyAppliedPageTextSignal()
+  );
+}
+
+// Checked immediately before the final Submit click. Keep this to semantic ARIA signals plus
+// ByteDance Formily's exact feedback-error class family rather than a broad ".error"/".invalid"
+// guess: fuzzy class matching sees inactive styling containers and blocks legitimate submissions.
+function isKnownFormValidationFeedback(element) {
+  const classTokens = String(element?.className || "").split(/\s+/);
+  return classTokens.some((token) => /^ud-formily-item-feedback-errors?/.test(token));
+}
+
+function getVisibleValidationMessageElements(root = document) {
+  const alerts = Array.from(root.querySelectorAll?.("[role='alert']") || []);
+  const formilyFeedback = Array.from(
+    root.querySelectorAll?.("[class*='ud-formily-item-feedback-error']") || []
+  ).filter(isKnownFormValidationFeedback);
+
+  return [...new Set([...alerts, ...formilyFeedback])].filter(
+    (element) =>
+      isElementVisible(element) && Boolean(normalizeText(element.innerText || element.textContent || ""))
+  );
+}
+
 function getVisibleValidationErrors() {
-  const alertMessages = Array.from(document.querySelectorAll("[role='alert']"))
-    .filter((element) => isElementVisible(element))
-    .map((element) => normalizeText(element.innerText || ""))
+  const alertMessages = getVisibleValidationMessageElements()
+    .map((element) => normalizeText(element.innerText || element.textContent || ""))
     .filter(Boolean);
 
   const invalidFieldCount = Array.from(document.querySelectorAll("[aria-invalid='true']")).filter(isElementVisible).length;
@@ -886,6 +964,11 @@ async function waitForSubmissionOutcome(options = {}) {
     const alreadyAppliedSignal = getAlreadyAppliedSignal();
     if (alreadyAppliedSignal) {
       return { type: "already_applied", signal: alreadyAppliedSignal };
+    }
+
+    const validationErrors = getVisibleValidationErrors();
+    if (validationErrors.length > 0) {
+      return { type: "validation", errors: validationErrors };
     }
 
     await delay(intervalMs);
@@ -995,6 +1078,225 @@ function getJobListStats(links) {
     applied,
     unapplied: links.length - applied
   };
+}
+
+function collectSubmittedRoleCards() {
+  const roles = new Map();
+
+  for (const anchor of document.querySelectorAll('a[href*="/en-us/details/"]')) {
+    if (!isElementVisible(anchor)) {
+      continue;
+    }
+
+    const url = new URL(anchor.href, window.location.href);
+    const jobId = getJobIdFromUrl(url.href);
+    if (!jobId || roles.has(jobId)) {
+      continue;
+    }
+
+    let card = anchor;
+    while (card && card !== document.body) {
+      const hasWithdrawButton = Array.from(card.querySelectorAll("button")).some((button) =>
+        /\bwithdraw\b/i.test(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`)
+      );
+      if (hasWithdrawButton && card.querySelectorAll('a[href*="/en-us/details/"]').length === 1) {
+        break;
+      }
+      card = card.parentElement;
+    }
+
+    const cardText = normalizeText(card?.innerText || "");
+    const title = cleanTitle(anchor.innerText || anchor.getAttribute("aria-label") || "Untitled job")
+      .replace(new RegExp(`\\s+${jobId}$`), "")
+      .trim();
+    const submittedDate = cardText.match(/\bSubmitted\s*[-–]\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})/i)?.[1] || null;
+    const withdrawButton = card && Array.from(card.querySelectorAll("button")).find((button) =>
+      /\bwithdraw\b/i.test(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`)
+    );
+
+    roles.set(jobId, {
+      jobId,
+      title,
+      url: url.href,
+      submittedDate,
+      cardText: cardText.slice(0, 700),
+      active: Boolean(withdrawButton)
+    });
+  }
+
+  return Array.from(roles.values());
+}
+
+function getAppleHistoryPageIndex() {
+  const input = document.querySelector('#profile-roles-pagination input[type="number"]');
+  const value = Number(input?.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+async function waitForSubmittedRolePageChange(previousFirstJobId, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await delay(200);
+    const firstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
+    if (firstJobId && firstJobId !== previousFirstJobId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function collectAppleSubmittedHistory() {
+  if (getSiteId() !== "apple" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
+    throw new Error("Open your Apple Careers roles page first.");
+  }
+  if (!/your active submitted roles/i.test(document.body?.innerText || "")) {
+    throw new Error('Choose Submissions, then the "Active" filter before analyzing roles.');
+  }
+
+  const originalPageIndex = getAppleHistoryPageIndex();
+  const rolesById = new Map();
+  let pageCount = 0;
+  let navigationError = null;
+
+  try {
+    while (pageCount < 100) {
+      const pageRoles = collectSubmittedRoleCards();
+      if (pageRoles.length === 0) {
+        throw new Error("No submitted role cards were found on the current page.");
+      }
+      for (const role of pageRoles) rolesById.set(role.jobId, role);
+      pageCount += 1;
+
+      const nextButton = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
+      if (!nextButton || nextButton.disabled || nextButton.getAttribute("aria-disabled") === "true") {
+        break;
+      }
+
+      const previousFirstJobId = pageRoles[0]?.jobId || null;
+      nextButton.click();
+      if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) {
+        navigationError = "Apple's submitted roles page did not change after selecting Next Page.";
+        break;
+      }
+    }
+  } finally {
+    const currentPageIndex = getAppleHistoryPageIndex();
+    if (originalPageIndex !== null && currentPageIndex !== null && currentPageIndex !== originalPageIndex) {
+      const direction = currentPageIndex > originalPageIndex ? "Previous Page" : "Next Page";
+      const count = Math.abs(currentPageIndex - originalPageIndex);
+      for (let index = 0; index < count; index += 1) {
+        const button = document.querySelector(`#profile-roles-pagination button[aria-label="${direction}"]`);
+        if (!button || button.disabled) break;
+        const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
+        button.click();
+        if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) break;
+      }
+    }
+  }
+
+  return {
+    roles: Array.from(rolesById.values()),
+    pagesRead: pageCount,
+    pageCount: Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) || pageCount,
+    navigationError
+  };
+}
+
+function findSubmittedRoleCard(jobId) {
+  const anchor = Array.from(document.querySelectorAll('a[href*="/en-us/details/"]')).find((candidate) =>
+    getJobIdFromUrl(candidate.href) === String(jobId)
+  );
+  if (!anchor) return null;
+
+  let card = anchor;
+  while (card && card !== document.body) {
+    const withdrawButton = Array.from(card.querySelectorAll("button")).find((button) =>
+      /\bwithdraw\b/i.test(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`)
+    );
+    if (withdrawButton && card.querySelectorAll('a[href*="/en-us/details/"]').length === 1) {
+      return { card, withdrawButton, title: cleanTitle(anchor.innerText || "") };
+    }
+    card = card.parentElement;
+  }
+  return null;
+}
+
+async function findSubmittedRoleOnAnyPage(jobId) {
+  while (true) {
+    const previousButton = document.querySelector('#profile-roles-pagination button[aria-label="Previous Page"]');
+    if (!previousButton || previousButton.disabled || previousButton.getAttribute("aria-disabled") === "true") break;
+    const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
+    previousButton.click();
+    if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) break;
+  }
+
+  const visited = new Set();
+  while (true) {
+    const pageIndex = getAppleHistoryPageIndex();
+    if (pageIndex !== null && visited.has(pageIndex)) return null;
+    if (pageIndex !== null) visited.add(pageIndex);
+
+    const match = findSubmittedRoleCard(jobId);
+    if (match) return match;
+
+    const nextButton = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
+    if (!nextButton || nextButton.disabled || nextButton.getAttribute("aria-disabled") === "true") return null;
+    const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
+    nextButton.click();
+    if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) return null;
+  }
+}
+
+async function waitForSubmittedRoleWithdrawal(jobId, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!findSubmittedRoleCard(jobId)) return true;
+    await delay(300);
+  }
+  return false;
+}
+
+async function withdrawAppleSubmittedRoles(requestedRoles = []) {
+  if (getSiteId() !== "apple" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
+    throw new Error("Open your Apple Careers roles page before withdrawing applications.");
+  }
+
+  const roles = requestedRoles.slice(0, 250);
+  const withdrawn = [];
+  const failed = [];
+
+  for (const role of roles) {
+    const match = await findSubmittedRoleOnAnyPage(role.jobId);
+    if (!match) {
+      failed.push({ jobId: role.jobId, title: role.title, error: "The active role could not be found." });
+      break;
+    }
+
+    match.withdrawButton.click();
+    await delay(500);
+
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(isElementVisible);
+    const dialog = dialogs.find((candidate) => /withdraw/i.test(normalizeText(candidate.innerText || candidate.textContent || "")));
+    if (dialog) {
+      const confirmButton = Array.from(dialog.querySelectorAll("button")).find((button) => {
+        const label = normalizeText(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`);
+        return /^withdraw(?: application)?$/i.test(label);
+      });
+      if (!confirmButton) {
+        failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal dialog needs manual review; no exact confirmation button was found." });
+        break;
+      }
+      confirmButton.click();
+    }
+
+    if (!(await waitForSubmittedRoleWithdrawal(role.jobId))) {
+      failed.push({ jobId: role.jobId, title: role.title, error: "Apple did not confirm that this application was withdrawn." });
+      break;
+    }
+    withdrawn.push({ jobId: role.jobId, title: role.title });
+  }
+
+  return { withdrawn, failed };
 }
 
 function getJobScopedElements(jobId) {
@@ -1471,13 +1773,164 @@ function inferFieldCategory(label, kind) {
 }
 
 function isRequiredField(element, label) {
-  const lower = label.toLowerCase();
+  const lower = String(label || "").toLowerCase();
 
   return (
-    element.required ||
-    element.getAttribute("aria-required") === "true" ||
+    Boolean(element?.required) ||
+    element?.getAttribute?.("aria-required") === "true" ||
     /\brequired\b|\*/.test(lower)
   );
+}
+
+function isQuestionControlRequired(element, label) {
+  const text = String(label || "");
+
+  if (isOptionalApplicationQuestion(element, text)) {
+    return false;
+  }
+
+  const container =
+    element?.closest?.(
+      "[data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='radiogroup'], [role='group']"
+    ) || element;
+  const containerText = normalizeText(container?.innerText || "").slice(0, 1000);
+  const combinedText = normalizeText(`${text} ${containerText}`);
+  const hasExplicitMarker =
+    /\*|\(\s*required\s*\)|\brequired\s*$|\bmandatory\s+for\s+applicants?\b|\(\s*mandatory\s*\)|\bmandatory\s*$/i.test(combinedText);
+
+  if (isOptionalApplicationQuestion(element, containerText)) {
+    return false;
+  }
+
+  if (Boolean(element?.required) || element?.getAttribute?.("aria-required") === "true") {
+    return true;
+  }
+
+  if (Boolean(container?.required) || container?.getAttribute?.("aria-required") === "true") {
+    return true;
+  }
+
+  const hasRequiredDescendant = Boolean(
+    container?.querySelector?.("input[required], select[required], textarea[required], [aria-required='true']")
+  );
+
+  return hasRequiredDescendant || hasExplicitMarker;
+}
+
+function isOptionalApplicationQuestionText(text) {
+  return /\b(?:optional|voluntary)\b|\bnot\s+mandatory\b/i.test(String(text || ""));
+}
+
+function isOptionalApplicationQuestion(element, label) {
+  if (isOptionalApplicationQuestionText(label)) {
+    return true;
+  }
+  if (!/\b(?:gender|race|ethnicity|veteran|disabilit(?:y|ies))\b/i.test(String(label || ""))) {
+    return false;
+  }
+
+  let node = getAgentFieldContainer(element);
+  for (let depth = 0; node && depth < 5; depth += 1) {
+    if (isOptionalApplicationQuestionText(normalizeText(node.innerText || ""))) {
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+function isTikTokAuthorizationModuleQuestion(element, question) {
+  const text = normalizeText(question || "");
+
+  if (
+    isOptionalApplicationQuestionText(text) ||
+    (!isWorkAuthorizationQuestion(text) && !isVisaSponsorshipQuestion(text))
+  ) {
+    return false;
+  }
+
+  // Some ByteDance application variants render the mandatory Work Authorization module without
+  // required/aria-required/asterisk markers. Keep the exception tied to that named module and the
+  // two deterministic authorization policies; unrelated unmarked questions remain optional/skipped.
+  let ancestor = element;
+  for (let depth = 0; ancestor && depth < 8; depth += 1) {
+    const classTokens = String(ancestor.className || "").split(/\s+/);
+    if (classTokens.some((token) => /^applyFormModuleWrapper__/.test(token))) {
+      const title = normalizeText(
+        ancestor.querySelector?.("[class*='applyFormModuleWrapper-title']")?.innerText || ""
+      );
+      const moduleText = normalizeText(ancestor.innerText || "");
+      return /\bwork authorization\b/i.test(title) || /^work authorization\b/i.test(moduleText);
+    }
+    ancestor = ancestor.parentElement;
+  }
+
+  return false;
+}
+
+function shouldAnswerTikTokAuthorizationField(element, question) {
+  if (isOptionalApplicationQuestionText(question)) {
+    return false;
+  }
+  return isQuestionControlRequired(element, question) || isTikTokAuthorizationModuleQuestion(element, question);
+}
+
+function getAgentFieldContainer(element) {
+  return element?.closest?.(
+    "[data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='radiogroup'], [role='group'], label"
+  ) || element;
+}
+
+function isValidationBlockedControl(element) {
+  const container = getAgentFieldContainer(element);
+  return (
+    element?.getAttribute?.("aria-invalid") === "true" ||
+    container?.getAttribute?.("aria-invalid") === "true" ||
+    Boolean(container?.querySelector?.("[aria-invalid='true']")) ||
+    getVisibleValidationMessageElements(container).length > 0
+  );
+}
+
+function isApplicationFormControl(element) {
+  return Boolean(
+    element?.closest?.(
+      "form, [data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='radiogroup'], [role='group']"
+    )
+  );
+}
+
+function shouldAgentAnswerRequiredControl(element, question, options = {}) {
+  const text = String(question || "");
+  if (isOptionalApplicationQuestion(element, text)) {
+    return false;
+  }
+
+  return (
+    isQuestionControlRequired(element, text) ||
+    isTikTokAuthorizationModuleQuestion(element, text) ||
+    isValidationBlockedControl(element) ||
+    (Boolean(options.includeUnmarked) && isApplicationFormControl(element))
+  );
+}
+
+function hasVisibleApplicationQuestionControls() {
+  const controlSelector = [
+    "select",
+    "textarea",
+    "input:not([type='hidden']):not([type='submit']):not([type='button']):not([readonly])",
+    ".ud__select__selector",
+    "[role='combobox']",
+    "[role='radio']",
+    "[aria-haspopup='listbox']",
+    "[aria-haspopup='menu']"
+  ].join(", ");
+
+  return Array.from(document.querySelectorAll("[data-form-field-i18n-name]"))
+    .filter((element) => isElementVisible(element))
+    .some((element) =>
+      Array.from(element.querySelectorAll(controlSelector))
+        .some((control) => isElementVisible(control) && !isActionDisabled(control))
+    );
 }
 
 function getOptionPreview(element) {
@@ -1547,6 +2000,21 @@ function delay(ms) {
   });
 }
 
+async function waitForCondition(predicate, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 2000;
+  const intervalMs = options.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return true;
+    }
+    await delay(intervalMs);
+  }
+
+  return Boolean(predicate());
+}
+
 function isActionDisabled(element) {
   return (
     element.disabled ||
@@ -1596,12 +2064,9 @@ function findClickableByText(pattern) {
   return getClickableCandidates().find((element) => pattern.test(getActionLabel(element)));
 }
 
-// A real `<a target="_blank">` click (as opposed to our own chrome.tabs.create calls) makes Chrome
-// activate the new tab and bring its whole window to the OS foreground by default -- interrupting
-// whatever else the user is doing, even in a completely different application, since showing a new
-// browser tab requires the browser itself to momentarily take focus. Detect this case up front so
-// the caller can ask background.js to open the URL via chrome.tabs.create({active:false}) instead
-// of clicking through the browser's native (and disruptive) new-tab handling.
+// Detect target=_blank links before clicking so background.js can create, track, focus, and later
+// close the application tab itself. Letting the page create it natively makes ownership and cleanup
+// ambiguous, especially when the site chooses a different window.
 function getBackgroundOpenableLink(element) {
   const anchor = element?.matches?.("a[target='_blank'][href]")
     ? element
@@ -1684,10 +2149,14 @@ function getLoadingSignal() {
   return null;
 }
 
-async function waitForClickable(pattern, timeoutMs = WORKFLOW_WAIT_TIMEOUT_MS) {
+async function waitForClickable(pattern, timeoutMs = WORKFLOW_WAIT_TIMEOUT_MS, options = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
+    if (options.shouldStop?.()) {
+      return null;
+    }
+
     const element = findClickableByText(pattern);
 
     if (element) {
@@ -1706,13 +2175,17 @@ async function clickAction(pattern, stepName, steps, options = {}) {
     await delay(500);
   }
 
-  const element = await waitForClickable(pattern, options.timeoutMs);
+  const element = await waitForClickable(pattern, options.timeoutMs, {
+    shouldStop: options.shouldStop
+  });
 
   if (!element) {
-    steps.push({
-      step: stepName,
-      status: "missing"
-    });
+    if (options.recordMissing !== false) {
+      steps.push({
+        step: stepName,
+        status: "missing"
+      });
+    }
     return false;
   }
 
@@ -1731,23 +2204,26 @@ async function clickAction(pattern, stepName, steps, options = {}) {
   return true;
 }
 
-async function clickAndDetectSubmission(element, steps) {
-  const validationErrors = getVisibleValidationErrors();
-  if (validationErrors.length > 0) {
-    steps.push({
-      step: "Check for validation errors before submitting",
-      status: "blocked",
-      label: validationErrors.join("; ")
-    });
-    return {
-      clicked: false,
-      done: false,
-      pending: false,
-      errorType: "blocked_by_validation",
-      summary: `Found ${validationErrors.length} validation issue(s) before submitting -- please resolve them first: ${validationErrors.join("; ")}`
-    };
-  }
+function buildAlreadyAppliedActionResult(signal, steps) {
+  const label = signal.body || signal.text || "You've already applied for this job. Unable to apply again.";
 
+  steps.push({
+    step: "Detect already applied notice",
+    status: "detected",
+    label
+  });
+
+  return {
+    clicked: true,
+    done: true,
+    pending: false,
+    alreadySubmitted: true,
+    errorType: "already_applied",
+    summary: label
+  };
+}
+
+async function clickAndDetectSubmission(element, steps, options = {}) {
   element.scrollIntoView({
     block: "center"
   });
@@ -1759,7 +2235,7 @@ async function clickAndDetectSubmission(element, steps) {
     label: getActionLabel(element)
   });
 
-  const outcome = await waitForSubmissionOutcome();
+  const outcome = await waitForSubmissionOutcome(options.outcomeOptions);
 
   if (outcome?.type === "submitted") {
     steps.push({
@@ -1792,6 +2268,23 @@ async function clickAndDetectSubmission(element, steps) {
     };
   }
 
+  const postClickValidationErrors = getVisibleValidationErrors();
+  if (postClickValidationErrors.length > 0) {
+    steps.push({
+      step: "Check for validation errors after submitting",
+      status: "blocked",
+      label: postClickValidationErrors.join("; ")
+    });
+    return {
+      clicked: true,
+      done: false,
+      pending: false,
+      pausedForReview: true,
+      errorType: "blocked_by_validation",
+      summary: `Submit was clicked, but the form reported ${postClickValidationErrors.length} validation issue(s): ${postClickValidationErrors.join("; ")}`
+    };
+  }
+
   const loadingSignal = getLoadingSignal();
   if (loadingSignal) {
     steps.push({
@@ -1804,6 +2297,29 @@ async function clickAndDetectSubmission(element, steps) {
       done: false,
       pending: true,
       summary: "Clicked final Submit, but the page is still loading."
+    };
+  }
+
+  // Some ByteDance/Formily variants reject Submit without exposing an alert, aria-invalid state, or
+  // feedback-error node. Before treating the click as genuinely ambiguous, inspect only controls the
+  // live DOM explicitly identifies as required (including the narrowly-scoped Work Authorization
+  // module exception). This is not the broadened includeUnmarked recovery: if no concrete required
+  // field is visible, the workflow still stops without another Submit click.
+  const explicitRequiredAudit = auditRequiredApplicationFields({ includeUnmarked: false });
+  if (explicitRequiredAudit.unanswered.length > 0) {
+    const auditSummary = formatRequiredFieldAuditSummary(explicitRequiredAudit);
+    steps.push({
+      step: "Check for validation errors after submitting",
+      status: "blocked",
+      label: auditSummary
+    });
+    return {
+      clicked: true,
+      done: false,
+      pending: false,
+      pausedForReview: true,
+      errorType: "blocked_by_validation",
+      summary: `Submit was clicked, and the page still has explicit unanswered required fields. ${auditSummary}`
     };
   }
 
@@ -1828,18 +2344,40 @@ async function clickAndDetectSubmission(element, steps) {
   };
 }
 
-async function clickFinalSubmit(steps) {
+async function clickFinalSubmit(steps, options = {}) {
   window.scrollTo(0, document.body.scrollHeight);
   await delay(500);
 
   const siteConfig = getSiteConfig();
-  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 4000);
+  const alreadyAppliedBeforeSubmitSearch = getAlreadyAppliedSignal();
+
+  if (alreadyAppliedBeforeSubmitSearch) {
+    return buildAlreadyAppliedActionResult(alreadyAppliedBeforeSubmitSearch, steps);
+  }
+
+  let alreadyAppliedDuringSubmitSearch = null;
+  const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 4000, {
+    shouldStop: () => {
+      alreadyAppliedDuringSubmitSearch = getAlreadyAppliedSignal();
+      return Boolean(alreadyAppliedDuringSubmitSearch);
+    }
+  });
 
   if (!element) {
-    steps.push({
-      step: "Submit application",
-      status: "missing"
-    });
+    // The duplicate-application check is asynchronous. A persistent ByteDance confirm can mount
+    // while waitForClickable() is looking for a Submit button, after the earlier settle check ended.
+    const alreadyAppliedSignal = alreadyAppliedDuringSubmitSearch || getAlreadyAppliedSignal();
+
+    if (alreadyAppliedSignal) {
+      return buildAlreadyAppliedActionResult(alreadyAppliedSignal, steps);
+    }
+
+    if (options.recordMissing !== false) {
+      steps.push({
+        step: "Submit application",
+        status: "missing"
+      });
+    }
     return {
       clicked: false,
       done: false,
@@ -1870,21 +2408,79 @@ function findPrimaryActionButton(siteConfig) {
 // reliable and faster than the text-pattern searches below, which are kept as a fallback for
 // sites/pages where this id isn't present.
 async function clickPrimaryAction(siteConfig, steps) {
+  const alreadyAppliedSignal = getAlreadyAppliedSignal();
+
+  if (alreadyAppliedSignal) {
+    return buildAlreadyAppliedActionResult(alreadyAppliedSignal, steps);
+  }
+
   const primaryButton = findPrimaryActionButton(siteConfig);
 
   if (!primaryButton) {
-    const submitResult = await clickFinalSubmit(steps);
+    // TikTok/ByteDance use separate controls, so an intermediate page normally has Continue but no
+    // Submit. Treat this first lookup as a probe and only record a missing Submit if Continue is also
+    // absent; otherwise the activity log would show a false failure on every normal intermediate step.
+    const submitResult = await clickFinalSubmit(steps, { recordMissing: false });
 
-    if (submitResult.done || submitResult.pending) {
+    if (
+      submitResult.done ||
+      submitResult.pending ||
+      submitResult.pausedForReview ||
+      submitResult.errorType === "blocked_by_validation"
+    ) {
       return submitResult;
     }
 
+    let alreadyAppliedDuringContinueSearch = null;
     const continued = await clickAction(
       siteConfig?.continuePattern || /^continue$/i,
       "Continue application step",
       steps,
-      { scrollBottom: true, timeoutMs: 5000 }
+      {
+        scrollBottom: true,
+        timeoutMs: 5000,
+        recordMissing: false,
+        shouldStop: () => {
+          alreadyAppliedDuringContinueSearch = getAlreadyAppliedSignal();
+          return Boolean(alreadyAppliedDuringContinueSearch);
+        }
+      }
     );
+
+    if (!continued) {
+      // Repeat the status check after the Continue search too. Without this, a dialog that mounted
+      // during either action lookup was incorrectly reported as a missing Submit button.
+      const alreadyAppliedSignal = alreadyAppliedDuringContinueSearch || getAlreadyAppliedSignal();
+
+      if (alreadyAppliedSignal) {
+        return buildAlreadyAppliedActionResult(alreadyAppliedSignal, steps);
+      }
+
+      steps.push({
+        step: "Continue application step",
+        status: "missing"
+      });
+      steps.push({
+        step: "Submit application",
+        status: "missing"
+      });
+    }
+
+    const continuationValidationErrors = continued ? getVisibleValidationErrors() : [];
+    if (continuationValidationErrors.length > 0) {
+      steps.push({
+        step: "Check for validation errors after continuing",
+        status: "blocked",
+        label: continuationValidationErrors.join("; ")
+      });
+      return {
+        clicked: true,
+        done: false,
+        pending: false,
+        errorType: "blocked_by_validation",
+        summary: `Continue was clicked, but ${continuationValidationErrors.length} required validation issue(s) still block this step: ${continuationValidationErrors.join("; ")}`
+      };
+    }
 
     return {
       clicked: continued,
@@ -1916,6 +2512,22 @@ async function clickPrimaryAction(siteConfig, steps) {
   });
   await delay(WORKFLOW_STEP_DELAY_MS);
 
+  const continuationValidationErrors = getVisibleValidationErrors();
+  if (continuationValidationErrors.length > 0) {
+    steps.push({
+      step: "Check for validation errors after continuing",
+      status: "blocked",
+      label: continuationValidationErrors.join("; ")
+    });
+    return {
+      clicked: true,
+      done: false,
+      pending: false,
+      errorType: "blocked_by_validation",
+      summary: `Continue was clicked, but ${continuationValidationErrors.length} required validation issue(s) still block this step: ${continuationValidationErrors.join("; ")}`
+    };
+  }
+
   return {
     clicked: true,
     done: false,
@@ -1929,7 +2541,8 @@ function findSponsorshipContainer() {
     .filter((element) => isElementVisible(element))
     .filter((element) => {
       const text = normalizeText(element.innerText || "").toLowerCase();
-      return /\b(visa|sponsor|sponsorship|work authorization)\b/.test(text);
+      return /\b(visa|sponsor|sponsorship|work authorization)\b/.test(text) &&
+        isQuestionControlRequired(element, text);
     })
     .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
 
@@ -1991,8 +2604,16 @@ function isWorkAuthorizationQuestion(text) {
   return (
     /\blegally authorized\b/.test(lower) ||
     /\bauthorized to work\b/.test(lower) ||
+    /\beligible to work\b/.test(lower) ||
+    /\b(?:right|permission)[\s\-‐‑‒–—]+to[\s\-‐‑‒–—]+work\b/.test(lower) ||
+    /\bvalid work authori[sz]ation\b/.test(lower) ||
     /\bwork in the (?:us|u\.s\.|united states)\b/.test(lower)
   );
+}
+
+function isCategoricalWorkAuthorizationStatusQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return /\bright[\s\-‐‑‒–—]+to[\s\-‐‑‒–—]+work\s+status\b/.test(lower);
 }
 
 function isVisaSponsorshipQuestion(text) {
@@ -2002,6 +2623,9 @@ function isVisaSponsorshipQuestion(text) {
     /\brequire sponsorship\b/.test(lower) ||
     /\bsponsorship for employment\b/.test(lower) ||
     /\bvisa transfer\b/.test(lower) ||
+    /\b(?:employment|work) visa\b/.test(lower) ||
+    /\bimmigration (?:support|assistance)\b/.test(lower) ||
+    /\b(?:require|need|seek)\b.{0,50}\b(?:sponsor(?:ship)?|work visa|immigration support)\b/.test(lower) ||
     /\bnow or in the future\b.*\b(?:sponsorship|visa)\b/.test(lower)
   );
 }
@@ -2021,6 +2645,74 @@ function isPriorAppleContractorQuestion(text) {
   return (
     /\bapple\b/.test(lower) && /\btemporary agency worker\b/.test(lower) && /\bindependent contractor\b/.test(lower)
   );
+}
+
+function isCriminalHistoryQuestion(text) {
+  const lower = normalizeText(text || "").toLowerCase();
+  return (
+    /\bcriminal (?:history|record)\b/.test(lower) ||
+    /\bcriminal offen[cs]e\b/.test(lower) ||
+    /\b(?:convicted|conviction|felony|misdemeanor)\b/.test(lower) ||
+    /\b(?:ever|previously)\b.{0,50}\b(?:arrested|charged)\b/.test(lower) ||
+    /\b(?:found|pleaded|pled) guilty\b/.test(lower)
+  );
+}
+
+function isRaceEthnicityQuestion(text) {
+  return /\b(?:race|ethnicity|ethnic origin)\b/i.test(text || "");
+}
+
+function isVeteranStatusQuestion(text) {
+  return /\bveteran\b/i.test(text || "");
+}
+
+function isDisabilityStatusQuestion(text) {
+  return /\bdisabilit(?:y|ies)\b/i.test(text || "");
+}
+
+function isStartDateQuestion(text) {
+  return /\b(?:earliest|available|availability|start)\b.*\b(?:date|start)\b|\bwhen can you start\b/i.test(text || "");
+}
+
+function isApplicationChoiceQuestion(text) {
+  const normalized = normalizeText(text || "");
+  return (
+    normalized.length <= 500 &&
+    (normalized.includes("?") ||
+      isWorkAuthorizationQuestion(normalized) ||
+      isVisaSponsorshipQuestion(normalized) ||
+      isAgeEligibilityQuestion(normalized) ||
+      isPriorAppleEmploymentQuestion(normalized) ||
+      isPriorAppleContractorQuestion(normalized) ||
+      isCriminalHistoryQuestion(normalized) ||
+      isRaceEthnicityQuestion(normalized) ||
+      isVeteranStatusQuestion(normalized) ||
+      isDisabilityStatusQuestion(normalized) ||
+      isStartDateQuestion(normalized))
+  );
+}
+
+function isAgentQuestionExcluded(element) {
+  // Apple identifies this resume-parsing satisfaction survey with a stable section id and does not
+  // mark either radio as required. Answering it cannot unblock Continue, so sending it to the LLM is
+  // pure API spend and can also overwrite feedback the candidate intentionally left unanswered.
+  return Boolean(element?.closest?.("#apply-parsing-feedback"));
+}
+
+function getApplicationControlQuestionLabel(element) {
+  const dataField = element.closest?.("[data-form-field-i18n-name]");
+  const candidates = [dataField?.getAttribute("data-form-field-i18n-name"), getElementLabel(element)];
+  let ancestor = element.parentElement;
+
+  for (let depth = 0; ancestor && depth < 4; depth += 1) {
+    candidates.push(normalizeText(ancestor.innerText || ""));
+    ancestor = ancestor.parentElement;
+  }
+
+  return candidates
+    .map((candidate) => normalizeText(candidate || ""))
+    .filter((candidate) => isApplicationChoiceQuestion(candidate))
+    .sort((left, right) => left.length - right.length)[0] || getElementLabel(element);
 }
 
 const NON_ANSWER_ACTION_LABEL_PATTERN =
@@ -2069,18 +2761,38 @@ function isEssayQuestionLabel(label) {
   return ESSAY_QUESTION_LABEL_PATTERN.test(text) && !PERSONAL_INFO_FIELD_LABEL_PATTERN.test(text);
 }
 
-function findOpenTextQuestionField() {
-  const fields = Array.from(document.querySelectorAll("textarea, input[type='text']"))
+function findOpenTextQuestionField(options = {}) {
+  const fields = Array.from(
+    document.querySelectorAll(
+      [
+        "textarea",
+        "input:not([type])",
+        "input[type='text']",
+        "input[type='email']",
+        "input[type='tel']",
+        "input[type='url']",
+        "input[type='number']",
+        "input[type='date']",
+        "input[type='month']"
+      ].join(", ")
+    )
+  )
     .filter((element) => isElementVisible(element))
     .filter((element) => !isActionDisabled(element))
+    .filter((element) => !element.readOnly && element.getAttribute?.("readonly") === null)
+    .filter((element) => !isAgentQuestionExcluded(element))
     .filter((element) => !(element.value || "").trim());
 
-  return fields.find((element) => isEssayQuestionLabel(getElementLabel(element))) || null;
+  return fields.find((element) => {
+    const label = getElementLabel(element);
+    return shouldAgentAnswerRequiredControl(element, label, options);
+  }) || null;
 }
 
 function getQuestionContainers() {
   return Array.from(document.querySelectorAll("fieldset, section, div, li"))
     .filter((element) => isElementVisible(element))
+    .filter((element) => isQuestionControlRequired(element, normalizeText(element.innerText || "")))
     .filter((element) => {
       const text = normalizeText(element.innerText || "");
       const hasKnownQuestion =
@@ -2275,12 +2987,26 @@ async function clickDropdownYesAnswer(container, stepName, steps) {
 }
 
 function getSelectedDropdownText(container) {
-  const selector = container.querySelector(".ud__select__selector, [role='combobox'], [aria-haspopup='listbox']");
-  const input = container.querySelector("input[role='combobox'], input[readonly]");
+  const selectorPattern = ".ud__select__selector, [role='combobox'], [aria-haspopup='listbox']";
+  const inputPattern = "input[role='combobox'], input[readonly]";
+  // closest("..., div") can resolve to a custom-select trigger itself. Reading descendants only then
+  // misses an already-selected value rendered directly on that trigger (the ByteDance phone prefix
+  // shows "+1" this way), making recovery reopen and overwrite a completed profile control.
+  const selector = container?.matches?.(selectorPattern)
+    ? container
+    : container?.querySelector?.(selectorPattern);
+  const input = container?.matches?.(inputPattern)
+    ? container
+    : container?.querySelector?.(inputPattern);
 
   return normalizeText(
     `${selector?.innerText || ""} ${input?.value || ""} ${selector?.getAttribute("aria-label") || ""}`
   );
+}
+
+function hasMeaningfulSelectedDropdownValue(container) {
+  const displayedValue = getSelectedDropdownText(container);
+  return Boolean(displayedValue) && !/^(?:select|choose)(?: an?)?(?: option| answer)?$/i.test(displayedValue);
 }
 
 async function selectTikTokYesAnswer(field, stepName, steps) {
@@ -2372,18 +3098,44 @@ async function answerNoQuestion(container, stepName, steps) {
 }
 
 async function answerQuestionnaire(steps) {
+  const alreadyAppliedBeforeQuestions = getAlreadyAppliedSignal();
+
+  if (alreadyAppliedBeforeQuestions) {
+    return {
+      answeredAny: false,
+      requiredCount: 0,
+      answeredCount: 0,
+      alreadyAppliedSignal: alreadyAppliedBeforeQuestions
+    };
+  }
+
   const tikTokFields = Array.from(document.querySelectorAll("[data-form-field-i18n-name]"))
     .filter((element) => isElementVisible(element))
     .map((element) => ({
       element,
       question: normalizeText(element.getAttribute("data-form-field-i18n-name") || element.innerText || "")
     }))
-    .filter(({ question }) => isWorkAuthorizationQuestion(question) || isVisaSponsorshipQuestion(question));
+    .filter(({ element, question }) =>
+      (isWorkAuthorizationQuestion(question) || isVisaSponsorshipQuestion(question)) &&
+      !isCategoricalWorkAuthorizationStatusQuestion(question) &&
+      shouldAnswerTikTokAuthorizationField(element, question)
+    );
 
   if (tikTokFields.length) {
     let answeredCount = 0;
 
     for (const { element, question } of tikTokFields) {
+      const alreadyAppliedSignal = getAlreadyAppliedSignal();
+
+      if (alreadyAppliedSignal) {
+        return {
+          answeredAny: answeredCount > 0,
+          requiredCount: tikTokFields.length,
+          answeredCount,
+          alreadyAppliedSignal
+        };
+      }
+
       const stepName = isWorkAuthorizationQuestion(question)
         ? "Answer work authorization"
         : "Answer visa sponsorship";
@@ -2396,13 +3148,19 @@ async function answerQuestionnaire(steps) {
     return {
       answeredAny: answeredCount > 0,
       requiredCount: tikTokFields.length,
-      answeredCount
+      answeredCount,
+      alreadyAppliedSignal: getAlreadyAppliedSignal()
     };
   }
 
   const containers = getQuestionContainers();
   const questionRules = [
-    { matcher: isWorkAuthorizationQuestion, answer: answerYesQuestion, stepName: "Answer work authorization" },
+    {
+      matcher: (question) =>
+        isWorkAuthorizationQuestion(question) && !isCategoricalWorkAuthorizationStatusQuestion(question),
+      answer: answerYesQuestion,
+      stepName: "Answer work authorization"
+    },
     { matcher: isVisaSponsorshipQuestion, answer: answerYesQuestion, stepName: "Answer visa sponsorship" },
     { matcher: isAgeEligibilityQuestion, answer: answerYesQuestion, stepName: "Answer age eligibility" },
     {
@@ -2421,6 +3179,17 @@ async function answerQuestionnaire(steps) {
   let requiredCount = 0;
 
   for (const rule of questionRules) {
+    const alreadyAppliedSignal = getAlreadyAppliedSignal();
+
+    if (alreadyAppliedSignal) {
+      return {
+        answeredAny: answeredCount > 0,
+        requiredCount,
+        answeredCount,
+        alreadyAppliedSignal
+      };
+    }
+
     const container = containers.find((candidate) => rule.matcher(normalizeText(candidate.innerText || "")));
 
     if (!container) {
@@ -2437,15 +3206,544 @@ async function answerQuestionnaire(steps) {
   return {
     answeredAny: answeredCount > 0,
     requiredCount,
-    answeredCount
+    answeredCount,
+    alreadyAppliedSignal: getAlreadyAppliedSignal()
   };
 }
 
-async function answerOpenTextQuestion(steps) {
-  const field = findOpenTextQuestionField();
+function getAnswerOptionLabel(option) {
+  if (option.tagName?.toLowerCase() === "input") {
+    const ownLabel = Array.from(option.labels || []).map((label) => normalizeText(label.innerText || "")).find(Boolean);
+    return ownLabel || normalizeText(option.value || option.getAttribute("aria-label") || getElementLabel(option));
+  }
+  return getActionLabel(option) || getElementLabel(option);
+}
+
+function isAnswerOptionSelected(option) {
+  const nestedInput = option.querySelector?.("input[type='radio'], input[type='checkbox']");
+  return (
+    Boolean(option.checked) ||
+    Boolean(nestedInput?.checked) ||
+    option.getAttribute("aria-checked") === "true" ||
+    option.getAttribute("aria-pressed") === "true" ||
+    option.getAttribute("aria-selected") === "true" ||
+    /\b(selected|active|is-selected|is-active|checked)\b/i.test(option.className || "")
+  );
+}
+
+function isAgentChoiceConfirmed(kind, option, displayedText, wantedValue) {
+  return isAnswerOptionSelected(option) ||
+    (kind === "custom_dropdown" && normalizeText(displayedText).toLowerCase().includes(normalizeText(wantedValue).toLowerCase()));
+}
+
+function getAgentOptionControls(container) {
+  const radios = Array.from(
+    container.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']")
+  )
+    .filter((element) => isElementVisible(element) && !isActionDisabled(element));
+  if (radios.length >= 1 && radios.length <= 12) {
+    return radios;
+  }
+
+  const buttons = Array.from(container.querySelectorAll("button, [role='button']"))
+    .filter((element) => isElementVisible(element) && !isActionDisabled(element))
+    .filter((element) => !element.closest("[role='combobox'], [aria-haspopup='listbox'], [aria-haspopup='menu']"));
+
+  if (buttons.some(isNonAnswerAction)) {
+    return [];
+  }
+
+  return buttons.filter((element) => {
+    const label = getAnswerOptionLabel(element);
+    return label.length > 0 && label.length <= 80;
+  });
+}
+
+function isPlaceholderOption(option) {
+  const text = normalizeText(`${option?.textContent || ""} ${option?.value || ""}`);
+  return !option || option.disabled || !String(option.value || "").trim() || /^(?:select|choose)(?: an?)?(?: option| date)?/i.test(text);
+}
+
+function findAgentNativeSelect(handled = new Set(), options = {}) {
+  return Array.from(document.querySelectorAll("select"))
+    .filter((element) => isElementVisible(element) && !isActionDisabled(element))
+    .filter((element) => !isAgentQuestionExcluded(element))
+    .find((element) => {
+      const label = getApplicationControlQuestionLabel(element);
+      const selected = element.options?.[element.selectedIndex];
+      return !handled.has(`select::${label}`) && shouldAgentAnswerRequiredControl(element, label, options) &&
+        isPlaceholderOption(selected);
+    }) || null;
+}
+
+function findAgentOptionGroup(handled = new Set(), agentOptions = {}) {
+  const candidates = Array.from(document.querySelectorAll("fieldset, section, div, li"))
+    .filter((element) => isElementVisible(element))
+    .filter((element) => !isAgentQuestionExcluded(element))
+    .map((element) => ({
+      element,
+      text: getApplicationControlQuestionLabel(element),
+      options: getAgentOptionControls(element)
+    }))
+    .filter(({ element, text, options }) =>
+      shouldAgentAnswerRequiredControl(element, text, agentOptions) && options.length >= 1 && options.length <= 12
+    )
+    .filter(({ options }) => !options.some(isAnswerOptionSelected));
+  const smallest = candidates.filter(
+    ({ element }) => !candidates.some((other) => other.element !== element && element.contains(other.element))
+  );
+  return smallest
+    .filter(({ text }) => !handled.has(`option_group::${text}`))
+    .filter(({ text }) => typeof agentOptions.questionFilter !== "function" || agentOptions.questionFilter(text))
+    .sort((left, right) => left.text.length - right.text.length)[0] || null;
+}
+
+function findAgentCustomDropdown(handled = new Set(), options = {}) {
+  const selector = ".ud__select__selector, [role='combobox'], [aria-haspopup='listbox'], [aria-haspopup='menu']";
+  const all = Array.from(document.querySelectorAll(selector))
+    .filter((element) => isElementVisible(element) && !isActionDisabled(element))
+    .filter((element) => !isAgentQuestionExcluded(element) && !isNonAnswerAction(element));
+  const topLevel = all.filter((element) => !all.some((other) => other !== element && other.contains(element)));
+
+  return topLevel.find((element) => {
+    const label = getApplicationControlQuestionLabel(element);
+    const container = getAgentFieldContainer(element);
+    return !handled.has(`custom_dropdown::${label}`) && shouldAgentAnswerRequiredControl(element, label, options) &&
+      !hasMeaningfulSelectedDropdownValue(container);
+  }) || null;
+}
+
+const REQUIRED_FIELD_AUDIT_SELECTOR = [
+  "select",
+  "textarea",
+  "[contenteditable='true']",
+  "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='reset']):not([type='file'])",
+  ".ud__select__selector",
+  "[role='combobox']",
+  "[aria-haspopup='listbox']",
+  "[aria-haspopup='menu']",
+  "[role='radio']",
+  "[role='checkbox']"
+].join(", ");
+
+function isCustomDropdownControl(element) {
+  return Boolean(
+    element?.matches?.(
+      ".ud__select__selector, [role='combobox'], [aria-haspopup='listbox'], [aria-haspopup='menu']"
+    )
+  );
+}
+
+function getRequiredFieldAuditControls() {
+  const controls = Array.from(document.querySelectorAll(REQUIRED_FIELD_AUDIT_SELECTOR))
+    .filter((element) => isElementVisible(element) && !isActionDisabled(element))
+    .filter((element) => !isAgentQuestionExcluded(element))
+    .filter((element) => !isCustomDropdownControl(element) || !isNonAnswerAction(element));
+  const customDropdowns = controls.filter(isCustomDropdownControl);
+  const topLevelCustomDropdowns = customDropdowns.filter(
+    (element) => !customDropdowns.some((other) => other !== element && other.contains?.(element))
+  );
+
+  return controls.filter((element) => !isCustomDropdownControl(element) || topLevelCustomDropdowns.includes(element));
+}
+
+function getRequiredFieldAuditKind(element) {
+  const tagName = String(element?.tagName || "").toLowerCase();
+  const type = String(element?.getAttribute?.("type") || element?.type || "").toLowerCase();
+  const role = String(element?.getAttribute?.("role") || "").toLowerCase();
+
+  if (tagName === "select") return "select";
+  if (isCustomDropdownControl(element)) return "custom_dropdown";
+  if (type === "radio" || type === "checkbox" || role === "radio" || role === "checkbox") {
+    return "option_group";
+  }
+  if (tagName === "textarea" || tagName === "input" || element?.isContentEditable) return "open_text";
+  return "unsupported";
+}
+
+function getRequiredFieldAuditGroup(element, kind) {
+  if (kind !== "option_group") {
+    return kind === "custom_dropdown" ? getAgentFieldContainer(element) : element;
+  }
+
+  return element?.closest?.(
+    "[data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='radiogroup'], [role='group']"
+  ) || element;
+}
+
+function isRequiredFieldAuditControlAnswered(element, kind, group) {
+  if (kind === "select") {
+    return !isPlaceholderOption(element.options?.[element.selectedIndex]);
+  }
+
+  if (kind === "custom_dropdown") {
+    return hasMeaningfulSelectedDropdownValue(group || element);
+  }
+
+  if (kind === "option_group") {
+    const options = Array.from(
+      group?.querySelectorAll?.(
+        "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']"
+      ) || [element]
+    );
+    return options.some(isAnswerOptionSelected);
+  }
+
+  if (element?.isContentEditable) {
+    return Boolean(normalizeText(element.innerText || element.textContent || ""));
+  }
+
+  return Boolean(String(element?.value || "").trim());
+}
+
+function auditRequiredApplicationFields(options = {}) {
+  const records = [];
+  const optionGroups = new Set();
+
+  for (const element of getRequiredFieldAuditControls()) {
+    const kind = getRequiredFieldAuditKind(element);
+    const group = getRequiredFieldAuditGroup(element, kind);
+    if (kind === "option_group" && optionGroups.has(group)) {
+      continue;
+    }
+    if (kind === "option_group") {
+      optionGroups.add(group);
+    }
+
+    const label = getApplicationControlQuestionLabel(element);
+    if (!shouldAgentAnswerRequiredControl(element, label, options)) {
+      continue;
+    }
+
+    const answered = isRequiredFieldAuditControlAnswered(element, kind, group);
+    records.push({
+      element,
+      group,
+      kind,
+      label,
+      answered,
+      answerable:
+        kind === "select" ||
+        kind === "custom_dropdown" ||
+        kind === "open_text" ||
+        (kind === "option_group" && /\b(?:gender|race|ethnicity|veteran|disabilit(?:y|ies))\b/i.test(label))
+    });
+  }
+
+  const unanswered = records.filter((record) => !record.answered);
+  return {
+    totalRequired: records.length,
+    answeredCount: records.length - unanswered.length,
+    unanswered,
+    answerableUnanswered: unanswered.filter((record) => record.answerable),
+    unsupportedUnanswered: unanswered.filter((record) => !record.answerable)
+  };
+}
+
+function getRequiredFieldAuditFingerprint(audit) {
+  return [...new Set((audit?.unanswered || []).map((record) =>
+    `${record.kind || "unknown"}::${normalizeText(record.label || "unlabeled field").toLowerCase()}`
+  ))]
+    .sort()
+    .join("|");
+}
+
+function formatRequiredFieldAuditSummary(audit) {
+  if (audit.unanswered.length === 0) {
+    return audit.totalRequired > 0
+      ? `${audit.totalRequired} required field(s) are answered and verified.`
+      : "No unanswered required fields were found.";
+  }
+
+  const labels = [...new Set(audit.unanswered.map((record) => record.label).filter(Boolean))].slice(0, 4);
+  const remaining = audit.unanswered.length - labels.length;
+  const labelSummary = labels.length
+    ? `: ${labels.join("; ")}${remaining > 0 ? `; and ${remaining} more` : ""}`
+    : "";
+  return `${audit.unanswered.length} of ${audit.totalRequired} required field(s) remain unanswered${labelSummary}.`;
+}
+
+function readAgentChoiceDescriptor(handled = new Set(), options = {}) {
+  const nativeSelect = findAgentNativeSelect(handled, options);
+  if (nativeSelect) {
+    return {
+      kind: nativeSelect.multiple ? "multi_select" : "select",
+      element: nativeSelect,
+      label: getApplicationControlQuestionLabel(nativeSelect),
+      options: Array.from(nativeSelect.options || [])
+        .filter((option) => !isPlaceholderOption(option))
+        .map((option) => normalizeText(option.textContent || option.value || ""))
+        .filter(Boolean)
+    };
+  }
+
+  const optionGroup = findAgentOptionGroup(handled, {
+    ...options,
+    questionFilter: (text) => /\b(?:gender|race|ethnicity|veteran|disabilit(?:y|ies))\b/i.test(text)
+  });
+  if (optionGroup) {
+    const supportsMultiple = optionGroup.options.every((option) =>
+      option.matches?.("input[type='checkbox'], [role='checkbox']") ||
+      Boolean(option.querySelector?.("input[type='checkbox'], [role='checkbox']"))
+    );
+    return {
+      kind: supportsMultiple ? "checkbox_group" : "option_group",
+      element: optionGroup.element,
+      container: optionGroup.element,
+      label: optionGroup.text,
+      optionElements: optionGroup.options,
+      options: optionGroup.options.map(getAnswerOptionLabel)
+    };
+  }
+
+  const customDropdown = findAgentCustomDropdown(handled, options);
+  if (customDropdown) {
+    const label = getApplicationControlQuestionLabel(customDropdown);
+    return {
+      kind: /\bselect all|all that apply|multiple\b/i.test(label) ? "custom_multi_select" : "custom_dropdown",
+      element: customDropdown,
+      container: getAgentFieldContainer(customDropdown),
+      label,
+      options: []
+    };
+  }
+
+  return null;
+}
+
+function getVisibleAgentDropdownOptions(root = document) {
+  return Array.from(
+    root.querySelectorAll?.(".ud__select__list__item, [role='option'], [role='menuitem']") || []
+  ).filter((element) => isElementVisible(element) && !isActionDisabled(element));
+}
+
+function getAgentDropdownControlledScopes(control) {
+  const sources = [
+    control,
+    ...Array.from(control?.querySelectorAll?.("[aria-controls], [aria-owns]") || [])
+  ];
+  const ids = sources.flatMap((element) =>
+    [element?.getAttribute?.("aria-controls"), element?.getAttribute?.("aria-owns")]
+      .filter(Boolean)
+      .flatMap((value) => String(value).split(/\s+/))
+  );
+
+  return [...new Set(ids)]
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+}
+
+async function openAndReadAgentDropdownOptions(control) {
+  const before = new Set(getVisibleAgentDropdownOptions());
+  control.scrollIntoView({ block: "center" });
+  await delay(150);
+  control.click();
+
+  const deadline = Date.now() + 4000;
+  let lastSignature = "";
+  let stableChecks = 0;
+  let bestCandidates = [];
+
+  while (Date.now() < deadline) {
+    const visible = getVisibleAgentDropdownOptions();
+    const revealed = visible.filter((option) => !before.has(option));
+    const controlled = getAgentDropdownControlledScopes(control)
+      .flatMap((scope) => getVisibleAgentDropdownOptions(scope));
+    const candidates = [...new Set(controlled.length ? controlled : revealed.length ? revealed : visible)];
+    const signature = candidates.map(getAnswerOptionLabel).filter(Boolean).join("\n");
+
+    if (candidates.length > 0) {
+      bestCandidates = candidates;
+      if (signature === lastSignature) {
+        stableChecks += 1;
+        if (stableChecks >= 2) {
+          return bestCandidates;
+        }
+      } else {
+        lastSignature = signature;
+        stableChecks = 0;
+      }
+    }
+    await delay(150);
+  }
+
+  return bestCandidates;
+}
+
+async function requestApplicationQuestionDecision(descriptor, options = descriptor.options) {
+  const response = await chrome.runtime
+    .sendMessage({
+      type: "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
+      questionText: descriptor.label,
+      options,
+      fieldKind: descriptor.kind,
+      jobId: getJobId(),
+      pageTitle: document.title,
+      siteLabel: getSiteConfig()?.label || window.location.hostname
+    })
+    .catch((error) => ({ ok: false, error: error?.message }));
+
+  return response?.ok ? response.data : null;
+}
+
+function setNativeFormValue(element, value) {
+  const prototype = element.tagName?.toLowerCase() === "textarea"
+    ? window.HTMLTextAreaElement?.prototype
+    : element.tagName?.toLowerCase() === "select"
+      ? window.HTMLSelectElement?.prototype
+      : window.HTMLInputElement?.prototype;
+  const setter = prototype && Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+  if (setter) {
+    setter.call(element, value);
+  } else {
+    element.value = value;
+  }
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function setNativeSelectValues(element, wantedValues) {
+  const values = Array.isArray(wantedValues) ? wantedValues : [wantedValues];
+  const options = Array.from(element.options || []);
+  const matches = values.map((wantedValue) =>
+    options.find((option) => normalizeText(option.textContent || option.value || "").toLowerCase() === wantedValue.toLowerCase())
+  );
+  if (matches.some((option) => !option) || (matches.length > 1 && !element.multiple)) {
+    return false;
+  }
+  if (matches.length === 1) {
+    setNativeFormValue(element, matches[0].value);
+    return true;
+  }
+
+  const selectedSetter = Object.getOwnPropertyDescriptor(window.HTMLOptionElement?.prototype || {}, "selected")?.set;
+  for (const option of options) {
+    const selected = matches.includes(option);
+    if (selectedSetter) selectedSetter.call(option, selected);
+    else option.selected = selected;
+  }
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+async function answerAdditionalChoiceQuestions(steps, options = {}) {
+  const handled = new Set();
+  let answeredCount = 0;
+
+  for (let iteration = 0; iteration < 20; iteration += 1) {
+    const alreadyAppliedSignal = getAlreadyAppliedSignal();
+    if (alreadyAppliedSignal) {
+      return { answeredCount, incomplete: false, alreadyAppliedSignal };
+    }
+
+    const descriptor = readAgentChoiceDescriptor(handled, options);
+    if (!descriptor) {
+      return { answeredCount, incomplete: false, alreadyAppliedSignal: null };
+    }
+
+    const key = `${descriptor.kind}::${descriptor.label}`;
+    if (handled.has(key)) {
+      return { answeredCount, incomplete: false, alreadyAppliedSignal: null };
+    }
+    handled.add(key);
+    if (descriptor.kind === "multi_select") handled.add(`select::${descriptor.label}`);
+    if (descriptor.kind === "custom_multi_select") handled.add(`custom_dropdown::${descriptor.label}`);
+    if (["option_group", "checkbox_group"].includes(descriptor.kind)) handled.add(`option_group::${descriptor.label}`);
+
+    let optionElements = descriptor.optionElements || [];
+    let optionLabels = descriptor.options;
+    if (["custom_dropdown", "custom_multi_select"].includes(descriptor.kind)) {
+      optionElements = await openAndReadAgentDropdownOptions(descriptor.element);
+      optionLabels = optionElements.map(getAnswerOptionLabel);
+    }
+
+    const decision = await requestApplicationQuestionDecision(descriptor, optionLabels);
+    const wantedValues = decision?.action === "choose_options"
+      ? (Array.isArray(decision.value) ? decision.value : []).map((value) => normalizeText(value)).filter(Boolean)
+      : decision?.action === "choose_option"
+        ? [normalizeText(decision.value || "")].filter(Boolean)
+        : [];
+    const stepName = `${decision?.sensitive ? "Saved profile answer" : "Question agent"}: ${descriptor.label}`;
+
+    if (wantedValues.length === 0) {
+      steps.push({ step: stepName, status: "missing", label: "No safe offered option was available." });
+      return { answeredCount, incomplete: true, alreadyAppliedSignal: null };
+    }
+
+    let confirmed = false;
+    if (["select", "multi_select"].includes(descriptor.kind)) {
+      if (setNativeSelectValues(descriptor.element, wantedValues)) {
+        confirmed = await waitForCondition(
+          () => wantedValues.every((wantedValue) =>
+            Array.from(descriptor.element.selectedOptions || []).some(
+              (option) => normalizeText(option.textContent || option.value || "").toLowerCase() === wantedValue.toLowerCase()
+            )
+          )
+        );
+      }
+    } else if (["option_group", "checkbox_group"].includes(descriptor.kind)) {
+      const matched = wantedValues.map((wantedValue) =>
+        optionElements.find((candidate) => getAnswerOptionLabel(candidate).toLowerCase() === wantedValue.toLowerCase())
+      );
+      if (!matched.some((option) => !option) && (matched.length === 1 || descriptor.kind === "checkbox_group")) {
+        for (const option of matched) {
+          option.scrollIntoView({ block: "nearest" });
+          option.click();
+        }
+        confirmed = await waitForCondition(() => matched.every(isAnswerOptionSelected));
+      }
+    } else {
+      confirmed = true;
+      for (let valueIndex = 0; valueIndex < wantedValues.length; valueIndex += 1) {
+        const wantedValue = wantedValues[valueIndex];
+        const currentOptions = valueIndex === 0 ? optionElements : await openAndReadAgentDropdownOptions(descriptor.element);
+        const option = currentOptions.find(
+          (candidate) => getAnswerOptionLabel(candidate).toLowerCase() === wantedValue.toLowerCase()
+        );
+        if (!option) {
+          confirmed = false;
+          break;
+        }
+        option.scrollIntoView({ block: "nearest" });
+        option.click();
+        const selected = await waitForCondition(() => {
+          const displayed = normalizeText(
+            `${descriptor.element.innerText || ""} ${descriptor.element.value || ""} ${getSelectedDropdownText(descriptor.container || descriptor.element)}`
+          );
+          return isAgentChoiceConfirmed(descriptor.kind, option, displayed, wantedValue);
+        });
+        if (!selected) {
+          confirmed = false;
+          break;
+        }
+      }
+    }
+
+    steps.push({
+      step: stepName,
+      status: confirmed ? "selected" : "unverified",
+      label: confirmed
+        ? decision?.sensitive ? "Answered from saved profile and verified." : "Agent selected an offered option and verified it."
+        : "Could not verify the selected offered option."
+    });
+
+    if (!confirmed) {
+      return { answeredCount, incomplete: true, alreadyAppliedSignal: null };
+    }
+
+    answeredCount += 1;
+    await delay(300);
+  }
+
+  return { answeredCount, incomplete: true, alreadyAppliedSignal: null };
+}
+
+async function answerOpenTextQuestion(steps, options = {}) {
+  const field = findOpenTextQuestionField(options);
 
   if (!field) {
-    return { pausedForReview: false };
+    return { answered: false, incomplete: false };
   }
 
   const label = getElementLabel(field);
@@ -2453,13 +3751,19 @@ async function answerOpenTextQuestion(steps) {
 
   const response = await chrome.runtime
     .sendMessage({
-      type: "APPLE_CAREERS_GENERATE_ANSWER",
+      type: "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
       questionText: label,
-      jobId: getJobId()
+      options: [],
+      fieldKind: field.tagName?.toLowerCase() === "textarea" ? "textarea" : "text",
+      jobId: getJobId(),
+      pageTitle: document.title,
+      siteLabel: getSiteConfig()?.label || window.location.hostname
     })
     .catch((error) => ({ ok: false, error: error?.message }));
 
-  const answer = response?.ok ? normalizeText(response.data?.answer || "") : "";
+  const answer = response?.ok && response.data?.action === "answer_text"
+    ? normalizeText(response.data.value || "")
+    : "";
 
   if (!answer) {
     steps.push({
@@ -2467,22 +3771,145 @@ async function answerOpenTextQuestion(steps) {
       status: "skipped",
       label: response?.error || "LLM answer generation is not available."
     });
-    return { pausedForReview: false };
+    return { answered: false, incomplete: true, questionText: label };
   }
 
   field.focus();
-  field.value = answer;
-  field.dispatchEvent(new Event("input", { bubbles: true }));
-  field.dispatchEvent(new Event("change", { bubbles: true }));
+  setNativeFormValue(field, answer);
   field.scrollIntoView({ block: "center" });
+  const confirmed = await waitForCondition(() => normalizeText(field.value || "") === answer);
+  const wordCount = answer.trim().split(/\s+/).filter(Boolean).length;
 
   steps.push({
     step: stepName,
-    status: "drafted",
-    label: answer.length > 140 ? `${answer.slice(0, 140)}…` : answer
+    status: confirmed ? "filled" : "unverified",
+    label: confirmed
+      ? `Question answered with ${wordCount} words and verified.`
+      : "The answer did not remain in the field after input."
   });
 
-  return { pausedForReview: true, questionText: label };
+  return { answered: confirmed, incomplete: !confirmed, questionText: label };
+}
+
+async function answerOpenTextQuestions(steps, options = {}) {
+  let answeredCount = 0;
+
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    const result = await answerOpenTextQuestion(steps, options);
+    if (result.incomplete) {
+      return { answeredCount, incomplete: true, questionText: result.questionText };
+    }
+    if (!result.answered) {
+      return { answeredCount, incomplete: false, questionText: null };
+    }
+    answeredCount += 1;
+    await delay(250);
+  }
+
+  return { answeredCount, incomplete: true, questionText: "open-text questions" };
+}
+
+async function answerRequiredQuestionsWithAgent(steps, options = {}) {
+  const choiceResult = await answerAdditionalChoiceQuestions(steps, options);
+
+  if (choiceResult.alreadyAppliedSignal) {
+    return {
+      answeredCount: choiceResult.answeredCount,
+      incomplete: false,
+      alreadyAppliedSignal: choiceResult.alreadyAppliedSignal,
+      questionText: null
+    };
+  }
+
+  if (choiceResult.incomplete) {
+    return {
+      answeredCount: choiceResult.answeredCount,
+      incomplete: true,
+      alreadyAppliedSignal: null,
+      questionText: "one of the required offered-answer fields"
+    };
+  }
+
+  const openTextResult = await answerOpenTextQuestions(steps, options);
+  return {
+    answeredCount: choiceResult.answeredCount + openTextResult.answeredCount,
+    incomplete: openTextResult.incomplete,
+    alreadyAppliedSignal: null,
+    questionText: openTextResult.questionText
+  };
+}
+
+async function resolveRequiredFieldAudit(steps, options = {}) {
+  const before = auditRequiredApplicationFields(options);
+  const recoveryFingerprint = getRequiredFieldAuditFingerprint(before);
+  let agentResult = {
+    answeredCount: 0,
+    incomplete: false,
+    alreadyAppliedSignal: null,
+    questionText: null
+  };
+
+  // A framework that clears the same widget after every attempted answer can otherwise consume one
+  // LLM call per workflow iteration without moving forward. The service worker carries this compact
+  // label/kind fingerprint across page reloads, while DOM authority and the stop decision stay here.
+  if (
+    recoveryFingerprint &&
+    options.previousRecoveryFingerprint &&
+    recoveryFingerprint === options.previousRecoveryFingerprint
+  ) {
+    const summary = `The same required field(s) remained unanswered after the previous recovery: ${formatRequiredFieldAuditSummary(before)}`;
+    steps.push({
+      step: "Audit required fields",
+      status: "blocked",
+      label: summary
+    });
+    return {
+      ...agentResult,
+      incomplete: true,
+      noProgress: true,
+      recoveryFingerprint,
+      questionText: before.unanswered[0]?.label || null,
+      audit: before
+    };
+  }
+
+  // Optional/voluntary questions never enter the audit. The LLM is only awakened when the fresh DOM
+  // inventory contains an unanswered required field in one of the two supported formats: open text
+  // or dropdown. Unknown radio/checkbox groups are reported as unresolved rather than guessed.
+  if (before.answerableUnanswered.length > 0) {
+    agentResult = await answerRequiredQuestionsWithAgent(steps, options);
+  }
+
+  if (agentResult.alreadyAppliedSignal) {
+    return {
+      ...agentResult,
+      recoveryFingerprint,
+      audit: before
+    };
+  }
+
+  // Do not carry element references across the agent action. Framework-driven forms commonly
+  // replace the field node after input, so this is a full fresh read of the live page.
+  const after = auditRequiredApplicationFields(options);
+  const incomplete = after.unanswered.length > 0;
+
+  if (incomplete) {
+    steps.push({
+      step: "Audit required fields",
+      status: "blocked",
+      label: formatRequiredFieldAuditSummary(after)
+    });
+  }
+
+  return {
+    answeredCount: agentResult.answeredCount,
+    incomplete,
+    alreadyAppliedSignal: null,
+    noProgress: false,
+    recoveryFingerprint,
+    questionText: after.unanswered[0]?.label || agentResult.questionText,
+    audit: after
+  };
 }
 
 function buildStepResult(overrides) {
@@ -2495,6 +3922,26 @@ function buildStepResult(overrides) {
   };
 }
 
+function buildAlreadyAppliedStepResult(signal, priorSteps = []) {
+  const label = signal.body || signal.text || "You've already applied for this job. Unable to apply again.";
+
+  return buildStepResult({
+    clicked: true,
+    done: true,
+    alreadySubmitted: true,
+    errorType: "already_applied",
+    steps: [
+      ...priorSteps,
+      {
+        step: "Detect already applied notice",
+        status: "detected",
+        label
+      }
+    ],
+    summary: label
+  });
+}
+
 // Mirrors waitForJobListToSettle() for the application form itself: ByteDance's SPA can still be
 // hydrating the form (work-authorization dropdowns, buttons) when this step first runs right after
 // the page loads. Answering/submitting against a form that hasn't finished rendering yet silently
@@ -2505,6 +3952,8 @@ async function waitForApplicationFormToSettle(options = {}) {
   const timeoutMs = options.timeoutMs ?? 9000;
   const intervalMs = options.intervalMs ?? 200;
   const stableChecksRequired = options.stableChecksRequired ?? 5;
+  const minimumWaitMs = options.minimumWaitMs ?? 0;
+  const startedAt = Date.now();
   const deadline = Date.now() + timeoutMs;
   let lastCount = -1;
   let stableCount = 0;
@@ -2514,12 +3963,18 @@ async function waitForApplicationFormToSettle(options = {}) {
       .length;
 
   while (Date.now() < deadline) {
+    const alreadyAppliedSignal = getAlreadyAppliedSignal();
+
+    if (alreadyAppliedSignal) {
+      return { alreadyAppliedSignal };
+    }
+
     const currentCount = countInteractiveElements();
 
     if (currentCount > 0 && currentCount === lastCount) {
       stableCount += 1;
-      if (stableCount >= stableChecksRequired) {
-        return;
+      if (stableCount >= stableChecksRequired && Date.now() - startedAt >= minimumWaitMs) {
+        return { alreadyAppliedSignal: null };
       }
     } else {
       stableCount = 0;
@@ -2528,12 +3983,17 @@ async function waitForApplicationFormToSettle(options = {}) {
     lastCount = currentCount;
     await delay(intervalMs);
   }
+
+  return { alreadyAppliedSignal: getAlreadyAppliedSignal() };
 }
 
-async function runApplicationWorkflowStep() {
+async function runApplicationWorkflowStep(options = {}) {
   const steps = [];
   const siteConfig = getSiteConfig();
   const currentUrl = getCurrentUrl();
+  const submissionAttemptCount = Math.max(0, Number(options.submissionAttemptCount) || 0);
+  const validationRecoveryAttempts = Math.max(0, Number(options.validationRecoveryAttempts) || 0);
+  const previousValidationRecoveryFingerprint = normalizeText(String(options.previousValidationRecoveryFingerprint || ""));
   const isDetailPage = Boolean(siteConfig?.isJobDetailUrl(currentUrl) && !siteConfig?.isApplicationUrl(currentUrl));
   const sessionSignal = getSessionRequiredSignal();
 
@@ -2550,6 +4010,16 @@ async function runApplicationWorkflowStep() {
       steps,
       summary: `Login or session action appears required: ${sessionSignal}`
     });
+  }
+
+  // ByteDance can leave the job detail URL unchanged and show its duplicate-application failure in
+  // a modal after Apply is clicked. This guard must run before the detail/application-page split;
+  // otherwise the detail branch sees the still-present Apply control and clicks it again without ever
+  // consulting the modal detectors below.
+  const alreadyAppliedOnLoad = getAlreadyAppliedSignal();
+
+  if (alreadyAppliedOnLoad) {
+    return buildAlreadyAppliedStepResult(alreadyAppliedOnLoad);
   }
 
   if (isDetailPage) {
@@ -2613,7 +4083,7 @@ async function runApplicationWorkflowStep() {
     if (backgroundOpenableLink) {
       steps.push({
         step: "Open application flow",
-        status: "opening_in_background",
+        status: "opening_in_workflow_tab",
         label: getActionLabel(submitResume)
       });
 
@@ -2622,7 +4092,7 @@ async function runApplicationWorkflowStep() {
         done: false,
         steps,
         openUrlInBackgroundTab: backgroundOpenableLink,
-        summary: `Opening ${getActionLabel(submitResume) || "apply action"} in a background tab.`
+        summary: `Opening ${getActionLabel(submitResume) || "apply action"} in an active application tab.`
       });
     }
 
@@ -2637,6 +4107,12 @@ async function runApplicationWorkflowStep() {
       label: getActionLabel(submitResume)
     });
     await delay(WORKFLOW_STEP_DELAY_MS);
+
+    const alreadyAppliedAfterClick = getAlreadyAppliedSignal();
+
+    if (alreadyAppliedAfterClick) {
+      return buildAlreadyAppliedStepResult(alreadyAppliedAfterClick, steps);
+    }
 
     return buildStepResult({
       clicked: true,
@@ -2670,29 +4146,18 @@ async function runApplicationWorkflowStep() {
     });
   }
 
-  const alreadyAppliedOnLoad = getAlreadyAppliedSignal();
+  // TikTok and ByteDance share this site config, but ByteDance can show its duplicate-application
+  // dialog before the questionnaire is mounted. Do not use the questionnaire's presence to decide
+  // whether to keep polling: a stable page-shell button could otherwise end this wait before the
+  // delayed dialog appears, and the workflow would continue into field discovery.
+  const shouldWaitForTikTokApplicationSignals = siteConfig?.id === "tiktok";
+  const settleResult = await waitForApplicationFormToSettle({
+    minimumWaitMs: shouldWaitForTikTokApplicationSignals ? 2500 : 0
+  });
 
-  if (alreadyAppliedOnLoad) {
-    return buildStepResult({
-      clicked: true,
-      done: true,
-      alreadySubmitted: true,
-      errorType: "already_applied",
-      steps: [
-        {
-          step: "Detect already applied notice",
-          status: "detected",
-          label: alreadyAppliedOnLoad.body || alreadyAppliedOnLoad.text
-        }
-      ],
-      summary:
-        alreadyAppliedOnLoad.body ||
-        alreadyAppliedOnLoad.text ||
-        "You've already applied for this job. Unable to apply again."
-    });
+  if (settleResult.alreadyAppliedSignal) {
+    return buildAlreadyAppliedStepResult(settleResult.alreadyAppliedSignal, steps);
   }
-
-  await waitForApplicationFormToSettle();
 
   // On the final Review & Submit step, every question is shown as read-only review text (it was
   // already answered on the earlier Questions step) rather than an editable control, so there is
@@ -2704,45 +4169,39 @@ async function runApplicationWorkflowStep() {
   const primaryButtonBeforeQuestions = findPrimaryActionButton(siteConfig);
   const isReviewAndSubmitStep =
     Boolean(primaryButtonBeforeQuestions) &&
-    (siteConfig?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primaryButtonBeforeQuestions));
+    (siteConfig?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primaryButtonBeforeQuestions)) &&
+    !hasVisibleApplicationQuestionControls();
 
   let answeredQuestionnaire = false;
   let answeredSponsorship = false;
 
   if (!isReviewAndSubmitStep) {
     const questionnaireResult = await answerQuestionnaire(steps);
+
+    if (questionnaireResult.alreadyAppliedSignal) {
+      return buildAlreadyAppliedStepResult(questionnaireResult.alreadyAppliedSignal, steps);
+    }
+
     answeredQuestionnaire = questionnaireResult.answeredAny;
+
+    const alreadyAppliedBeforeFallback = getAlreadyAppliedSignal();
+
+    if (alreadyAppliedBeforeFallback) {
+      return buildAlreadyAppliedStepResult(alreadyAppliedBeforeFallback, steps);
+    }
+
     answeredSponsorship = answeredQuestionnaire ? false : clickSponsorshipAnswer(steps);
 
     if (answeredQuestionnaire || answeredSponsorship) {
       await delay(500);
     }
 
-    if (
-      questionnaireResult.requiredCount > 0 &&
-      questionnaireResult.answeredCount < questionnaireResult.requiredCount
-    ) {
-      return buildStepResult({
-        clicked: answeredQuestionnaire,
-        done: false,
-        steps,
-        errorType: "questionnaire_incomplete",
-        summary: `Answered ${questionnaireResult.answeredCount} of ${questionnaireResult.requiredCount} required authorization questions; Submit was not clicked.`
-      });
+    const alreadyAppliedAfterQuestions = getAlreadyAppliedSignal();
+
+    if (alreadyAppliedAfterQuestions) {
+      return buildAlreadyAppliedStepResult(alreadyAppliedAfterQuestions, steps);
     }
 
-    const openTextResult = await answerOpenTextQuestion(steps);
-
-    if (openTextResult.pausedForReview) {
-      return buildStepResult({
-        clicked: true,
-        done: false,
-        pausedForReview: true,
-        errorType: "open_text_review_required",
-        steps,
-        summary: `Drafted an answer for "${openTextResult.questionText}" — switch to this tab to review before submitting.`
-      });
-    }
   }
 
   const loadingSignal = getLoadingSignal();
@@ -2766,6 +4225,142 @@ async function runApplicationWorkflowStep() {
 
   const primaryActionResult = await clickPrimaryAction(siteConfig, steps);
 
+  if (
+    !primaryActionResult.clicked &&
+    !primaryActionResult.done &&
+    !primaryActionResult.pending &&
+    !primaryActionResult.pausedForReview
+  ) {
+    // A disabled/missing Continue or Submit control is another concrete stuck signal. Some Formily
+    // variants do not expose required/aria-required until validation, so broaden only at this point:
+    // optional/voluntary fields still lose, while blank application text/dropdown controls become
+    // candidates for one bounded recovery pass.
+    if (validationRecoveryAttempts >= MAX_VALIDATION_RECOVERY_ATTEMPTS) {
+      return buildStepResult({
+        clicked: false,
+        done: false,
+        pausedForReview: true,
+        errorType: "validation_retry_limit",
+        steps,
+        summary: `No enabled Continue/Submit action was available after ${MAX_VALIDATION_RECOVERY_ATTEMPTS} required-field recovery attempts.`
+      });
+    }
+
+    const stuckRecovery = await resolveRequiredFieldAudit(steps, {
+      includeUnmarked: true,
+      previousRecoveryFingerprint: previousValidationRecoveryFingerprint
+    });
+
+    if (stuckRecovery.alreadyAppliedSignal) {
+      return buildAlreadyAppliedStepResult(stuckRecovery.alreadyAppliedSignal, steps);
+    }
+
+    if (stuckRecovery.noProgress) {
+      return buildStepResult({
+        clicked: false,
+        done: false,
+        pausedForReview: true,
+        errorType: "validation_no_progress",
+        steps,
+        summary: "The same required fields remained unanswered after recovery, so the workflow stopped without retrying indefinitely."
+      });
+    }
+
+    if (stuckRecovery.answeredCount > 0 && !stuckRecovery.incomplete) {
+      return buildStepResult({
+        clicked: true,
+        done: false,
+        validationRecoveryAttempted: true,
+        validationRecoveryFingerprint: stuckRecovery.recoveryFingerprint,
+        steps,
+        summary: `No enabled Continue/Submit action was available; the required-field recovery answered and verified ${stuckRecovery.answeredCount} field(s). Retrying the application step.`
+      });
+    }
+
+    if (stuckRecovery.incomplete) {
+      return buildStepResult({
+        clicked: Boolean(stuckRecovery.answeredCount),
+        done: false,
+        pausedForReview: true,
+        errorType: "required_field_audit_failed",
+        steps,
+        summary: `No enabled Continue/Submit action was available. ${formatRequiredFieldAuditSummary(stuckRecovery.audit)}`
+      });
+    }
+  }
+
+  if (primaryActionResult.errorType === "blocked_by_validation") {
+    const finalSubmitClicksThisStep = steps.filter(
+      (step) => step.step === "Submit application" && step.status === "clicked"
+    ).length;
+    const totalFinalSubmitAttempts = submissionAttemptCount + finalSubmitClicksThisStep;
+
+    if (finalSubmitClicksThisStep > 0 && totalFinalSubmitAttempts >= MAX_FINAL_SUBMIT_ATTEMPTS) {
+      return buildStepResult({
+        clicked: true,
+        done: false,
+        pausedForReview: true,
+        errorType: "submission_retry_limit",
+        steps,
+        summary: `The form still reported validation errors after ${MAX_FINAL_SUBMIT_ATTEMPTS} final Submit attempts, so it was not clicked again.`
+      });
+    }
+
+    if (validationRecoveryAttempts >= MAX_VALIDATION_RECOVERY_ATTEMPTS) {
+      return buildStepResult({
+        clicked: Boolean(primaryActionResult.clicked),
+        done: false,
+        pausedForReview: true,
+        errorType: "validation_retry_limit",
+        steps,
+        summary: `Validation still blocked progress after ${MAX_VALIDATION_RECOVERY_ATTEMPTS} required-field recovery attempts.`
+      });
+    }
+
+    const recoveryResult = await resolveRequiredFieldAudit(steps, {
+      includeUnmarked: true,
+      previousRecoveryFingerprint: previousValidationRecoveryFingerprint
+    });
+
+    if (recoveryResult.alreadyAppliedSignal) {
+      return buildAlreadyAppliedStepResult(recoveryResult.alreadyAppliedSignal, steps);
+    }
+
+    if (recoveryResult.noProgress) {
+      return buildStepResult({
+        clicked: Boolean(primaryActionResult.clicked),
+        done: false,
+        pausedForReview: true,
+        errorType: "validation_no_progress",
+        steps,
+        summary: "The same required fields remained unanswered after recovery, so the workflow stopped without submitting again."
+      });
+    }
+
+    if (recoveryResult.answeredCount > 0 && !recoveryResult.incomplete) {
+      await delay(400);
+      return buildStepResult({
+        clicked: true,
+        done: false,
+        validationRecoveryAttempted: true,
+        validationRecoveryFingerprint: recoveryResult.recoveryFingerprint,
+        steps,
+        summary: `Required validation blocked progress; the question agent answered and verified ${recoveryResult.answeredCount} field(s). Retrying the application step.`
+      });
+    }
+
+    if (recoveryResult.incomplete) {
+      return buildStepResult({
+        clicked: Boolean(primaryActionResult.clicked || recoveryResult.answeredCount),
+        done: false,
+        pausedForReview: true,
+        errorType: "required_field_audit_failed",
+        steps,
+        summary: `Required validation blocked progress. ${formatRequiredFieldAuditSummary(recoveryResult.audit)}`
+      });
+    }
+  }
+
   if (primaryActionResult.done) {
     return buildStepResult({
       clicked: true,
@@ -2786,6 +4381,17 @@ async function runApplicationWorkflowStep() {
     });
   }
 
+  if (primaryActionResult.pausedForReview) {
+    return buildStepResult({
+      clicked: Boolean(primaryActionResult.clicked),
+      done: false,
+      pausedForReview: true,
+      errorType: primaryActionResult.errorType || "blocked_by_validation",
+      steps,
+      summary: primaryActionResult.summary
+    });
+  }
+
   return buildStepResult({
     clicked: primaryActionResult.clicked || answeredQuestionnaire || answeredSponsorship,
     done: false,
@@ -2799,6 +4405,20 @@ async function runApplicationWorkflowStep() {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "APPLE_CAREERS_COLLECT_SUBMITTED_HISTORY") {
+    collectAppleSubmittedHistory()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not read Apple submitted roles." }));
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES") {
+    withdrawAppleSubmittedRoles(message.roles || [])
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not withdraw selected Apple roles." }));
+    return true;
+  }
+
   if (message?.type === "APPLE_CAREERS_EXTRACT_JOB") {
     sendResponse({
       ok: true,
@@ -2821,7 +4441,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP") {
-    runApplicationWorkflowStep()
+    runApplicationWorkflowStep({
+      submissionAttemptCount: message.submissionAttemptCount,
+      validationRecoveryAttempts: message.validationRecoveryAttempts,
+      previousValidationRecoveryFingerprint: message.previousValidationRecoveryFingerprint
+    })
       .then((data) => {
         sendResponse({
           ok: true,

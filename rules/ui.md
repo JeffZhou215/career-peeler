@@ -24,8 +24,8 @@ field-for-field identical.
 
 ## Storage contract
 
-The entire profile - known-site settings (YOE, LLM config, no-match keywords) *and* the generic-autofill
-fields (contact info, EEO, resume) - lives in **one** object under the single `chrome.storage.local` key
+The entire profile - known-site settings (YOE, LLM config, no-match keywords), the shared Required
+Application Answers (EEO), and generic-autofill fields (contact info and resume) - lives in **one** object under the single `chrome.storage.local` key
 `appleCareersUserProfile` (`USER_PROFILE_KEY`). Don't split it into multiple storage keys.
 
 `useUserProfile()`'s `save(updates)` returns the just-saved, normalized profile - callers that need the

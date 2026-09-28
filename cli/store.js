@@ -24,8 +24,23 @@ function readJsonFile(filePath, fallback) {
 
 function writeJsonFileAtomic(filePath, data) {
   const tempPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tempPath, filePath);
+}
+
+function buildPublicScanState(state) {
+  const { userProfile: _userProfile, ...publicState } = state || {};
+  return publicState;
+}
+
+function hardenExistingJsonFile(filePath) {
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
 }
 
 function createStore(dataDir = defaultDataDir()) {
@@ -39,7 +54,18 @@ function createStore(dataDir = defaultDataDir()) {
     browserProfile: path.join(dataDir, "browser-profile")
   };
 
-  let scanState = readJsonFile(paths.scanState, core.createIdleState());
+  for (const filePath of [paths.scanState, paths.jobRecords, paths.profile]) {
+    hardenExistingJsonFile(filePath);
+  }
+
+  // A scan restored in a new CLI process cannot resume its browser session, and its canonical
+  // profile already lives in profile.json. Strip legacy duplicated profiles immediately so `status`
+  // cannot print an API key that an older version wrote into scan-state.json.
+  const storedScanState = readJsonFile(paths.scanState, core.createIdleState());
+  let scanState = buildPublicScanState(storedScanState);
+  if (Object.prototype.hasOwnProperty.call(storedScanState, "userProfile")) {
+    writeJsonFileAtomic(paths.scanState, scanState);
+  }
   const processedUrls = new Set();
   const processedJobIds = new Set();
   const storedIdentifiersAtScanStart = new Set();
@@ -47,7 +73,7 @@ function createStore(dataDir = defaultDataDir()) {
   let storedJobRecordsAtScanStart = {};
 
   function saveScanState() {
-    writeJsonFileAtomic(paths.scanState, scanState);
+    writeJsonFileAtomic(paths.scanState, buildPublicScanState(scanState));
   }
 
   function updateScanState(updates) {
@@ -272,7 +298,7 @@ function createStore(dataDir = defaultDataDir()) {
     fs.rmSync(paths.jobRecords, { force: true });
     saveScanState();
 
-    return { ok: true, status: scanState };
+    return { ok: true, status: buildPublicScanState(scanState) };
   }
 
   return {
@@ -300,6 +326,7 @@ function createStore(dataDir = defaultDataDir()) {
     hydrateProcessedFromStorage,
     resetProcessedTracking,
     clearHistory,
+    getPublicScanState: () => buildPublicScanState(scanState),
     visitedListPages,
     set scanState(value) {
       scanState = value;

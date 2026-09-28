@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const browser = require("../../cli/browser.js");
+const core = require("../../lib/core.js");
 const orchestrator = require("../../cli/orchestrator.js");
 const { createStore } = require("../../cli/store.js");
 
@@ -34,6 +35,24 @@ const INTERNSHIP_JOB_HTML = `<!doctype html>
 </body></html>`;
 
 async function main() {
+  const legacyDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "career-peeler-cli-legacy-test-"));
+  fs.writeFileSync(
+    path.join(legacyDataDir, "scan-state.json"),
+    JSON.stringify({ ...core.createIdleState(), userProfile: { llmApiKey: "legacy-secret" } }),
+    { mode: 0o644 }
+  );
+  fs.writeFileSync(path.join(legacyDataDir, "profile.json"), JSON.stringify({ llmApiKey: "legacy-secret" }), {
+    mode: 0o644
+  });
+  const migratedLegacyStore = createStore(legacyDataDir);
+  const migratedLegacyStatus = JSON.parse(fs.readFileSync(migratedLegacyStore.paths.scanState, "utf8"));
+  assertTrue(!("userProfile" in migratedLegacyStatus), "legacy CLI scan status should be sanitized on load");
+  assertTrue(
+    (fs.statSync(migratedLegacyStore.paths.profile).mode & 0o777) === 0o600,
+    "legacy CLI profile permissions should be hardened on load"
+  );
+  fs.rmSync(legacyDataDir, { recursive: true, force: true });
+
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "career-peeler-cli-test-"));
   const store = createStore(dataDir);
 
@@ -56,13 +75,18 @@ async function main() {
   const profile = store.saveProfile({ userYearsOfExperience: 2, scanMode: "scan_only" });
 
   const result = await orchestrator.startScan(context, store, LIST_URL, profile);
-  console.log(JSON.stringify({ result, scanState: store.scanState }, null, 2));
+  console.log(JSON.stringify({ result, scanState: store.getPublicScanState() }, null, 2));
 
   assertTrue(result.ok === true, "startScan should succeed");
   assertTrue(store.scanState.running === false, "scan should have completed (running:false)");
   assertTrue(store.scanState.phase === "Complete", `phase should be Complete, got "${store.scanState.phase}"`);
   assertTrue(store.scanState.scanned === 2, `should have scanned both links (got ${store.scanState.scanned})`);
   assertTrue(store.scanState.stats.likelySkip >= 1, "the internship should be hard-skipped");
+
+  const persistedScanState = JSON.parse(fs.readFileSync(store.paths.scanState, "utf8"));
+  assertTrue(!("userProfile" in persistedScanState), "persisted CLI scan status should not duplicate the user profile/API key");
+  assertTrue((fs.statSync(store.paths.scanState).mode & 0o777) === 0o600, "CLI JSON state should be readable only by its owner");
+  assertTrue((fs.statSync(store.paths.profile).mode & 0o777) === 0o600, "CLI profile containing the API key should be owner-only");
 
   const records = store.getJobRecords();
   const internshipRecord = Object.values(records).find((r) => /Internship/i.test(r.title));

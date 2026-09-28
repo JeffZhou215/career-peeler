@@ -72,6 +72,13 @@
       labels.push(placeholder);
     }
 
+    if (element.getAttribute?.("data-automation-id") === "multiSelectContainer") {
+      const workdayFieldLabel = element.closest?.("[data-automation-id^='formField-']")?.querySelector?.("label");
+      if (workdayFieldLabel?.innerText) {
+        labels.push(workdayFieldLabel.innerText);
+      }
+    }
+
     const nearbyText = element.closest("label, fieldset, div, li, section")?.innerText;
     if (nearbyText) {
       labels.push(nearbyText.split("\n").slice(0, 3).join(" "));
@@ -117,8 +124,53 @@
   }
 
   function isRequiredField(element, label) {
-    const lower = label.toLowerCase();
-    return element.required || element.getAttribute("aria-required") === "true" || /\brequired\b|\*/.test(lower);
+    const lower = String(label || "").toLowerCase();
+    return Boolean(element?.required) || element?.getAttribute?.("aria-required") === "true" || /\brequired\b|\*/.test(lower);
+  }
+
+  function isOptionalApplicationQuestionText(text) {
+    return /\b(?:optional|voluntary)\b|\bnot\s+mandatory\b/i.test(String(text || ""));
+  }
+
+  function isOptionalApplicationQuestion(element, label) {
+    if (isOptionalApplicationQuestionText(label)) {
+      return true;
+    }
+    if (!/\b(?:gender|race|ethnicity|veteran|disabilit(?:y|ies))\b/i.test(String(label || ""))) {
+      return false;
+    }
+
+    let node = element?.closest?.("[data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='group']") || element;
+    for (let depth = 0; node && depth < 5; depth += 1) {
+      if (isOptionalApplicationQuestionText(normalizeText(node.innerText || ""))) {
+        return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function isQuestionControlRequired(element, label) {
+    const text = String(label || "");
+    const hasExplicitMarker =
+      /\*|\(\s*required\s*\)|\brequired\s*$|\bmandatory\s+for\s+applicants?\b|\(\s*mandatory\s*\)|\bmandatory\s*$/i.test(text);
+
+    if (isOptionalApplicationQuestion(element, text)) {
+      return false;
+    }
+
+    if (Boolean(element?.required) || element?.getAttribute?.("aria-required") === "true") {
+      return true;
+    }
+
+    const container =
+      element?.closest?.("[data-form-field-i18n-name], fieldset, [role='radiogroup'], [role='group']") || element;
+
+    const hasRequiredDescendant = Boolean(
+      container?.querySelector?.("input[required], select[required], textarea[required], [aria-required='true']")
+    );
+
+    return hasRequiredDescendant || hasExplicitMarker;
   }
 
   function delay(ms) {
@@ -140,8 +192,16 @@
     return (
       /\blegally authorized\b/.test(lower) ||
       /\bauthorized to work\b/.test(lower) ||
+      /\beligible to work\b/.test(lower) ||
+      /\b(?:right|permission)[\s\-‐‑‒–—]+to[\s\-‐‑‒–—]+work\b/.test(lower) ||
+      /\bvalid work authori[sz]ation\b/.test(lower) ||
       /\bwork in the (?:us|u\.s\.|united states)\b/.test(lower)
     );
+  }
+
+  function isCategoricalWorkAuthorizationStatusQuestion(text) {
+    const lower = normalizeText(text || "").toLowerCase();
+    return /\bright[\s\-‐‑‒–—]+to[\s\-‐‑‒–—]+work\s+status\b/.test(lower);
   }
 
   function isVisaSponsorshipQuestion(text) {
@@ -151,6 +211,9 @@
       /\brequire sponsorship\b/.test(lower) ||
       /\bsponsorship for employment\b/.test(lower) ||
       /\bvisa transfer\b/.test(lower) ||
+      /\b(?:employment|work) visa\b/.test(lower) ||
+      /\bimmigration (?:support|assistance)\b/.test(lower) ||
+      /\b(?:require|need|seek)\b.{0,50}\b(?:sponsor(?:ship)?|work visa|immigration support)\b/.test(lower) ||
       /\bnow or in the future\b.*\b(?:sponsorship|visa)\b/.test(lower)
     );
   }
@@ -176,6 +239,17 @@
     return /\bdisabilit(y|ies)\b/i.test(text || "");
   }
 
+  function isCriminalHistoryQuestion(text) {
+    const lower = normalizeText(text || "").toLowerCase();
+    return (
+      /\bcriminal (?:history|record)\b/.test(lower) ||
+      /\bcriminal offen[cs]e\b/.test(lower) ||
+      /\b(?:convicted|conviction|felony|misdemeanor)\b/.test(lower) ||
+      /\b(?:ever|previously)\b.{0,50}\b(?:arrested|charged)\b/.test(lower) ||
+      /\b(?:found|pleaded|pled) guilty\b/.test(lower)
+    );
+  }
+
   // Built once at module load, like this file's other pattern constants (PERSONAL_INFO_FIELD_LABEL_
   // PATTERN etc. below) -- isPreviousEmploymentQuestion runs once per field AND once per question on
   // every autofill sweep, so these shouldn't be rebuilt from template strings on every call.
@@ -184,20 +258,19 @@
   const PRIOR_THEN_EMPLOYMENT_PATTERN = new RegExp(`\\b${PRIOR_TERM}\\b.*\\b${PRIOR_EMPLOYMENT_TERM}\\b`);
   const EMPLOYMENT_THEN_PRIOR_PATTERN = new RegExp(`\\b${PRIOR_EMPLOYMENT_TERM}\\b.*\\b${PRIOR_TERM}\\b`);
 
-  // Matches "Have you previously been employed by us?" / "worked for this company before?" / "Are
-  // you a former employee?" style questions -- two independent signals (a past-employment term, AND
-  // a self-reference to the hiring company) rather than one combined regex, so this doesn't fire on
-  // e.g. "Please describe your work experience" (has the employment term, no company self-reference)
-  // or "Do you currently work for another employer?" (has the company-adjacent phrasing but no
-  // past-tense/prior signal).
+  // Matches both self-referential questions ("worked for us before?") and Workday's named-employer
+  // form ("worked for Mastercard as an employee?"). The prior-employment signal is mandatory and
+  // generic targets such as "another employer" / "any company" are excluded, so ordinary work-
+  // history questions never enter the candidate-profile yes/no resolver.
   function isPreviousEmploymentQuestion(text) {
     const lower = normalizeText(text || "").toLowerCase();
     const mentionsPriorEmployment =
       PRIOR_THEN_EMPLOYMENT_PATTERN.test(lower) ||
       EMPLOYMENT_THEN_PRIOR_PATTERN.test(lower) ||
       /\bformer(?:ly)?\s+employ(?:ee|ed)\b/.test(lower);
-    const referencesThisCompany = /\b(us|this company|our company|here)\b/.test(lower);
-    return mentionsPriorEmployment && referencesThisCompany;
+    const referencesThisCompany = /\b(us|this company|our company|this employer|our employer|here)\b/.test(lower);
+    const referencesNamedEmployer = /\b(?:employed by|worked for|employee of)\s+(?!(?:us|this|our|another|any|a|an|the|your|company|employer|organization)\b)[a-z0-9][a-z0-9&.'/-]*(?:\s+[a-z0-9][a-z0-9&.'/-]*){0,7}(?=\s+(?:as\b|or provided services\b|in any capacity\b)|\s*[?.!,]|$)/.test(lower);
+    return mentionsPriorEmployment && (referencesThisCompany || referencesNamedEmployer);
   }
 
   // Matches "How did/do you hear about us?" / "Where did you hear about this position?" / "Referral
@@ -244,10 +317,14 @@
     getOptionLabel,
     getFieldKind,
     isRequiredField,
+    isOptionalApplicationQuestionText,
+    isOptionalApplicationQuestion,
+    isQuestionControlRequired,
     delay,
     isYesAnswerText,
     isNoAnswerText,
     isWorkAuthorizationQuestion,
+    isCategoricalWorkAuthorizationStatusQuestion,
     isVisaSponsorshipQuestion,
     isAgeEligibilityQuestion,
     isPreviousEmploymentQuestion,
@@ -256,6 +333,7 @@
     isRaceEthnicityQuestion,
     isVeteranStatusQuestion,
     isDisabilityStatusQuestion,
+    isCriminalHistoryQuestion,
     isEssayQuestionLabel,
     findOpenTextQuestionField
   });

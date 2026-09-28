@@ -1,6 +1,12 @@
 import { HelpTooltip } from "./HelpTooltip";
 import { useDraftField } from "../hooks/useDraftField";
-import { hasLlmProviderConfigured, isApiKeyValidated, hasCandidateProfileContent, SKILL_CATEGORIES } from "../lib/profile";
+import {
+  hasLlmProviderConfigured,
+  isApiKeyValidated,
+  isCandidateProfileFreshForResume,
+  hasCandidateProfileContent,
+  SKILL_CATEGORIES
+} from "../lib/profile";
 
 const SKILL_CATEGORY_LABELS = {
   programmingLanguages: "Programming languages",
@@ -141,14 +147,16 @@ function CandidateProfileEntryList({ title, entries, renderEntry }) {
 function renderExperienceEntry(entry) {
   const header = [entry.title, entry.company].filter(Boolean).join(" at ");
   const range = [entry.startDate, entry.endDate].filter(Boolean).join(" - ");
-  const headerWithRange = range ? `${header} (${range})` : header;
+  const headerWithLocation = entry.location ? `${header} — ${entry.location}` : header;
+  const headerWithRange = range ? `${headerWithLocation} (${range})` : headerWithLocation;
   const techSuffix = entry.technologies?.length ? ` [${entry.technologies.join(", ")}]` : "";
   return `${headerWithRange}${entry.summary ? `: ${entry.summary}` : ""}${techSuffix}`;
 }
 
 function renderEducationEntry(entry) {
   const degree = [entry.degree, entry.field ? `in ${entry.field}` : null].filter(Boolean).join(" ");
-  return [degree, entry.institution].filter(Boolean).join(", ");
+  const grade = entry.gradeAverage ? ` (GPA: ${entry.gradeAverage})` : "";
+  return `${[degree, entry.institution].filter(Boolean).join(", ")}${grade}`;
 }
 
 function renderProjectEntry(entry) {
@@ -167,12 +175,14 @@ function renderCertificationEntry(entry) {
 // distinct prefix per caller, duplicate ids would make a <label for=...> click in one section
 // potentially focus the other, hidden section's field instead.
 export function CandidateProfileSection({ profile, save, extractionStatus, extractionError, onExtractNow, idPrefix = "" }) {
-  if (!profile.resumeFileDataUrl) {
+  const hasStoredContent = hasCandidateProfileContent(profile.candidateProfile);
+  if (!profile.resumeFileDataUrl && !hasStoredContent) {
     return null;
   }
 
-  const canExtract = hasLlmProviderConfigured(profile) && isApiKeyValidated(profile);
-  const hasContent = hasCandidateProfileContent(profile.candidateProfile);
+  const canExtract = Boolean(profile.resumeFileDataUrl) && hasLlmProviderConfigured(profile) && isApiKeyValidated(profile);
+  const hasContent =
+    hasStoredContent && (!profile.resumeFileDataUrl || isCandidateProfileFreshForResume(profile));
 
   return (
     <>
@@ -197,7 +207,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
             <>
               {extractionStatus === "error" && <p className="muted">{extractionError}</p>}
               <button type="button" className="secondary" onClick={() => onExtractNow(profile)}>
-                Extract profile from resume
+                Extract Profile From Resume
               </button>
             </>
           )}
@@ -212,8 +222,8 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
         // is the established pattern for "collapsible subsection within a card" -- a divider, not a second card.
         <details className="progress-details">
           <summary>
-            Extracted candidate profile
-            <HelpTooltip text="Automatically extracted from your resume and used for matching, LLM answers, and autofill. Edit any field, or re-extract to overwrite with a fresh pass." />
+            Candidate Profile
+            <HelpTooltip text="Used for matching, LLM answers, and autofill. It can be extracted from your resume and enriched from populated Workday experience/education entries stored locally. Edit fields freely, or re-extract from the current resume." />
           </summary>
           <div className="settings-fields">
             <CandidateBasicInfoField id={`${idPrefix}candidateFullName`} label="Full name" field="fullName" profile={profile} save={save} />
@@ -256,7 +266,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
 
             <details className="progress-details">
               <summary>
-                Skills by category
+                Skills By Category
                 <HelpTooltip text="Comma-separated within each category. Any technology mentioned in the resume should land in one of these -- edit freely if extraction miscategorized something." />
               </summary>
               <div className="settings-fields">
@@ -275,18 +285,20 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
               renderEntry={renderCertificationEntry}
             />
 
-            <div className="actions">
-              <button
-                type="button"
-                className="secondary"
-                disabled={!canExtract || extractionStatus === "extracting"}
-                onClick={() => onExtractNow(profile)}
-              >
-                {extractionStatus === "extracting" ? "Re-extracting..." : "Re-extract from resume"}
-              </button>
-              {!canExtract && <p className="muted">Re-extraction requires a valid API key.</p>}
-              {extractionStatus === "error" && <p className="muted">{extractionError}</p>}
-            </div>
+            {profile.resumeFileDataUrl && (
+              <div className="actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!canExtract || extractionStatus === "extracting"}
+                  onClick={() => onExtractNow(profile)}
+                >
+                  {extractionStatus === "extracting" ? "Re-extracting..." : "Re-extract From Resume"}
+                </button>
+                {!canExtract && <p className="muted">Re-extraction requires a valid API key.</p>}
+                {extractionStatus === "error" && <p className="muted">{extractionError}</p>}
+              </div>
+            )}
           </div>
         </details>
       )}

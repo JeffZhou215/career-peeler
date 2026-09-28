@@ -16,6 +16,13 @@ const LOGIN_URLS = {
   tiktok: "https://careers.tiktok.com/position"
 };
 
+const EXPERIMENTAL_AUTO_APPLY_WARNING =
+  "Warning: CLI auto-apply is experimental. Monitor the browser and verify every submitted application.";
+
+function warnExperimentalAutoApply() {
+  console.warn(EXPERIMENTAL_AUTO_APPLY_WARNING);
+}
+
 function printUsage() {
   console.log(`Career Peeler CLI
 
@@ -23,7 +30,7 @@ Usage:
   career-peeler login <apple|tiktok>     Open a browser to log in once; the session persists.
   career-peeler config [--set k=v ...]   View or update your matching/apply profile.
   career-peeler scan <list-url>          Scan a job list page (and apply, if enabled).
-  career-peeler apply <application-url>  Run the apply workflow on an already-open application page.
+  career-peeler apply <application-url>  EXPERIMENTAL: run the apply workflow on an application page.
   career-peeler status                   Print the current/last scan status.
   career-peeler stop                     Stop a scan running in another terminal.
   career-peeler history [--clear]        Print or clear locally tracked job records.
@@ -33,7 +40,7 @@ Common flags:
                       $CAREER_PEELER_DATA_DIR).
   --headless          Run the browser headless (scan/apply/login default to a visible window).
   --scan-only         Force scan-only mode for this run, regardless of the saved profile.
-  --auto-apply        Force auto-apply mode for this run, regardless of the saved profile.
+  --auto-apply        EXPERIMENTAL: force auto-apply mode for this run.
 `);
 }
 
@@ -42,7 +49,8 @@ function formatStatusLine(scanState) {
   return (
     `[${scanState.phase}] scanned=${scanState.scanned} queued=${scanState.queued} ` +
     `applied=${stats.applied || 0} likely_match=${stats.likelyMatch || 0} likely_skip=${stats.likelySkip || 0} ` +
-    `reviewed=${stats.reviewed || 0} needs_review=${stats.needsReview || 0} errors=${stats.errors || 0}`
+    `reviewed=${stats.reviewed || 0} needs_review=${stats.needsReview || 0} errors=${stats.errors || 0} ` +
+    `api_calls=${stats.apiCalls || 0}`
   );
 }
 
@@ -170,7 +178,7 @@ async function commandConfig(positionals, values) {
         updates[key] = Number(rawValue);
       } else if (key === "llmEnabled" || key === "autoApplyConsent") {
         updates[key] = rawValue === "true";
-      } else if (key === "noMatchKeywords") {
+      } else if (key === "noMatchKeywords" || key === "eeoRaceEthnicity") {
         updates[key] = rawValue.split(",").map((term) => term.trim());
       } else {
         updates[key] = rawValue;
@@ -187,7 +195,8 @@ async function commandConfig(positionals, values) {
   console.log("\nUpdate with: career-peeler config --set key=value [--set key2=value2 ...]");
   console.log(
     "Keys: userYearsOfExperience, scanMode (scan_only|auto_apply), autoApplyConsent (true|false), " +
-      "llmEnabled (true|false), llmApiKey, llmModel, resumeProfile, noMatchKeywords (comma-separated)"
+      "llmEnabled (true|false), llmApiKey, llmModel, resumeProfile, noMatchKeywords (comma-separated), " +
+      "eeoGender, eeoRaceEthnicity (comma-separated), eeoVeteranStatus, eeoDisabilityStatus"
   );
 }
 
@@ -209,6 +218,10 @@ async function commandScan(positionals, values) {
     profile.scanMode = "scan_only";
   } else if (values["auto-apply"]) {
     profile.scanMode = "auto_apply";
+  }
+
+  if (profile.scanMode === "auto_apply") {
+    warnExperimentalAutoApply();
   }
 
   await withBrowserContext(dataDir, headless, store, async (context) => {
@@ -266,7 +279,17 @@ async function commandApply(positionals, values) {
     return;
   }
 
+  warnExperimentalAutoApply();
+
   const profile = store.getProfile();
+  if (profile.scanMode === "auto_apply") {
+    const applicationAnswersError = core.getRequiredApplicationAnswersReadinessError(profile);
+    if (applicationAnswersError) {
+      console.error(applicationAnswersError);
+      process.exitCode = 1;
+      return;
+    }
+  }
   store.scanState = {
     ...core.createIdleState(),
     running: true,
@@ -301,7 +324,7 @@ async function commandApply(positionals, values) {
 function commandStatus(values) {
   const dataDir = values["data-dir"] || defaultDataDir();
   const store = createStore(dataDir);
-  console.log(JSON.stringify(store.scanState, null, 2));
+  console.log(JSON.stringify(store.getPublicScanState(), null, 2));
 }
 
 function commandStop(values) {

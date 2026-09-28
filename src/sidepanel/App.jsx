@@ -4,12 +4,13 @@ import { KnownSitesSection } from "./components/KnownSitesSection";
 import { GenericAutofillSection } from "./components/GenericAutofillSection";
 import { useUserProfile } from "./hooks/useUserProfile";
 import { useScanStatus } from "./hooks/useScanStatus";
+import { SubmittedApplicationsSection } from "./components/SubmittedApplicationsSection";
 
 export function App() {
   const { profile, loaded, save } = useUserProfile();
   const { status, refresh: refreshScanStatus } = useScanStatus();
   const [statusMessage, setStatusMessage] = useState(
-    "Open a supported careers jobs list page, then click Scan visible job list."
+    "Open a supported careers jobs list page, then click Scan Visible Job List."
   );
 
   if (!loaded) {
@@ -25,6 +26,8 @@ export function App() {
           <HelpTooltip text="Pick a mode below. Only one is open at a time -- click the other's header to switch." />
         </h1>
       </header>
+
+      <SubmittedApplicationsSection profile={profile} setStatusMessage={setStatusMessage} />
 
       <KnownSitesSection
         profile={profile}
