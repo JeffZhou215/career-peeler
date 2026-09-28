@@ -118,6 +118,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       <p className="muted">
         Reads the Active submissions pages and uses your saved resume profile with OpenAI. Scores use role title and department only; Apple’s full job descriptions are not fetched in this first pass.
       </p>
+      <p className="muted">
+        Apple says some roles are exempt from its 50-role cap. The count and suggested batch here target exactly 50 entries in the visible Active submissions list; they may differ from Apple’s cap-eligible count.
+      </p>
 
       {error && <p className="submitted-history-error" role="alert">{error}</p>}
 
