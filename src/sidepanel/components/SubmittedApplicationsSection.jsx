@@ -71,7 +71,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           .map((role) => role.jobId)
       );
       setStatusMessage(
-        `Analyzed ${ranked.length} roles: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.`
+        `Analyzed ${ranked.length} roles: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.${response.data.cacheSaveFailed ? " Some details could not be saved to extension storage." : ""}`
       );
     } catch (analyzeError) {
       setError(analyzeError?.message || "Could not analyze Apple submitted roles.");

@@ -3111,7 +3111,8 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
     roles: scored,
     descriptionsFetched: detailsResult.fetchedCount,
     descriptionsReused: detailsResult.cachedCount,
-    descriptionsUnavailable: detailsResult.unavailableCount
+    descriptionsUnavailable: detailsResult.unavailableCount,
+    cacheSaveFailed: detailsResult.cacheSaveFailed
   };
 }
 
@@ -3128,6 +3129,7 @@ async function fetchAppleSubmittedRoleDetails(roles) {
   let cachedCount = 0;
   let unavailableCount = 0;
   let pendingCacheWrites = 0;
+  let cacheSaveFailed = false;
 
   for (const role of appleRoles) {
     const cached = cache[String(role.jobId)];
@@ -3145,14 +3147,17 @@ async function fetchAppleSubmittedRoleDetails(roles) {
 
   const rolesToFetch = appleRoles.filter((role) => !detailsByJobId.has(String(role.jobId)));
   if (!rolesToFetch.length) {
-    return { detailsByJobId, fetchedCount, cachedCount, unavailableCount };
+    return { detailsByJobId, fetchedCount, cachedCount, unavailableCount, cacheSaveFailed };
   }
 
   async function persistCache() {
     try {
       await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY]: cache });
+      return true;
     } catch (_error) {
       // Matching can still finish if a browser storage quota or transient storage error blocks caching.
+      cacheSaveFailed = true;
+      return false;
     }
   }
 
@@ -3203,7 +3208,7 @@ async function fetchAppleSubmittedRoleDetails(roles) {
     }
   }
 
-  return { detailsByJobId, fetchedCount, cachedCount, unavailableCount };
+  return { detailsByJobId, fetchedCount, cachedCount, unavailableCount, cacheSaveFailed };
 }
 
 async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs = 15000) {
