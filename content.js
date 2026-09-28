@@ -1388,6 +1388,40 @@ async function waitForSubmittedRoleWithdrawal(jobId, timeoutMs = 10000) {
   return false;
 }
 
+function findAppleWithdrawalConfirmationModal() {
+  const modal = Array.from(document.querySelectorAll(".rc-overlay-popup-outer")).find((candidate) => {
+    if (!isElementVisible(candidate)) return false;
+    const heading = candidate.querySelector("#yourroles-withdrawmodal-header");
+    return normalizeText(heading?.innerText || heading?.textContent || "") ===
+      "Are you sure you want to withdraw this submission?";
+  });
+  if (!modal) return null;
+
+  const proceedButton = modal.querySelector("#yourroles-withdrawmodal-proceed-button");
+  return proceedButton && isElementVisible(proceedButton)
+    ? { modal, proceedButton }
+    : { modal, proceedButton: null };
+}
+
+async function waitForAppleWithdrawalConfirmationModal(timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const confirmation = findAppleWithdrawalConfirmationModal();
+    if (confirmation) return confirmation;
+    await delay(150);
+  }
+  return null;
+}
+
+async function waitForAppleWithdrawalConfirmationToClose(timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!findAppleWithdrawalConfirmationModal()) return true;
+    await delay(150);
+  }
+  return false;
+}
+
 async function withdrawAppleSubmittedRoles(requestedRoles = []) {
   if (getSiteId() !== "apple" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
     throw new Error("Open your Apple Careers roles page before withdrawing applications.");
@@ -1398,6 +1432,11 @@ async function withdrawAppleSubmittedRoles(requestedRoles = []) {
   const failed = [];
 
   for (const role of roles) {
+    if (findAppleWithdrawalConfirmationModal()) {
+      failed.push({ jobId: role.jobId, title: role.title, error: "A withdrawal confirmation is already open; the batch stopped for manual review." });
+      break;
+    }
+
     const match = await findSubmittedRoleOnAnyPage(role.jobId);
     if (!match) {
       failed.push({ jobId: role.jobId, title: role.title, error: "The active role could not be found." });
@@ -1421,20 +1460,20 @@ async function withdrawAppleSubmittedRoles(requestedRoles = []) {
     }
 
     match.withdrawButton.click();
-    await delay(500);
+    const confirmation = await waitForAppleWithdrawalConfirmationModal();
+    if (!confirmation) {
+      failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal confirmation did not appear; the batch stopped before confirming this application." });
+      break;
+    }
+    if (!confirmation.proceedButton || confirmation.proceedButton.disabled || confirmation.proceedButton.getAttribute("aria-disabled") === "true") {
+      failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal confirmation is missing an enabled Proceed button; the batch stopped for manual review." });
+      break;
+    }
 
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).filter(isElementVisible);
-    const dialog = dialogs.find((candidate) => /withdraw/i.test(normalizeText(candidate.innerText || candidate.textContent || "")));
-    if (dialog) {
-      const confirmButton = Array.from(dialog.querySelectorAll("button")).find((button) => {
-        const label = normalizeText(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`);
-        return /^withdraw(?: application)?$/i.test(label);
-      });
-      if (!confirmButton) {
-        failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal dialog needs manual review; no exact confirmation button was found." });
-        break;
-      }
-      confirmButton.click();
+    confirmation.proceedButton.click();
+    if (!(await waitForAppleWithdrawalConfirmationToClose())) {
+      failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal confirmation did not close after Proceed; the batch stopped." });
+      break;
     }
 
     if (!(await waitForSubmittedRoleWithdrawal(role.jobId))) {

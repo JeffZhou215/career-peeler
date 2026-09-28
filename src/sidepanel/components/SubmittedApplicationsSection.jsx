@@ -135,16 +135,13 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setConfirmationOpen(false);
       const withdrawnCount = result.data?.withdrawn?.length || 0;
       const failedRole = result.data?.failed?.[0];
-      setStatusMessage(
-        failedRole
-          ? `Withdrew ${withdrawnCount}; stopped at ${failedRole.title || failedRole.jobId}: ${failedRole.error}`
-          : `Withdrew ${withdrawnCount} applications. Refreshing the active list...`
-      );
-      await analyzeRoles();
       if (failedRole) {
         setError(`Partial batch: withdrew ${withdrawnCount}. Stopped at ${failedRole.title || failedRole.jobId}: ${failedRole.error}`);
-        setStatusMessage(`Partial batch completed: ${withdrawnCount} withdrawn; one role needs manual review.`);
+        setStatusMessage(`Partial batch stopped after ${withdrawnCount} withdrawals. Resolve the issue, then refresh roles before retrying.`);
+        return;
       }
+      setStatusMessage(`Withdrew ${withdrawnCount} applications. Refreshing the active list...`);
+      await analyzeRoles();
     } catch (withdrawError) {
       setError(withdrawError?.message || "The withdrawal batch stopped before completion.");
       setStatusMessage("The withdrawal batch stopped; review the reported progress before retrying.");
@@ -204,6 +201,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               <h3 id="withdraw-confirm-title">Confirm application withdrawals</h3>
               <p>
                 This will withdraw {selectedRoles.length} Apple applications from your account. That changes your candidacy for those roles. Confirm only if you want to withdraw every role listed here.
+              </p>
+              <p>
+                Apple will show a confirmation for each role. The extension will click Proceed one at a time and stop if a confirmation or withdrawal cannot be verified.
               </p>
               <ul>
                 {selectedRoles.map((role) => (
