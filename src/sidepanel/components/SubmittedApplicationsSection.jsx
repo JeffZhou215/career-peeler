@@ -10,12 +10,21 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [error, setError] = useState("");
   const [pagesRead, setPagesRead] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const selectedRoles = useMemo(
     () => roles.filter((role) => selectedIds.includes(role.jobId)),
     [roles, selectedIds]
   );
   const neededToReachTarget = Math.max(0, roles.length - TARGET_ACTIVE_APPLICATIONS);
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const visibleRoles = roles.filter((role) =>
+    !normalizedSearch ||
+    String(role.title || "").toLowerCase().includes(normalizedSearch) ||
+    String(role.jobId || "").toLowerCase().includes(normalizedSearch)
+  );
+  const lowMatchRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal === false);
+  const protectedRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal !== false);
 
   async function analyzeRoles() {
     setBusy(true);
@@ -44,12 +53,19 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       if (!response?.ok) throw new Error(response?.error || "Could not score the submitted roles.");
 
       const scoreById = new Map((response.data || []).map((match) => [match.jobId, match]));
-      const ranked = history.data.roles
+      const scoredRoles = history.data.roles
         .map((role) => ({ ...role, ...(scoreById.get(role.jobId) || {}) }))
+        .filter((role) => role.active !== false);
+      const rankedLowMatches = scoredRoles
+        .filter((role) => role.protectedFromBatchWithdrawal === false)
         .sort((left, right) => (left.score ?? 101) - (right.score ?? 101));
+      const protectedFromBatch = scoredRoles
+        .filter((role) => role.protectedFromBatchWithdrawal !== false)
+        .sort((left, right) => String(left.title || "").localeCompare(String(right.title || "")));
+      const ranked = [...rankedLowMatches, ...protectedFromBatch];
       setRoles(ranked);
       setSelectedIds(
-        ranked
+        rankedLowMatches
           .filter((role) => Number.isFinite(role.score))
           .slice(0, neededCount(ranked.length))
           .map((role) => role.jobId)
@@ -66,6 +82,36 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   function toggleRole(jobId) {
     setSelectedIds((current) =>
       current.includes(jobId) ? current.filter((id) => id !== jobId) : [...current, jobId]
+    );
+  }
+
+  function renderRoleCard(role, protectedFromBatch = false) {
+    const favoriteStatusLabel =
+      role.jobId === "200654506"
+        ? "Interview in progress · protected from batch withdrawal"
+        : role.favorite === true
+          ? "Starred · protected from batch withdrawal"
+          : role.favorite === false
+            ? null
+            : "Star status unavailable · protected from batch withdrawal";
+
+    return (
+      <li key={role.jobId} className={`submitted-role-card${protectedFromBatch ? " submitted-role-card-protected" : ""}`}>
+        <label className="submitted-role-select">
+          <input
+            type="checkbox"
+            checked={selectedIds.includes(role.jobId)}
+            onChange={() => toggleRole(role.jobId)}
+            disabled={busy || confirmationOpen || protectedFromBatch || !Number.isFinite(role.score)}
+          />
+          <span>{role.score === null || role.score === undefined ? "No score" : `${role.score}% fit`}</span>
+        </label>
+        <a href={role.url} target="_blank" rel="noopener noreferrer" className="submitted-role-title">{role.title}</a>
+        <span className="submitted-role-id">Job ID {role.jobId}</span>
+        {favoriteStatusLabel && <span className="submitted-role-protected-label">{favoriteStatusLabel}</span>}
+        <p>{role.reason || "No explanation was returned."}</p>
+        {role.submittedDate && <span className="muted">Submitted {role.submittedDate}</span>}
+      </li>
     );
   }
 
@@ -131,7 +177,22 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             <span>{neededToReachTarget} withdrawals needed to reach {TARGET_ACTIVE_APPLICATIONS}</span>
           </div>
           <p className="muted">
-            The lowest-scoring {Math.min(neededToReachTarget, selectedIds.length)} roles are preselected. Review the titles and explanations, adjust the selection, then use the separate confirmation step.
+            Starred roles and job 200654506 are excluded from the low-match ranking and protected from batch withdrawal. Search by title or job ID to check any application before reviewing a withdrawal batch.
+          </p>
+          <label className="submitted-history-search">
+            <span>Search submitted roles</span>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Job title or job ID"
+              aria-label="Search submitted roles by job title or job ID"
+              disabled={busy}
+            />
+          </label>
+          <p className="muted">
+            {selectedIds.length} eligible role{selectedIds.length === 1 ? " is" : "s are"} preselected; {neededToReachTarget} withdrawal{neededToReachTarget === 1 ? " is" : "s are"} needed to reach {TARGET_ACTIVE_APPLICATIONS}.
+            {selectedIds.length < neededToReachTarget && " There are not enough scorable, unstarred roles to fill that batch."}
           </p>
 
           {confirmationOpen ? (
@@ -163,25 +224,29 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             </button>
           )}
 
-          <ol className="submitted-role-list">
-            {roles.map((role) => (
-              <li key={role.jobId} className="submitted-role-card">
-                <label className="submitted-role-select">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(role.jobId)}
-                    onChange={() => toggleRole(role.jobId)}
-                    disabled={busy || confirmationOpen || !Number.isFinite(role.score)}
-                  />
-                  <span>{role.score === null || role.score === undefined ? "No score" : `${role.score}% fit`}</span>
-                </label>
-                <a href={role.url} target="_blank" rel="noopener noreferrer" className="submitted-role-title">{role.title}</a>
-                <span className="submitted-role-id">Job ID {role.jobId}</span>
-                <p>{role.reason || "No explanation was returned."}</p>
-                {role.submittedDate && <span className="muted">Submitted {role.submittedDate}</span>}
-              </li>
-            ))}
-          </ol>
+          {visibleRoles.length === 0 ? (
+            <p className="muted">No submitted roles match that title or job ID.</p>
+          ) : (
+            <>
+              {lowMatchRoles.length > 0 && (
+                <>
+                  <h3 className="submitted-role-group-heading">Low-match roles · unstarred</h3>
+                  <ol className="submitted-role-list">
+                    {lowMatchRoles.map((role) => renderRoleCard(role))}
+                  </ol>
+                </>
+              )}
+              {protectedRoles.length > 0 && (
+                <>
+                  <h3 className="submitted-role-group-heading">Starred or protected roles</h3>
+                  <p className="muted">These roles are not ranked as low matches and cannot be selected for batch withdrawal. Job 200654506 remains protected even if it is unstarred.</p>
+                  <ol className="submitted-role-list">
+                    {protectedRoles.map((role) => renderRoleCard(role, true))}
+                  </ol>
+                </>
+              )}
+            </>
+          )}
         </>
       )}
     </section>

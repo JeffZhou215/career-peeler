@@ -1080,6 +1080,10 @@ function getJobListStats(links) {
   };
 }
 
+// This interview-in-progress role is user-designated as never batch-withdrawable. Keep the guard in
+// the page action layer too, so stale side-panel state cannot bypass it.
+const APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL = new Set(["200654506"]);
+
 function collectSubmittedRoleCards() {
   const roles = new Map();
 
@@ -1113,6 +1117,7 @@ function collectSubmittedRoleCards() {
     const withdrawButton = card && Array.from(card.querySelectorAll("button")).find((button) =>
       /\bwithdraw\b/i.test(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`)
     );
+    const favoriteCheckbox = card?.querySelector('input[type="checkbox"][id^="addToFavoriteId-favorite-"]');
 
     roles.set(jobId, {
       jobId,
@@ -1120,6 +1125,9 @@ function collectSubmittedRoleCards() {
       url: url.href,
       submittedDate,
       cardText: cardText.slice(0, 700),
+      favorite: favoriteCheckbox ? Boolean(favoriteCheckbox.checked) : null,
+      protectedFromBatchWithdrawal:
+        APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(jobId) || !favoriteCheckbox || favoriteCheckbox.checked,
       active: Boolean(withdrawButton)
     });
   }
@@ -1214,7 +1222,14 @@ function findSubmittedRoleCard(jobId) {
       /\bwithdraw\b/i.test(`${button.innerText || ""} ${button.getAttribute("aria-label") || ""}`)
     );
     if (withdrawButton && card.querySelectorAll('a[href*="/en-us/details/"]').length === 1) {
-      return { card, withdrawButton, title: cleanTitle(anchor.innerText || "") };
+      const favoriteCheckbox = card.querySelector('input[type="checkbox"][id^="addToFavoriteId-favorite-"]');
+      return {
+        card,
+        withdrawButton,
+        title: cleanTitle(anchor.innerText || ""),
+        jobId: getJobIdFromUrl(anchor.href),
+        favorite: favoriteCheckbox ? Boolean(favoriteCheckbox.checked) : null
+      };
     }
     card = card.parentElement;
   }
@@ -1269,6 +1284,22 @@ async function withdrawAppleSubmittedRoles(requestedRoles = []) {
     const match = await findSubmittedRoleOnAnyPage(role.jobId);
     if (!match) {
       failed.push({ jobId: role.jobId, title: role.title, error: "The active role could not be found." });
+      break;
+    }
+
+    if (
+      match.favorite !== false ||
+      APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(String(match.jobId || role.jobId))
+    ) {
+      failed.push({
+        jobId: role.jobId,
+        title: role.title,
+        error: APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(String(match.jobId || role.jobId))
+          ? "This role is protected from batch withdrawal because you have an interview in progress."
+          : match.favorite === true
+            ? "This role is starred and is protected from batch withdrawal."
+            : "The role's starred status could not be verified, so batch withdrawal was stopped."
+      });
       break;
     }
 
