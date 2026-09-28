@@ -44,7 +44,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       if (!history?.ok) throw new Error(history?.error || "Could not read the submitted roles.");
       setPagesRead(history.data?.pagesRead || 0);
 
-      setStatusMessage(`Matching ${history.data.roles.length} roles with your saved profile...`);
+      setStatusMessage(`Checking Apple job postings and matching ${history.data.roles.length} roles with your saved profile...`);
       const response = await chrome.runtime.sendMessage({
         type: "APPLE_CAREERS_SCORE_SUBMITTED_ROLES",
         roles: history.data.roles,
@@ -52,7 +52,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       });
       if (!response?.ok) throw new Error(response?.error || "Could not score the submitted roles.");
 
-      const scoreById = new Map((response.data || []).map((match) => [match.jobId, match]));
+      const scoreById = new Map((response.data?.roles || []).map((match) => [match.jobId, match]));
       const scoredRoles = history.data.roles
         .map((role) => ({ ...role, ...(scoreById.get(role.jobId) || {}) }))
         .filter((role) => role.active !== false);
@@ -70,8 +70,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           .slice(0, neededCount(ranked.length))
           .map((role) => role.jobId)
       );
-      const descriptionCount = scoredRoles.filter((role) => role.descriptionAvailable).length;
-      setStatusMessage(`Analyzed ${ranked.length} active submitted roles against ${descriptionCount} job descriptions. Lowest matches are listed first.`);
+      setStatusMessage(
+        `Analyzed ${ranked.length} roles: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.`
+      );
     } catch (analyzeError) {
       setError(analyzeError?.message || "Could not analyze Apple submitted roles.");
       setStatusMessage("Could not analyze Apple submitted roles.");
@@ -163,7 +164,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       </div>
 
       <p className="muted">
-        Reads each active Apple posting and compares its responsibilities and qualifications with your saved resume profile using OpenAI. If a posting cannot be read, its title-only score is marked low confidence and it will not be preselected for withdrawal.
+        Reads active Apple postings and saves their descriptions and qualifications in extension storage for later analyses. Cached details are reused for 180 days. If a posting cannot be read, its title-only score is marked low confidence and it will not be preselected for withdrawal.
       </p>
       <p className="muted">
         Apple says some roles are exempt from its 50-role cap. The count and suggested batch here target exactly 50 entries in the visible Active submissions list; they may differ from Apple’s cap-eligible count.

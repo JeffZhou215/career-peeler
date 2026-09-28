@@ -10,6 +10,8 @@ const SCAN_STATUS_KEY = "appleCareersScanStatus";
 const APPLIED_JOBS_KEY = "appleCareersAppliedJobs";
 const ERROR_JOBS_KEY = "appleCareersErrorJobs";
 const USER_PROFILE_KEY = "appleCareersUserProfile";
+const APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY = "appleSubmittedRoleDetailsCache";
+const APPLE_SUBMITTED_ROLE_DETAILS_CACHE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_APPLIED_JOBS = 5000;
 const MAX_PERSISTED_ERROR_JOBS = 100;
 const MAX_PUBLIC_APPLIED_JOBS = 25;
@@ -3044,7 +3046,8 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
     throw new Error("No submitted roles were provided for scoring.");
   }
 
-  const detailsByJobId = await fetchAppleSubmittedRoleDetails(boundedRoles, profile);
+  const detailsResult = await fetchAppleSubmittedRoleDetails(boundedRoles);
+  const detailsByJobId = detailsResult.detailsByJobId;
   const scored = [];
   for (let offset = 0; offset < boundedRoles.length; offset += 6) {
     const batch = boundedRoles.slice(offset, offset + 6).map((role) => {
@@ -3053,7 +3056,9 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
         jobId: String(role.jobId || ""),
         title: String(role.title || "Untitled role").slice(0, 220),
         department: String(role.cardText || "").slice(0, 500),
-        jobDescription: String(details?.jobText || "").slice(0, 9000),
+        jobDescription: String(details?.description || "").slice(0, 7000),
+        minimumQualifications: String(details?.minimumQualifications || "").slice(0, 3500),
+        preferredQualifications: String(details?.preferredQualifications || "").slice(0, 2500),
         requiredExperience: details?.requiredExperience || []
       };
     });
@@ -3083,7 +3088,7 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
       const seniorTitleReason = /\b(senior|sr\.?|staff|principal|lead|manager)\b/i.test(role.title)
         ? `Title signals seniority (${role.title}); this is a mismatch with your ${profile.userYearsOfExperience}-year experience setting.`
         : null;
-      const requiredYoeMismatch = details?.requiredExperience.find((item) =>
+      const requiredYoeMismatch = details?.requiredExperience?.find((item) =>
         item.type === "required" && Number(item.years) > profile.userYearsOfExperience
       );
       const hardMismatchReason = seniorTitleReason || (requiredYoeMismatch
@@ -3096,26 +3101,63 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
         reason: hardMismatchReason
           ? `${hardMismatchReason} ${String(result?.reason || "").trim()}`.trim().slice(0, 500)
           : String(result?.reason || "The model did not return a usable score for this role.").slice(0, 500),
-        matchBasis: details?.jobText ? "job_description_and_resume" : "title_and_department_fallback",
-        descriptionAvailable: Boolean(details?.jobText)
+        matchBasis: details?.description ? "job_description_and_resume" : "title_and_department_fallback",
+        descriptionAvailable: Boolean(details?.description)
       });
     }
   }
 
-  return scored;
+  return {
+    roles: scored,
+    descriptionsFetched: detailsResult.fetchedCount,
+    descriptionsReused: detailsResult.cachedCount,
+    descriptionsUnavailable: detailsResult.unavailableCount
+  };
 }
 
-async function fetchAppleSubmittedRoleDetails(roles, profile) {
+async function fetchAppleSubmittedRoleDetails(roles) {
   const detailsByJobId = new Map();
   let detailTab = null;
   const appleRoles = roles.filter((role) =>
     /^https:\/\/jobs\.apple\.com\/[^/]+\/details\//i.test(String(role.url || "")) && role.jobId
   );
+  const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY);
+  const cache = stored[APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY] || {};
+  const now = Date.now();
+  let fetchedCount = 0;
+  let cachedCount = 0;
+  let unavailableCount = 0;
+  let pendingCacheWrites = 0;
 
-  if (!appleRoles.length) return detailsByJobId;
+  for (const role of appleRoles) {
+    const cached = cache[String(role.jobId)];
+    if (
+      cached?.version === 1 &&
+      cached.url === role.url &&
+      now - Number(cached.fetchedAt || 0) < APPLE_SUBMITTED_ROLE_DETAILS_CACHE_TTL_MS &&
+      cached.description &&
+      cached.minimumQualifications
+    ) {
+      detailsByJobId.set(String(role.jobId), cached);
+      cachedCount += 1;
+    }
+  }
+
+  const rolesToFetch = appleRoles.filter((role) => !detailsByJobId.has(String(role.jobId)));
+  if (!rolesToFetch.length) {
+    return { detailsByJobId, fetchedCount, cachedCount, unavailableCount };
+  }
+
+  async function persistCache() {
+    try {
+      await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY]: cache });
+    } catch (_error) {
+      // Matching can still finish if a browser storage quota or transient storage error blocks caching.
+    }
+  }
 
   try {
-    for (const role of appleRoles) {
+    for (const role of rolesToFetch) {
       try {
         if (!detailTab) {
           detailTab = await chrome.tabs.create({ url: role.url, active: false });
@@ -3124,34 +3166,68 @@ async function fetchAppleSubmittedRoleDetails(roles, profile) {
           await chrome.tabs.update(detailTab.id, { url: role.url, active: false });
         }
         await waitForTabComplete(detailTab.id);
-        // Apple renders its SPA content after the document load event; keep the tab hidden so this
-        // potentially long review does not repeatedly take focus away from the submitted roles list.
-        await delay(700);
-        const response = await sendMessageWithFallback(detailTab.id, {
-          type: "APPLE_CAREERS_EXTRACT_JOB",
-          userYearsOfExperience: profile.userYearsOfExperience,
-          noMatchKeywords: profile.noMatchKeywords,
-          resumeProfileText: resolveResumeProfileText(profile)
-        });
-        if (!response?.ok || !response.data?.jobText) continue;
-        detailsByJobId.set(String(role.jobId), {
-          jobText: response.data.jobText,
-          requiredExperience: (response.data.matches || [])
-            .filter((item) => item.type === "required")
-            .flatMap((item) => (item.years || []).map((years) => ({ years, type: item.type, sentence: item.sentence })))
-        });
+        const details = await waitForAppleSubmittedRoleDetails(detailTab.id, String(role.jobId));
+        if (!details) {
+          unavailableCount += 1;
+          continue;
+        }
+
+        const cachedDetails = {
+          version: 1,
+          url: role.url,
+          title: details.title,
+          description: String(details.description || "").slice(0, 7000),
+          minimumQualifications: String(details.minimumQualifications || "").slice(0, 3500),
+          preferredQualifications: String(details.preferredQualifications || "").slice(0, 2500),
+          requiredExperience: details.requiredExperience || [],
+          fetchedAt: Date.now()
+        };
+        cache[String(role.jobId)] = cachedDetails;
+        detailsByJobId.set(String(role.jobId), cachedDetails);
+        fetchedCount += 1;
+        pendingCacheWrites += 1;
+        if (pendingCacheWrites >= 10) {
+          await persistCache();
+          pendingCacheWrites = 0;
+        }
       } catch (_error) {
         // One stale or unavailable posting should not prevent ranking the remaining submissions.
+        unavailableCount += 1;
       }
     }
   } finally {
+    if (pendingCacheWrites > 0) await persistCache();
     if (detailTab?.id) {
       await chrome.tabs.remove(detailTab.id).catch(() => {});
       ownedWorkflowTabIds.delete(detailTab.id);
     }
   }
 
-  return detailsByJobId;
+  return { detailsByJobId, fetchedCount, cachedCount, unavailableCount };
+}
+
+async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await sendMessageWithFallback(tabId, {
+        type: "APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS"
+      });
+      if (
+        response?.ok &&
+        response.data?.ready &&
+        String(response.data.jobId) === expectedJobId &&
+        response.data.description &&
+        response.data.minimumQualifications
+      ) {
+        return response.data;
+      }
+    } catch (_error) {
+      // The content script may not be ready on the first poll after Apple finishes navigation.
+    }
+    await delay(300);
+  }
+  return null;
 }
 
 const RECOGNIZED_MESSAGE_TYPES = new Set([

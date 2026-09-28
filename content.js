@@ -1126,6 +1126,39 @@ function extractJobDetails(options = {}) {
   };
 }
 
+function extractAppleSubmittedRoleDetails() {
+  const descriptionElement = document.querySelector("#jobdetails-jobdescription");
+  const minimumElement = document.querySelector("#jobdetails-minimumqualifications");
+  const preferredElement = document.querySelector("#jobdetails-preferredqualifications");
+  const description = normalizeText(descriptionElement?.innerText || "");
+  const minimumQualifications = normalizeText(minimumElement?.innerText || "");
+  const preferredQualifications = normalizeText(preferredElement?.innerText || "");
+  const title = getJobTitle();
+  const jobId = getJobId();
+  const jobText = [description, minimumQualifications, preferredQualifications].filter(Boolean).join("\n\n");
+  const ready = Boolean(
+    jobId &&
+    title &&
+    description.length > 80 &&
+    minimumQualifications.length > 25 &&
+    (!preferredElement || preferredQualifications.length > 25)
+  );
+
+  return {
+    jobId,
+    title,
+    url: window.location.href,
+    description,
+    minimumQualifications,
+    preferredQualifications,
+    jobText: jobText.slice(0, 12000),
+    requiredExperience: extractExperienceMatches(jobText)
+      .filter((match) => match.type === "required")
+      .flatMap((match) => (match.years || []).map((years) => ({ years, type: match.type, sentence: match.sentence }))),
+    ready
+  };
+}
+
 function collectJobLinks() {
   const linksByUrl = new Map();
   const siteConfig = getSiteConfig();
@@ -4616,6 +4649,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       })
     });
 
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS") {
+    sendResponse({ ok: true, data: extractAppleSubmittedRoleDetails() });
     return true;
   }
 
