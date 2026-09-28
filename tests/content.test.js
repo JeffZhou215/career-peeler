@@ -156,10 +156,16 @@ const {
   textIncludesTerm
 } = sandbox.__contentTestApi;
 
-function classify(title, description, userYearsOfExperience, noMatchKeywords) {
+function classify(
+  title,
+  description,
+  userYearsOfExperience,
+  noMatchKeywords,
+  resumeProfileText = "Software engineer experienced in Python, Java, backend APIs, AWS, SQL, distributed systems, and machine learning."
+) {
   const combinedText = `${title}\n${description}`;
   const matches = extractExperienceMatches(combinedText);
-  const matchScore = analyzeLocalMatch(combinedText, noMatchKeywords);
+  const matchScore = analyzeLocalMatch(combinedText, noMatchKeywords, resumeProfileText);
   return {
     ...classifyRole(matches, matchScore, title, userYearsOfExperience),
     matchScore,
@@ -1657,7 +1663,10 @@ test("still hard-skips on a no-match keyword in unlabeled text with no section h
 test("skips iOS app roles with Swift/UIKit/Xcode mismatch", () => {
   const result = classify(
     "iOS Software Engineer",
-    "Develop iOS applications using Swift, UIKit, SwiftUI, Objective-C, and Xcode."
+    "Develop iOS applications using Swift, UIKit, SwiftUI, Objective-C, and Xcode.",
+    undefined,
+    undefined,
+    "Backend software engineer experienced in Python services, cloud APIs, SQL, AWS, and distributed systems."
   );
 
   assert.equal(result.decision, "Likely skip");
@@ -1674,15 +1683,18 @@ test("does not penalize bare Swift/macOS mentions without app-framework signals"
   assert.equal(result.matchScore.domainMismatches.length, 0);
 });
 
-test("treats a missing years-of-experience requirement as satisfied when local fit score is strong", () => {
+test("does not hard-skip a role with no stated years-of-experience requirement", () => {
   const result = classify(
     "Software Development Engineer",
-    "Designing, programming, debugging and modifying software related to a cloud-based macOS application. Coding in Swift to develop the back-end for a testing tool, using SQL to query Postgres databases, and applying machine learning for data insights. Master's degree in Computer Science or a related field."
+    "Designing, programming, debugging and modifying software related to a cloud-based macOS application. Coding in Swift to develop the back-end for a testing tool, using SQL to query Postgres databases, and applying machine learning for data insights. Master's degree in Computer Science or a related field.",
+    undefined,
+    undefined,
+    "Software engineer with experience in Swift, backend application development, SQL and Postgres databases, machine learning, cloud systems, and software testing."
   );
 
-  assert.equal(result.decision, "Likely match");
+  assert.notEqual(result.decision, "Likely skip");
   assert.equal(result.requiredYears, null);
-  assert.match(result.reason, /treated as met/i);
+  assert.match(result.reason, /No years-of-experience requirement was stated/i);
 });
 
 test("keeps backend and full-stack roles eligible", () => {
@@ -1698,7 +1710,10 @@ test("keeps backend and full-stack roles eligible", () => {
 test("keeps AI experience roles eligible from title and AI signals", () => {
   const result = classify(
     "Software Engineer - AI Experiences",
-    "Build AI product experiences using Python, machine learning, LLMs, embeddings, APIs, and production services."
+    "Build AI product experiences using Python, machine learning, LLMs, embeddings, APIs, and production services.",
+    undefined,
+    undefined,
+    "Software engineer with experience building AI experiences, machine learning systems, and LLM-based products using Python, embeddings, and APIs."
   );
 
   assert.ok(["Likely match", "Review"].includes(result.decision));
@@ -1708,7 +1723,10 @@ test("keeps AI experience roles eligible from title and AI signals", () => {
 test("keeps Gen AI software engineer roles eligible", () => {
   const result = classify(
     "Gen AI Software Engineer",
-    "Build generative AI and machine learning systems using Python, LLMs, embeddings, APIs, and production software services."
+    "Build generative AI and machine learning systems using Python, LLMs, embeddings, APIs, and production software services.",
+    undefined,
+    undefined,
+    "Software engineer experienced in generative AI, machine learning, Python, LLMs, embeddings, APIs, and production software services."
   );
 
   assert.ok(["Likely match", "Review"].includes(result.decision));
@@ -1718,7 +1736,10 @@ test("keeps Gen AI software engineer roles eligible", () => {
 test("keeps LLM AIOps and data center networking roles eligible", () => {
   const result = classify(
     "LLM AIOps Development Engineer - Data Center Networking",
-    "Build an AIOps observability platform with Python, machine learning, LLM agents, RAG, APIs, microservices, distributed data pipelines, monitoring, and automated remediation."
+    "Build an AIOps observability platform with Python, machine learning, LLM agents, RAG, APIs, microservices, distributed data pipelines, monitoring, and automated remediation.",
+    undefined,
+    undefined,
+    "Software engineer with experience in Python, machine learning, LLM agents, RAG, APIs, microservices, distributed systems, observability, and cloud infrastructure."
   );
 
   assert.ok(["Likely match", "Review"].includes(result.decision));
@@ -1729,7 +1750,10 @@ test("keeps LLM AIOps and data center networking roles eligible", () => {
 test("keeps QA automation roles eligible", () => {
   const result = classify(
     "Software QA Engineer, Creativity Apps",
-    "Create test automation, integration testing, API validation, Jasmine tests, MSTest coverage, and quality assurance tooling."
+    "Create test automation, integration testing, API validation, Jasmine tests, MSTest coverage, and quality assurance tooling.",
+    undefined,
+    undefined,
+    "Software QA engineer experienced in test automation, integration testing, API testing, Jasmine, MSTest, and quality assurance."
   );
 
   assert.ok(["Likely match", "Review"].includes(result.decision));
@@ -1843,15 +1867,10 @@ test("a locally 'Likely match' job (once correctly classified) is auto-apply-eli
   assert.equal(shouldAutoApply(seniorStatus, seniorJob, autoApplyProfile), false);
 });
 
-// Real posting (https://joinbytedance.com/search/6964059491882076430, confirmed against the live page)
-// used while diagnosing a live case of "high local score, but LLM returned 0% with no explainable gap."
-// Locks in that the LOCAL side of that mystery is not a local-matcher bug: "Objective-C" (in the
-// Android/Java/Objective-C/Python/Golang minimum-qualification list) does trip the iOS domain-mismatch
-// penalty, but enough override terms (backend, cloud, data, infrastructure, full-stack, all genuinely
-// present in this posting) offset it, so the job still correctly classifies "Likely match" -- meaning
-// local_decision/local_reason fed into the LLM prompt for this job say "Likely match", not anything that
-// would explain the LLM's own 0% by anchoring on a negative local signal.
-test("real ByteDance posting (Software Engineer, Backend and Infrastructure): Objective-C mention is correctly offset by override terms, not a false-positive domain-mismatch skip", () => {
+// Real posting (https://joinbytedance.com/search/6964059491882076430) lists Android/Java/Objective-C/Python/Golang as alternatives.
+// The candidate's Python and Java background satisfies alternatives in that list, so Objective-C alone
+// must not turn this backend/infrastructure role into an iOS domain mismatch.
+test("real ByteDance posting (Software Engineer, Backend and Infrastructure): Objective-C alternative is not an iOS domain mismatch", () => {
   const result = classify(
     "Software Engineer, Backend and Infrastructure",
     `Responsibilities

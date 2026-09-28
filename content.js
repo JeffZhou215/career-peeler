@@ -665,7 +665,34 @@ function scoreDomainMismatches(text, resumeProfileText, rules) {
       matchedTerms: rule.roleTerms.filter((term) => textIncludesTerm(text, term)),
       candidateEvidence: rule.resumeTerms.filter((term) => textIncludesTerm(resumeProfileText, term))
     }))
-    .filter((rule) => rule.matchedTerms.length > 0 && rule.candidateEvidence.length === 0);
+    .filter(
+      (rule) =>
+        rule.matchedTerms.length > 0 &&
+        rule.candidateEvidence.length === 0 &&
+        !isObjectiveCOnlyAlternativeMismatch(text, resumeProfileText, rule)
+    );
+}
+
+function isObjectiveCOnlyAlternativeMismatch(text, resumeProfileText, rule) {
+  if (
+    rule.label !== "iOS app development" ||
+    !rule.matchedTerms.length ||
+    !rule.matchedTerms.every((term) => /^objective[ -]?c$/i.test(term))
+  ) {
+    return false;
+  }
+
+  const alternatives = /\b(?:android|java|objective[ -]?c|python|golang)(?:\s*[\/,]\s*(?:android|java|objective[ -]?c|python|golang)){2,}\b/gi;
+  for (const match of String(text || "").matchAll(alternatives)) {
+    const list = match[0];
+    if (
+      /\bobjective[ -]?c\b/i.test(list) &&
+      ["java", "python"].some((skill) => textIncludesTerm(resumeProfileText, skill) && textIncludesTerm(list, skill))
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function normalizeNoMatchKeywords(value) {
