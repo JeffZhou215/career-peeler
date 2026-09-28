@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
 
 const TARGET_ACTIVE_APPLICATIONS = 50;
@@ -26,6 +26,18 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const lowMatchRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal === false);
   const protectedRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal !== false);
 
+  useEffect(() => {
+    function handleSubmittedRoleProgress(message) {
+      if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS") return;
+      const progress = message.data || {};
+      setStatusMessage(
+        `Reviewing Apple submissions page ${progress.page}${progress.pageCount ? ` of ${progress.pageCount}` : ""} · ${progress.rolesAnalyzed || 0} roles matched so far.`
+      );
+    }
+    chrome.runtime.onMessage.addListener(handleSubmittedRoleProgress);
+    return () => chrome.runtime.onMessage.removeListener(handleSubmittedRoleProgress);
+  }, [setStatusMessage]);
+
   async function analyzeRoles() {
     setBusy(true);
     setError("");
@@ -38,24 +50,16 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         throw new Error("Open Apple Careers → Profile → Your Roles, then choose Submissions and Active.");
       }
 
-      const history = await sendMessageWithFallback(tab.id, {
-        type: "APPLE_CAREERS_COLLECT_SUBMITTED_HISTORY"
-      });
-      if (!history?.ok) throw new Error(history?.error || "Could not read the submitted roles.");
-      setPagesRead(history.data?.pagesRead || 0);
-
-      setStatusMessage(`Checking Apple job postings and matching ${history.data.roles.length} roles with your saved profile...`);
+      setStatusMessage("Reviewing Apple submissions page by page and matching postings with your saved profile...");
       const response = await chrome.runtime.sendMessage({
-        type: "APPLE_CAREERS_SCORE_SUBMITTED_ROLES",
-        roles: history.data.roles,
+        type: "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
+        tabId: tab.id,
         userProfile: profile
       });
       if (!response?.ok) throw new Error(response?.error || "Could not score the submitted roles.");
 
-      const scoreById = new Map((response.data?.roles || []).map((match) => [match.jobId, match]));
-      const scoredRoles = history.data.roles
-        .map((role) => ({ ...role, ...(scoreById.get(role.jobId) || {}) }))
-        .filter((role) => role.active !== false);
+      setPagesRead(response.data?.pagesRead || 0);
+      const scoredRoles = (response.data?.roles || []).filter((role) => role.active !== false);
       const rankedLowMatches = scoredRoles
         .filter((role) => role.protectedFromBatchWithdrawal === false)
         .sort((left, right) => (left.score ?? 101) - (right.score ?? 101));
@@ -71,7 +75,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           .map((role) => role.jobId)
       );
       setStatusMessage(
-        `Analyzed ${ranked.length} roles: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.${response.data.cacheSaveFailed ? " Some details could not be saved to extension storage." : ""}`
+        `Analyzed ${ranked.length} roles across ${response.data.pagesRead || 0} pages: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.${response.data.truncated ? " Capped at 250 roles." : ""}${response.data.cacheSaveFailed ? " Some details could not be saved to extension storage." : ""}`
       );
     } catch (analyzeError) {
       setError(analyzeError?.message || "Could not analyze Apple submitted roles.");
@@ -164,7 +168,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       </div>
 
       <p className="muted">
-        Reads active Apple postings and saves their descriptions and qualifications in extension storage for later analyses. Cached details are reused for 180 days. If a posting cannot be read, its title-only score is marked low confidence and it will not be preselected for withdrawal.
+        Reviews Apple submissions page by page, reading active postings and saving their descriptions and qualifications in extension storage. Cached details are reused for 180 days. If Apple signs you out mid-review, sign back in and analyze again; saved posting details are reused. Unavailable postings are marked low confidence and not preselected for withdrawal.
       </p>
       <p className="muted">
         Apple says some roles are exempt from its 50-role cap. The count and suggested batch here target exactly 50 entries in the visible Active submissions list; they may differ from Apple’s cap-eligible count.

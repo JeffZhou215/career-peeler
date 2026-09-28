@@ -3116,6 +3116,94 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
   };
 }
 
+async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
+  const profile = normalizeUserProfile(userProfile || {});
+  const sendPageRequest = async (type, payload = {}) => {
+    const response = await sendMessageWithFallback(tabId, { type, ...payload });
+    if (!response?.ok) throw new Error(response?.error || "Apple's submitted roles page could not be read.");
+    return response.data;
+  };
+
+  const startingPage = await sendPageRequest("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+  const originalPageIndex = startingPage.pageIndex || 1;
+  let page = await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: 1 });
+  const roleById = new Map();
+  const scoreById = new Map();
+  let pagesRead = 0;
+  let descriptionsFetched = 0;
+  let descriptionsReused = 0;
+  let descriptionsUnavailable = 0;
+  let cacheSaveFailed = false;
+  let truncated = false;
+  const maxRoles = 250;
+
+  try {
+    while (page && pagesRead < 100) {
+      const newRoles = page.roles.filter((role) => !roleById.has(String(role.jobId)));
+      const remaining = maxRoles - roleById.size;
+      const rolesToAnalyze = newRoles.slice(0, remaining);
+      if (newRoles.length > rolesToAnalyze.length) truncated = true;
+
+      for (const role of rolesToAnalyze) roleById.set(String(role.jobId), role);
+      if (rolesToAnalyze.length) {
+        const result = await scoreAppleSubmittedRoles(rolesToAnalyze, profile);
+        for (const match of result.roles) scoreById.set(match.jobId, match);
+        descriptionsFetched += result.descriptionsFetched;
+        descriptionsReused += result.descriptionsReused;
+        descriptionsUnavailable += result.descriptionsUnavailable;
+        cacheSaveFailed = cacheSaveFailed || result.cacheSaveFailed;
+      }
+      pagesRead += 1;
+
+      chrome.runtime.sendMessage({
+        type: "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS",
+        data: {
+          page: pagesRead,
+          pageCount: page.pageCount,
+          rolesAnalyzed: roleById.size,
+          descriptionsFetched,
+          descriptionsReused
+        }
+      }).catch(() => {});
+
+      if (!page.hasNextPage || roleById.size >= maxRoles) {
+        if (page.hasNextPage && roleById.size >= maxRoles) truncated = true;
+        break;
+      }
+
+      const advanceResult = await sendPageRequest("APPLE_CAREERS_ADVANCE_SUBMITTED_HISTORY_PAGE");
+      if (!advanceResult.advanced) break;
+      page = advanceResult.page;
+    }
+    if (pagesRead >= 100 && page?.hasNextPage) truncated = true;
+  } finally {
+    const currentPageIndex = await getAppleHistoryPageIndexForTab(tabId);
+    if (currentPageIndex !== null && originalPageIndex !== currentPageIndex) {
+      await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: originalPageIndex }).catch(() => {});
+    }
+  }
+
+  return {
+    roles: Array.from(roleById.values()).map((role) => ({ ...role, ...(scoreById.get(String(role.jobId)) || {}) })),
+    pagesRead,
+    pageCount: startingPage.pageCount,
+    descriptionsFetched,
+    descriptionsReused,
+    descriptionsUnavailable,
+    cacheSaveFailed,
+    truncated
+  };
+}
+
+async function getAppleHistoryPageIndexForTab(tabId) {
+  try {
+    const response = await sendMessageWithFallback(tabId, { type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE" });
+    return response?.ok ? response.data?.pageIndex : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 async function fetchAppleSubmittedRoleDetails(roles) {
   const detailsByJobId = new Map();
   let detailTab = null;
@@ -3244,6 +3332,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_CLEAR_HISTORY",
   "APPLE_CAREERS_GET_SCAN_STATUS",
   "APPLE_CAREERS_SCORE_SUBMITTED_ROLES",
+  "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
   "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
   "APPLE_CAREERS_GENERATE_ANSWER",
   "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
@@ -3282,6 +3371,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           ok: true,
           data: await scoreAppleSubmittedRoles(message.roles, message.userProfile)
+        });
+      } else if (message.type === "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES") {
+        sendResponse({
+          ok: true,
+          data: await analyzeAppleSubmittedRolesPageByPage(message.tabId, message.userProfile)
         });
       } else if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
         sendResponse(await runApplicationWorkflow(message.tab, { userProfile: message.userProfile }));
