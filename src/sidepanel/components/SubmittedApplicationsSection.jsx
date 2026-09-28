@@ -66,11 +66,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setRoles(ranked);
       setSelectedIds(
         rankedLowMatches
-          .filter((role) => Number.isFinite(role.score))
+          .filter((role) => Number.isFinite(role.score) && role.descriptionAvailable)
           .slice(0, neededCount(ranked.length))
           .map((role) => role.jobId)
       );
-      setStatusMessage(`Analyzed ${ranked.length} active submitted roles. Lowest preliminary matches are listed first.`);
+      const descriptionCount = scoredRoles.filter((role) => role.descriptionAvailable).length;
+      setStatusMessage(`Analyzed ${ranked.length} active submitted roles against ${descriptionCount} job descriptions. Lowest matches are listed first.`);
     } catch (analyzeError) {
       setError(analyzeError?.message || "Could not analyze Apple submitted roles.");
       setStatusMessage("Could not analyze Apple submitted roles.");
@@ -108,6 +109,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         </label>
         <a href={role.url} target="_blank" rel="noopener noreferrer" className="submitted-role-title">{role.title}</a>
         <span className="submitted-role-id">Job ID {role.jobId}</span>
+        <span className="submitted-role-protected-label">
+          {role.descriptionAvailable ? "Scored against job description" : "Low confidence · posting unavailable"}
+        </span>
         {favoriteStatusLabel && <span className="submitted-role-protected-label">{favoriteStatusLabel}</span>}
         <p>{role.reason || "No explanation was returned."}</p>
         {role.submittedDate && <span className="muted">Submitted {role.submittedDate}</span>}
@@ -162,7 +166,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       </div>
 
       <p className="muted">
-        Reads the Active submissions pages and uses your saved resume profile with OpenAI. Scores use role title and department only; Apple’s full job descriptions are not fetched in this first pass.
+        Reads each active Apple posting and compares its responsibilities and qualifications with your saved resume profile using OpenAI. If a posting cannot be read, its title-only score is marked low confidence and it will not be preselected for withdrawal.
       </p>
       <p className="muted">
         Apple says some roles are exempt from its 50-role cap. The count and suggested batch here target exactly 50 entries in the visible Active submissions list; they may differ from Apple’s cap-eligible count.
@@ -192,7 +196,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           </label>
           <p className="muted">
             {selectedIds.length} eligible role{selectedIds.length === 1 ? " is" : "s are"} preselected; {neededToReachTarget} withdrawal{neededToReachTarget === 1 ? " is" : "s are"} needed to reach {TARGET_ACTIVE_APPLICATIONS}.
-            {selectedIds.length < neededToReachTarget && " There are not enough scorable, unstarred roles to fill that batch."}
+            {selectedIds.length < neededToReachTarget && " There are not enough description-scored, unstarred roles to fill that batch."}
           </p>
 
           {confirmationOpen ? (
