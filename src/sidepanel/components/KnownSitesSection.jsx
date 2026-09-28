@@ -20,7 +20,8 @@ import {
   requiresValidatedApiKeyForScan,
   getMissingRequiredApplicationAnswers,
   hasRequiredApplicationAnswers,
-  fingerprintText
+  fingerprintText,
+  resolveResumeProfileText
 } from "../lib/profile";
 
 export function KnownSitesSection({ profile, save, status, refreshScanStatus, setStatusMessage }) {
@@ -128,7 +129,8 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
       const response = await sendMessageWithFallback(tab.id, {
         type: "APPLE_CAREERS_EXTRACT_JOB",
         userYearsOfExperience: profile.userYearsOfExperience,
-        noMatchKeywords: profile.noMatchKeywords
+        noMatchKeywords: profile.noMatchKeywords,
+        resumeProfileText: resolveResumeProfileText(profile)
       });
 
       if (!response?.ok) {

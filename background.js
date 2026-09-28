@@ -882,7 +882,8 @@ async function scanJobLink(link) {
     const response = await sendMessageWithFallback(detailTab.id, {
       type: "APPLE_CAREERS_EXTRACT_JOB",
       userYearsOfExperience: scanState.userProfile?.userYearsOfExperience,
-      noMatchKeywords: scanState.userProfile?.noMatchKeywords
+      noMatchKeywords: scanState.userProfile?.noMatchKeywords,
+      resumeProfileText: resolveResumeProfileText(scanState.userProfile)
     });
 
     if (!response?.ok) {
@@ -1163,7 +1164,8 @@ async function scanCurrentApplicationPage(link) {
     const response = await sendMessageWithFallback(scanState.listTabId, {
       type: "APPLE_CAREERS_EXTRACT_JOB",
       userYearsOfExperience: scanState.userProfile?.userYearsOfExperience,
-      noMatchKeywords: scanState.userProfile?.noMatchKeywords
+      noMatchKeywords: scanState.userProfile?.noMatchKeywords,
+      resumeProfileText: resolveResumeProfileText(scanState.userProfile)
     }).catch(() => null);
 
     if (response?.ok) {

@@ -32,6 +32,31 @@ const RESUME_KEYWORDS = [
   { label: "Embeddings", terms: ["embedding", "embeddings", "similarity search", "cosine similarity"], weight: 4 },
   { label: "Machine Learning", terms: ["machine learning", "ml", "ai/ml", "artificial intelligence", "ai"], weight: 4 },
   {
+    label: "Hardware/Chip Verification",
+    terms: [
+      "cpu architecture",
+      "microarchitecture",
+      "processor verification",
+      "cpu validation",
+      "rtl",
+      "verilog",
+      "systemverilog",
+      "silicon validation",
+      "silicon bring-up",
+      "silicon bring up",
+      "soc validation",
+      "asic",
+      "fpga",
+      "chip design"
+    ],
+    weight: 6
+  },
+  {
+    label: "GPU/Graphics Engineering",
+    terms: ["gpu architecture", "gpu validation", "graphics validation", "shader", "cuda", "opengl", "open gl"],
+    weight: 6
+  },
+  {
     label: "AI Product Experiences",
     terms: ["ai experiences", "ai experience", "gen ai", "generative ai", "ai products", "ai features", "intelligent experiences"],
     weight: 5
@@ -45,12 +70,12 @@ const RESUME_KEYWORDS = [
   { label: "Microservices", terms: ["microservice", "microservices", "distributed systems"], weight: 5 },
   {
     label: "Backend/API Engineering",
-    terms: ["backend", "back-end", "api", "apis", "rest", "service", "services", "server-side", "server side"],
+    terms: ["backend", "back-end", "server-side", "server side", "backend engineering", "backend development"],
     weight: 5
   },
   {
     label: "Full Stack Engineering",
-    terms: ["full stack", "full-stack", "frontend", "front-end", "web application", "web app", "ui"],
+    terms: ["full stack", "full-stack", "frontend", "front-end", "web application", "web app"],
     weight: 4
   },
   {
@@ -89,23 +114,94 @@ const RESUME_KEYWORDS = [
 const DOMAIN_MISMATCH_RULES = [
   {
     label: "iOS app development",
-    terms: ["ios", "objective-c", "objective c", "uikit", "swiftui", "xcode", "cocoa touch"],
+    roleTerms: ["ios", "objective-c", "objective c", "uikit", "swiftui", "xcode", "cocoa touch"],
+    resumeTerms: ["ios", "objective-c", "objective c", "uikit", "swiftui", "xcode", "cocoa touch"],
     penalty: 16
   },
   {
     label: "macOS app development",
-    terms: ["appkit", "cocoa", "core data"],
+    roleTerms: ["appkit", "cocoa", "core data"],
+    resumeTerms: ["appkit", "cocoa", "core data"],
     penalty: 10
   },
   {
     label: "mobile app UI",
-    terms: ["mobile app", "mobile applications", "client app", "native app"],
+    roleTerms: ["mobile app", "mobile applications", "client app", "native app"],
+    resumeTerms: ["mobile app", "mobile applications", "client app", "native app"],
     penalty: 8
   },
   {
     label: "embedded/driver development",
-    terms: ["firmware", "kernel", "device driver", "drivers", "embedded"],
+    roleTerms: ["firmware", "kernel", "device driver", "drivers", "embedded"],
+    resumeTerms: ["firmware", "kernel", "device driver", "drivers", "embedded"],
     penalty: 8
+  },
+  {
+    label: "silicon, processor, or GPU engineering",
+    roleTerms: [
+      "silicon",
+      "cpu architecture",
+      "cpu validation",
+      "cpu performance",
+      "processor verification",
+      "microarchitecture",
+      "gpu",
+      "gpu architecture",
+      "gpu validation",
+      "graphics validation",
+      "shader",
+      "cuda",
+      "soc",
+      "asic",
+      "rtl",
+      "verilog",
+      "fpga",
+      "semiconductor",
+      "chip design",
+      "mixed-signal",
+      "memory validation",
+      "design verification"
+    ],
+    resumeTerms: [
+      "silicon",
+      "cpu architecture",
+      "cpu validation",
+      "cpu performance",
+      "processor verification",
+      "microarchitecture",
+      "gpu",
+      "gpu architecture",
+      "gpu validation",
+      "graphics validation",
+      "shader",
+      "cuda",
+      "soc",
+      "asic",
+      "rtl",
+      "verilog",
+      "fpga",
+      "semiconductor",
+      "chip design",
+      "mixed-signal",
+      "memory validation",
+      "design verification"
+    ],
+    penalty: 24
+  },
+  {
+    label: "retail or sales work",
+    roleTerms: [
+      "us expert",
+      "united states expert",
+      "apple store expert",
+      "retail expert",
+      "retail sales",
+      "sales expert",
+      "store sales",
+      "retail specialist"
+    ],
+    resumeTerms: ["retail", "sales", "store associate", "retail specialist", "customer-facing"],
+    penalty: 24
   }
 ];
 
@@ -113,31 +209,6 @@ const SENIORITY_RULES = [
   { label: "senior title", terms: ["senior software engineer", "sr. software engineer", "senior engineer"], penalty: 6 },
   { label: "staff/principal title", terms: ["staff engineer", "principal engineer", "lead engineer"], penalty: 10 },
   { label: "high ownership requirement", terms: ["technical lead", "leadership", "mentor junior", "architect"], penalty: 4 }
-];
-
-const MISMATCH_OVERRIDES = [
-  "machine learning",
-  "ml",
-  "ai",
-  "computer vision",
-  "infrastructure",
-  "distributed systems",
-  "backend",
-  "cloud",
-  "data",
-  "platform",
-  "full stack",
-  "full-stack",
-  "api",
-  "service",
-  "microservices",
-  "queue",
-  "event-driven",
-  "scalability",
-  "reliability",
-  "qa",
-  "quality assurance",
-  "test automation"
 ];
 
 const SITE_CONFIGS = {
@@ -533,18 +604,49 @@ function textIncludesTerm(text, term) {
   return normalizedText.includes(normalizedTerm);
 }
 
-function analyzeResumeMatch(text) {
-  const matched = RESUME_KEYWORDS.filter((keyword) =>
-    keyword.terms.some((term) => textIncludesTerm(text, term))
+function analyzeResumeMatch(text, resumeProfileText = "") {
+  const matched = RESUME_KEYWORDS.map((keyword) => {
+    const candidateTerms = keyword.terms.filter((term) => textIncludesTerm(resumeProfileText, term));
+    const matchedTerms = candidateTerms.filter((term) => textIncludesTerm(text, term));
+    return { ...keyword, candidateTerms, matchedTerms };
+  }).filter((keyword) => keyword.matchedTerms.length > 0);
+  const categorizedScore = matched.reduce((total, keyword) => total + keyword.weight, 0);
+  const categorizedTerms = matched.flatMap((keyword) => keyword.matchedTerms);
+  const additionalSkillTerms = extractResumeSkillTerms(resumeProfileText).filter(
+    (term) =>
+      textIncludesTerm(text, term) &&
+      !categorizedTerms.some((knownTerm) => knownTerm.toLowerCase() === term.toLowerCase())
   );
-  const score = matched.reduce((total, keyword) => total + keyword.weight, 0);
+  const score = categorizedScore + Math.min(12, additionalSkillTerms.length * 2);
   const percentage = Math.min(100, Math.round((score / 30) * 100));
 
   return {
     score,
     percentage,
-    keywords: matched.map((keyword) => keyword.label)
+    keywords: [
+      ...matched.map((keyword) => keyword.label),
+      ...(additionalSkillTerms.length ? ["Other candidate skills"] : [])
+    ],
+    matchedTerms: [...categorizedTerms, ...additionalSkillTerms],
+    hasCandidateProfile: Boolean(String(resumeProfileText || "").trim())
   };
+}
+
+function extractResumeSkillTerms(resumeProfileText) {
+  const skillLabels =
+    /^(?:domain expertise|programming languages|frameworks|ml\/ai|backend|frontend|cloud|databases|infrastructure|distributed systems|data engineering|protocols\/apis|tools|other|technologies|technical skills|skills)\s*:\s*(.+)$/i;
+  const terms = new Set();
+
+  for (const line of String(resumeProfileText || "").split(/\r?\n/)) {
+    const match = line.trim().match(skillLabels);
+    if (!match) continue;
+    for (const term of match[1].split(/[,;|]/)) {
+      const normalized = term.trim();
+      if (normalized.length >= 2) terms.add(normalized);
+    }
+  }
+
+  return Array.from(terms);
 }
 
 function scoreRules(text, rules) {
@@ -554,6 +656,16 @@ function scoreRules(text, rules) {
       matchedTerms: rule.terms.filter((term) => textIncludesTerm(text, term))
     }))
     .filter((rule) => rule.matchedTerms.length > 0);
+}
+
+function scoreDomainMismatches(text, resumeProfileText, rules) {
+  return rules
+    .map((rule) => ({
+      ...rule,
+      matchedTerms: rule.roleTerms.filter((term) => textIncludesTerm(text, term)),
+      candidateEvidence: rule.resumeTerms.filter((term) => textIncludesTerm(resumeProfileText, term))
+    }))
+    .filter((rule) => rule.matchedTerms.length > 0 && rule.candidateEvidence.length === 0);
 }
 
 function normalizeNoMatchKeywords(value) {
@@ -572,11 +684,10 @@ function excludePreferredSectionText(text) {
     .join("\n");
 }
 
-function analyzeLocalMatch(text, noMatchKeywords = []) {
-  const resumeMatch = analyzeResumeMatch(text);
-  const domainMismatches = scoreRules(text, DOMAIN_MISMATCH_RULES);
+function analyzeLocalMatch(text, noMatchKeywords = [], resumeProfileText = "") {
+  const resumeMatch = analyzeResumeMatch(text, resumeProfileText);
+  const domainMismatches = scoreDomainMismatches(text, resumeProfileText, DOMAIN_MISMATCH_RULES);
   const senioritySignals = scoreRules(text, SENIORITY_RULES);
-  const overrideTerms = MISMATCH_OVERRIDES.filter((term) => textIncludesTerm(text, term));
   // A no-match keyword mentioned only under "Preferred Qualifications" is a nice-to-have, not a
   // reason to hard-skip -- only count it if it also appears somewhere outside that section
   // (Minimum Qualifications, Responsibilities, or unstructured postings with no section headers).
@@ -584,26 +695,24 @@ function analyzeLocalMatch(text, noMatchKeywords = []) {
   const noMatchKeywordHits = noMatchKeywords.filter((term) => term && textIncludesTerm(noMatchScanText, term));
   const mismatchPenalty = domainMismatches.reduce((total, rule) => total + rule.penalty, 0);
   const seniorityPenalty = senioritySignals.reduce((total, rule) => total + rule.penalty, 0);
-  const overrideCredit = overrideTerms.length ? Math.min(8, overrideTerms.length * 2) : 0;
-  const score = resumeMatch.score - mismatchPenalty - seniorityPenalty + overrideCredit;
+  const score = resumeMatch.score - mismatchPenalty - seniorityPenalty;
 
   return {
     score,
     percentage: Math.max(0, Math.min(100, Math.round((score / 30) * 100))),
     positiveScore: resumeMatch.score,
+    hasCandidateProfile: resumeMatch.hasCandidateProfile,
     mismatchPenalty,
     seniorityPenalty,
-    overrideCredit,
     keywords: resumeMatch.keywords,
+    matchedTerms: resumeMatch.matchedTerms,
     domainMismatches: domainMismatches.map((rule) => rule.label),
     senioritySignals: senioritySignals.map((rule) => rule.label),
-    overrideTerms,
     noMatchKeywordHits,
     reasons: [
-      ...resumeMatch.keywords.map((keyword) => `Matched resume skill: ${keyword}`),
-      ...domainMismatches.map((rule) => `Domain mismatch: ${rule.label}`),
+      ...resumeMatch.matchedTerms.map((term) => `Candidate profile and role overlap: ${term}`),
+      ...domainMismatches.map((rule) => `Domain gap: ${rule.label}; role signals: ${rule.matchedTerms.join(", ")}`),
       ...senioritySignals.map((rule) => `Seniority signal: ${rule.label}`),
-      ...overrideTerms.map((term) => `Relevant domain override: ${term}`),
       ...noMatchKeywordHits.map((term) => `No-match keyword: ${term}`)
     ]
   };
@@ -695,7 +804,15 @@ function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAUL
     };
   }
 
-  if (matchScore.mismatchPenalty >= 16 && matchScore.overrideCredit < 4) {
+  if (!matchScore.hasCandidateProfile) {
+    return {
+      decision: "Unknown",
+      requiredYears: maxRequiredYears,
+      reason: "No parsed resume profile was supplied for local matching."
+    };
+  }
+
+  if (matchScore.mismatchPenalty >= 16) {
     return {
       decision: "Likely skip",
       requiredYears: maxRequiredYears,
@@ -981,7 +1098,7 @@ function extractJobDetails(options = {}) {
   const text = getVisiblePageText();
   const matches = extractExperienceMatches(text);
   const noMatchKeywords = normalizeNoMatchKeywords(options.noMatchKeywords);
-  const matchScore = analyzeLocalMatch(text, noMatchKeywords);
+  const matchScore = analyzeLocalMatch(text, noMatchKeywords, options.resumeProfileText);
   const title = getJobTitle();
   const userYearsOfExperience = normalizeUserYearsOfExperience(options.userYearsOfExperience);
   const classification = classifyRole(matches, matchScore, title, userYearsOfExperience);
@@ -4455,7 +4572,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       ok: true,
       data: extractJobDetails({
         userYearsOfExperience: message.userYearsOfExperience,
-        noMatchKeywords: message.noMatchKeywords
+        noMatchKeywords: message.noMatchKeywords,
+        resumeProfileText: message.resumeProfileText
       })
     });
 

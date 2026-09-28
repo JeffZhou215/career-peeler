@@ -243,7 +243,8 @@ async function scanJobLink(context, store, link) {
     const extracted = await browser
       .extractJobDetailsOnPage(detailPage, {
         userYearsOfExperience: store.scanState.userProfile?.userYearsOfExperience,
-        noMatchKeywords: store.scanState.userProfile?.noMatchKeywords
+        noMatchKeywords: store.scanState.userProfile?.noMatchKeywords,
+        resumeProfileText: core.resolveResumeProfileText(store.scanState.userProfile)
       })
       .catch(() => {
         throw new Error("Could not extract the job detail page.");
@@ -409,7 +410,8 @@ async function scanCurrentApplicationPage(context, store, listPage, link) {
     const extracted = await browser
       .extractJobDetailsOnPage(listPage, {
         userYearsOfExperience: store.scanState.userProfile?.userYearsOfExperience,
-        noMatchKeywords: store.scanState.userProfile?.noMatchKeywords
+        noMatchKeywords: store.scanState.userProfile?.noMatchKeywords,
+        resumeProfileText: core.resolveResumeProfileText(store.scanState.userProfile)
       })
       .catch(() => null);
 

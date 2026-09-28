@@ -141,11 +141,11 @@ async function collectJobLinksOnPage(page) {
   });
 }
 
-async function extractJobDetailsOnPage(page, { userYearsOfExperience, noMatchKeywords } = {}) {
+async function extractJobDetailsOnPage(page, { userYearsOfExperience, noMatchKeywords, resumeProfileText } = {}) {
   return page.evaluate(
-    ({ userYearsOfExperience: yoe, noMatchKeywords: keywords }) =>
-      extractJobDetails({ userYearsOfExperience: yoe, noMatchKeywords: keywords }),
-    { userYearsOfExperience, noMatchKeywords }
+    ({ userYearsOfExperience: yoe, noMatchKeywords: keywords, resumeProfileText: candidateText }) =>
+      extractJobDetails({ userYearsOfExperience: yoe, noMatchKeywords: keywords, resumeProfileText: candidateText }),
+    { userYearsOfExperience, noMatchKeywords, resumeProfileText }
   );
 }
 
