@@ -270,8 +270,29 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         throw new Error("A selected role is no longer an unstarred active submission on this page. Load the current page from saved results again.");
       }
 
+      const withdrawalPageState = new Map();
       await withdrawSubmittedRolesSequentially(targets, {
-        withdrawOne: (role) => {
+        withdrawOne: async (role) => {
+          // Apple pulls a role from the next page after each withdrawal. Read the
+          // settled page again before every click instead of reusing its first snapshot.
+          const currentPage = await sendMessageWithFallback(tab.id, {
+            type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE"
+          });
+          if (!currentPage?.ok) throw new Error(currentPage?.error || "Apple's submissions page could not be read after the previous withdrawal.");
+          if (currentPage.data?.pageIndex !== reviewContext.pageIndex) {
+            throw new Error("Apple changed the visible submissions page during the batch.");
+          }
+          if (currentPage.data?.withdrawalConfirmationOpen) {
+            throw new Error("Apple's previous withdrawal confirmation is still open.");
+          }
+          const currentRole = currentPage.data.roles.find((item) => String(item.jobId) === String(role.jobId));
+          if (!currentRole?.active || currentRole.protectedFromBatchWithdrawal !== false) {
+            throw new Error("The next selected role is missing, starred, or no longer active on this page.");
+          }
+          withdrawalPageState.set(String(role.jobId), {
+            beforeCount: currentPage.data.roles.filter((item) => item.active).length,
+            hadNextPage: currentPage.data.hasNextPage
+          });
           return chrome.tabs.sendMessage(tab.id, {
             type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
             roles: [role],
@@ -279,10 +300,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           });
         },
         verifyRoleStatus: async (role) => {
+          const pageState = withdrawalPageState.get(String(role.jobId));
+          if (!pageState) throw new Error("The role was not clicked, so its withdrawal cannot be verified.");
           const response = await sendMessageWithFallback(tab.id, {
             type: "APPLE_CAREERS_CHECK_SUBMITTED_ROLE_STATUS",
             jobId: role.jobId,
-            expectedPageIndex: reviewContext.pageIndex
+            title: role.title,
+            expectedPageIndex: reviewContext.pageIndex,
+            ...pageState
           });
           if (!response?.ok) throw new Error(response?.error || "Apple's current role status could not be read.");
           return response.data;
