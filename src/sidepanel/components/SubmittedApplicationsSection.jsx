@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
+import { withdrawSubmittedRolesSequentially } from "../lib/submittedWithdrawals.mjs";
 
 const TARGET_ACTIVE_APPLICATIONS = 50;
 
@@ -21,6 +22,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [busy, setBusy] = useState(false);
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [withdrawProgress, setWithdrawProgress] = useState(null);
   const [error, setError] = useState("");
   const [pagesRead, setPagesRead] = useState(0);
   const [scanProgress, setScanProgress] = useState(null);
@@ -196,40 +198,68 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
 
   async function withdrawSelected() {
     if (!selectedRoles.length) return;
+    const targets = selectedRoles.map(({ jobId, title }) => ({ jobId, title }));
+    let confirmedCount = 0;
+    let actionStarted = false;
     setBusy(true);
     setError("");
-    setStatusMessage(`Withdrawing ${selectedRoles.length} selected Apple applications...`);
+    setStatusMessage(`Preparing to withdraw ${targets.length} selected Apple applications...`);
     try {
       const tab = await getActiveTab();
       if (!tab?.id) throw new Error("The Apple Careers tab is no longer available.");
-      const result = await sendMessageWithFallback(tab.id, {
-        type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
-        roles: selectedRoles.map(({ jobId, title }) => ({ jobId, title }))
+      const page = await sendMessageWithFallback(tab.id, {
+        type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE"
       });
-      if (!result?.ok) throw new Error(result?.error || "The withdrawal batch could not be completed.");
+      if (!page?.ok) throw new Error(page?.error || "Apple's active submissions page could not be read.");
+      if (page.data?.withdrawalConfirmationOpen) {
+        throw new Error("An Apple withdrawal confirmation is already open. Resolve it before starting another batch.");
+      }
+
+      await withdrawSubmittedRolesSequentially(targets, {
+        withdrawOne: (role) => {
+          actionStarted = true;
+          return chrome.tabs.sendMessage(tab.id, {
+            type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
+            roles: [role]
+          });
+        },
+        verifyRoleStatus: async (role) => {
+          const response = await sendMessageWithFallback(tab.id, {
+            type: "APPLE_CAREERS_CHECK_SUBMITTED_ROLE_STATUS",
+            jobId: role.jobId
+          });
+          if (!response?.ok) throw new Error(response?.error || "Apple's current role status could not be read.");
+          return response.data;
+        },
+        onRoleStart: (role, index, total) => {
+          setWithdrawProgress({ index: index + 1, total, title: role.title });
+          setStatusMessage(`Withdrawing ${index + 1} of ${total}: ${role.title}...`);
+        },
+        onRoleConfirmed: ({ role, verifiedAfterInterruption }, index, total) => {
+          confirmedCount += 1;
+          setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
+          setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
+          setStatusMessage(`${confirmedCount} of ${total} no longer active${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
+        }
+      });
       setConfirmationOpen(false);
-      const withdrawnCount = result.data?.withdrawn?.length || 0;
-      const failedRole = result.data?.failed?.[0];
-      const withdrawnIds = new Set((result.data?.withdrawn || []).map((role) => String(role.jobId)));
-      setRoles((current) => rankSubmittedRoles(current.filter((role) => !withdrawnIds.has(String(role.jobId)))));
       setSelectedIds([]);
-      if (failedRole) {
+      setStatusMessage(`${confirmedCount} selected applications are no longer active. Updated this list without rescanning; refresh roles to verify Apple's current list.`);
+    } catch (withdrawError) {
+      setConfirmationOpen(false);
+      if (actionStarted) {
         setAnalysisComplete(false);
         setScanProgress({
           failed: true,
           page: pagesRead,
           pageCount: scanProgress?.pageCount || 0,
-          rolesAnalyzed: roles.length - withdrawnIds.size
+          rolesAnalyzed: Math.max(0, roles.length - confirmedCount)
         });
-        setError(`Partial batch: withdrew ${withdrawnCount}. Stopped at ${failedRole.title || failedRole.jobId}: ${failedRole.error}`);
-        setStatusMessage(`Partial batch stopped after ${withdrawnCount} withdrawals. Resolve the issue, then refresh roles before retrying.`);
-        return;
       }
-      setStatusMessage(`Withdrew ${withdrawnCount} applications. Updated this list without rescanning; refresh roles when you want to verify Apple’s active list.`);
-    } catch (withdrawError) {
-      setError(withdrawError?.message || "The withdrawal batch stopped before completion.");
-      setStatusMessage("The withdrawal batch stopped; review the reported progress before retrying.");
+      setError(`Batch stopped after ${confirmedCount} of ${targets.length} were confirmed inactive. ${withdrawError?.message || "The next role could not be verified."}`);
+      setStatusMessage(`Batch stopped after ${confirmedCount} of ${targets.length}. ${actionStarted ? "Refresh roles before retrying." : "Resolve the Apple page issue before retrying."}`);
     } finally {
+      setWithdrawProgress(null);
       setBusy(false);
     }
   }
@@ -334,6 +364,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
                   <p>
                     Apple will show a confirmation for each role. The extension will click Proceed one at a time and stop if a confirmation or withdrawal cannot be verified.
                   </p>
+                  {withdrawProgress && (
+                    <p role="status">Withdrawing {withdrawProgress.index} of {withdrawProgress.total}: {withdrawProgress.title}</p>
+                  )}
                   <ul>
                     {selectedRoles.map((role) => (
                       <li key={role.jobId}>{role.title} · {role.jobId}</li>
