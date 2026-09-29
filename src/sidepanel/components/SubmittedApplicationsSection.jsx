@@ -19,6 +19,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [roles, setRoles] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [analysisRunning, setAnalysisRunning] = useState(false);
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [error, setError] = useState("");
   const [pagesRead, setPagesRead] = useState(0);
@@ -26,6 +27,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [analysisComplete, setAnalysisComplete] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const scanActiveRef = useRef(false);
+  const activeAnalysisIdRef = useRef(null);
 
   const selectedRoles = useMemo(
     () => roles.filter((role) => selectedIds.includes(role.jobId)),
@@ -40,18 +42,20 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   );
   const lowMatchRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal === false);
   const protectedRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal !== false);
+  const canWithdrawFromResults = analysisComplete || scanProgress?.stopped === true;
 
   useEffect(() => {
     function handleSubmittedRoleProgress(message) {
       if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS") return;
       if (!scanActiveRef.current) return;
       const progress = message.data || {};
+      const { roles: pageRoles, ...progressStatus } = progress;
       setPagesRead(progress.page || 0);
-      setScanProgress(progress);
-      if (Array.isArray(progress.roles) && progress.roles.length) {
+      setScanProgress((current) => ({ ...progressStatus, stopRequested: current?.stopRequested || false }));
+      if (Array.isArray(pageRoles) && pageRoles.length) {
         setRoles((current) => {
           const byId = new Map(current.map((role) => [String(role.jobId), role]));
-          for (const role of progress.roles) byId.set(String(role.jobId), role);
+          for (const role of pageRoles) byId.set(String(role.jobId), role);
           return rankSubmittedRoles(Array.from(byId.values()));
         });
       }
@@ -81,11 +85,15 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setScanProgress({ page: 0, pageCount: 0, rolesAnalyzed: 0 });
       setAnalysisComplete(false);
       scanActiveRef.current = true;
+      setAnalysisRunning(true);
+      const analysisId = crypto.randomUUID();
+      activeAnalysisIdRef.current = analysisId;
       setStatusMessage("Reviewing Apple submissions page by page and matching postings with your saved profile...");
       const response = await chrome.runtime.sendMessage({
         type: "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
         tabId: tab.id,
-        userProfile: profile
+        userProfile: profile,
+        analysisId
       });
       if (!response?.ok) throw new Error(response?.error || "Could not score the submitted roles.");
 
@@ -93,17 +101,29 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       const rankedLowMatches = ranked.filter((role) => role.protectedFromBatchWithdrawal === false);
       setPagesRead(response.data?.pagesRead || 0);
       setRoles(ranked);
-      setAnalysisComplete(true);
-      setScanProgress(null);
-      setSelectedIds(
-        rankedLowMatches
-          .filter((role) => Number.isFinite(role.score) && role.descriptionAvailable)
-          .slice(0, neededCount(ranked.length))
-          .map((role) => role.jobId)
-      );
-      setStatusMessage(
-        `Analyzed ${ranked.length} roles across ${response.data.pagesRead || 0} pages: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.${response.data.truncated ? " Capped at 250 roles." : ""}${response.data.cacheSaveFailed ? " Some details could not be saved to extension storage." : ""}`
-      );
+      if (response.data?.stopped) {
+        setAnalysisComplete(false);
+        setScanProgress({
+          stopped: true,
+          page: response.data.pagesRead || 0,
+          pageCount: response.data.pageCount || 0,
+          rolesAnalyzed: ranked.length
+        });
+        setSelectedIds([]);
+        setStatusMessage(`Stopped after page ${response.data.pagesRead || 0}. You can review and withdraw selected roles from these partial results.`);
+      } else {
+        setAnalysisComplete(true);
+        setScanProgress(null);
+        setSelectedIds(
+          rankedLowMatches
+            .filter((role) => Number.isFinite(role.score) && role.descriptionAvailable)
+            .slice(0, neededCount(ranked.length))
+            .map((role) => role.jobId)
+        );
+        setStatusMessage(
+          `Analyzed ${ranked.length} roles across ${response.data.pagesRead || 0} pages: fetched ${response.data.descriptionsFetched || 0} postings, reused ${response.data.descriptionsReused || 0} cached, unavailable ${response.data.descriptionsUnavailable || 0}.${response.data.truncated ? " Capped at 250 roles." : ""}${response.data.cacheSaveFailed ? " Some details could not be saved to extension storage." : ""}`
+        );
+      }
     } catch (analyzeError) {
       setError(analyzeError?.message || "Could not analyze Apple submitted roles.");
       if (scanActiveRef.current) {
@@ -112,7 +132,26 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setStatusMessage("Could not analyze Apple submitted roles.");
     } finally {
       scanActiveRef.current = false;
+      activeAnalysisIdRef.current = null;
+      setAnalysisRunning(false);
       setBusy(false);
+    }
+  }
+
+  async function stopAnalysis() {
+    const analysisId = activeAnalysisIdRef.current;
+    if (!analysisId) return;
+    setScanProgress((current) => ({ ...current, stopRequested: true }));
+    setStatusMessage("Stopping after the current submissions page finishes...");
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "APPLE_CAREERS_STOP_SUBMITTED_ROLES_ANALYSIS",
+        analysisId
+      });
+      if (!response?.ok) throw new Error(response?.error || "The scan could not be stopped.");
+    } catch (stopError) {
+      setScanProgress((current) => ({ ...current, stopRequested: false }));
+      setError(stopError?.message || "The scan could not be stopped.");
     }
   }
 
@@ -139,7 +178,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             type="checkbox"
             checked={selectedIds.includes(role.jobId)}
             onChange={() => toggleRole(role.jobId)}
-            disabled={busy || !analysisComplete || confirmationOpen || protectedFromBatch || !Number.isFinite(role.score)}
+            disabled={busy || !canWithdrawFromResults || confirmationOpen || protectedFromBatch || !Number.isFinite(role.score)}
           />
           <span>{role.score === null || role.score === undefined ? "No score" : `${role.score}% fit`}</span>
         </label>
@@ -171,13 +210,22 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setConfirmationOpen(false);
       const withdrawnCount = result.data?.withdrawn?.length || 0;
       const failedRole = result.data?.failed?.[0];
+      const withdrawnIds = new Set((result.data?.withdrawn || []).map((role) => String(role.jobId)));
+      setRoles((current) => rankSubmittedRoles(current.filter((role) => !withdrawnIds.has(String(role.jobId)))));
+      setSelectedIds([]);
       if (failedRole) {
+        setAnalysisComplete(false);
+        setScanProgress({
+          failed: true,
+          page: pagesRead,
+          pageCount: scanProgress?.pageCount || 0,
+          rolesAnalyzed: roles.length - withdrawnIds.size
+        });
         setError(`Partial batch: withdrew ${withdrawnCount}. Stopped at ${failedRole.title || failedRole.jobId}: ${failedRole.error}`);
         setStatusMessage(`Partial batch stopped after ${withdrawnCount} withdrawals. Resolve the issue, then refresh roles before retrying.`);
         return;
       }
-      setStatusMessage(`Withdrew ${withdrawnCount} applications. Refreshing the active list...`);
-      await analyzeRoles();
+      setStatusMessage(`Withdrew ${withdrawnCount} applications. Updated this list without rescanning; refresh roles when you want to verify Apple’s active list.`);
     } catch (withdrawError) {
       setError(withdrawError?.message || "The withdrawal batch stopped before completion.");
       setStatusMessage("The withdrawal batch stopped; review the reported progress before retrying.");
@@ -196,9 +244,15 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             <HelpTooltip text="Reviews active Apple submissions page by page, compares each posting's description and qualifications with your saved resume, and caches details for 180 days. If Apple signs you out, sign back in and analyze again; cached details are reused. Unavailable postings are low confidence and aren't preselected for withdrawal." />
           </div>
         </div>
-        <button type="button" onClick={analyzeRoles} disabled={busy}>
-          {busy ? "Working…" : roles.length ? "Refresh roles" : "Analyze roles"}
-        </button>
+        {analysisRunning ? (
+          <button type="button" onClick={stopAnalysis} disabled={scanProgress?.stopRequested}>
+            {scanProgress?.stopRequested ? "Stopping…" : "Stop scan"}
+          </button>
+        ) : (
+          <button type="button" onClick={analyzeRoles} disabled={busy}>
+            {busy ? "Working…" : roles.length ? "Refresh roles" : "Analyze roles"}
+          </button>
+        )}
       </div>
 
       <p className="muted">
@@ -210,8 +264,10 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       {scanProgress && (
         <div className="submitted-history-progress" role="status" aria-live="polite">
           <strong>
-            {scanProgress.failed
-              ? "Scan stopped before completion"
+            {scanProgress.stopped
+              ? "Scan stopped"
+              : scanProgress.failed
+                ? "Scan stopped before completion"
               : busy
                 ? "Reviewing submissions"
                 : "Scan incomplete"}
@@ -221,7 +277,15 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             {scanProgress.pageCount ? ` · page ${scanProgress.page || 0} of ${scanProgress.pageCount}` : " · preparing first page"}
           </span>
           {!analysisComplete && (
-            <span>{scanProgress.failed ? "Refresh to complete the ranking. Withdrawal selection is unavailable." : "Roles appear as each page finishes. Withdrawal selection unlocks after the full scan."}</span>
+            <span>
+              {scanProgress.stopped
+                ? "Partial results are ready for manual review. The count cannot confirm how many withdrawals are needed to reach 50."
+                : scanProgress.failed
+                  ? "Refresh to complete the ranking. Withdrawal selection is unavailable."
+                  : scanProgress.stopRequested
+                    ? "Finishing the current page before stopping."
+                    : "Roles appear as each page finishes. Withdrawal selection unlocks after the full scan."}
+            </span>
           )}
         </div>
       )}
@@ -250,12 +314,16 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               disabled={busy}
             />
           </label>
-          {analysisComplete ? (
+          {canWithdrawFromResults ? (
             <>
-              <p className="muted">
-                {selectedIds.length} eligible role{selectedIds.length === 1 ? " is" : "s are"} preselected; {neededToReachTarget} withdrawal{neededToReachTarget === 1 ? " is" : "s are"} needed to reach {TARGET_ACTIVE_APPLICATIONS}.
-                {selectedIds.length < neededToReachTarget && " There are not enough description-scored, unstarred roles to fill that batch."}
-              </p>
+              {analysisComplete ? (
+                <p className="muted">
+                  {selectedIds.length} eligible role{selectedIds.length === 1 ? " is" : "s are"} preselected; {neededToReachTarget} withdrawal{neededToReachTarget === 1 ? " is" : "s are"} needed to reach {TARGET_ACTIVE_APPLICATIONS}.
+                  {selectedIds.length < neededToReachTarget && " There are not enough description-scored, unstarred roles to fill that batch."}
+                </p>
+              ) : (
+                <p className="muted">Partial scan: no roles are preselected. Choose each role carefully; this result cannot confirm the count needed to reach 50.</p>
+              )}
 
               {confirmationOpen ? (
                 <div className="submitted-history-confirm" role="alertdialog" aria-modal="true" aria-labelledby="withdraw-confirm-title">
@@ -290,7 +358,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               )}
             </>
           ) : (
-            <p className="muted">Live ranking preview · complete the scan to review withdrawal selections.</p>
+            <p className="muted">Live ranking preview · complete or stop the scan to review withdrawal selections.</p>
           )}
 
           {visibleRoles.length === 0 ? (

@@ -29,6 +29,8 @@ const ownedWorkflowTabIds = new Set();
 const questionAgentProfilesByTabId = new Map();
 const questionAgentJobsByTabId = new Map();
 const questionAgentActivityByTabId = new Map();
+const submittedRoleAnalysisRuns = new Map();
+const pendingSubmittedRoleAnalysisStops = new Set();
 
 let scanState = createIdleState();
 let storedJobRecordsAtScanStart = {};
@@ -3116,7 +3118,9 @@ async function scoreAppleSubmittedRoles(roles, userProfile) {
   };
 }
 
-async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
+async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile, analysisId) {
+  const run = { stopRequested: pendingSubmittedRoleAnalysisStops.delete(analysisId) };
+  submittedRoleAnalysisRuns.set(analysisId, run);
   const profile = normalizeUserProfile(userProfile || {});
   const sendPageRequest = async (type, payload = {}) => {
     const response = await sendMessageWithFallback(tabId, { type, ...payload });
@@ -3124,9 +3128,9 @@ async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
     return response.data;
   };
 
-  const startingPage = await sendPageRequest("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
-  const originalPageIndex = startingPage.pageIndex || 1;
-  let page = await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: 1 });
+  let startingPage = null;
+  let originalPageIndex = null;
+  let page = null;
   const roleById = new Map();
   const scoreById = new Map();
   let pagesRead = 0;
@@ -3135,9 +3139,13 @@ async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
   let descriptionsUnavailable = 0;
   let cacheSaveFailed = false;
   let truncated = false;
+  let stopped = false;
   const maxRoles = 250;
 
   try {
+    startingPage = await sendPageRequest("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+    originalPageIndex = startingPage.pageIndex || 1;
+    page = await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: 1 });
     while (page && pagesRead < 100) {
       const newRoles = page.roles.filter((role) => !roleById.has(String(role.jobId)));
       const remaining = maxRoles - roleById.size;
@@ -3170,6 +3178,11 @@ async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
         }
       }).catch(() => {});
 
+      if (run.stopRequested) {
+        stopped = true;
+        break;
+      }
+
       if (!page.hasNextPage || roleById.size >= maxRoles) {
         if (page.hasNextPage && roleById.size >= maxRoles) truncated = true;
         break;
@@ -3181,10 +3194,14 @@ async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
     }
     if (pagesRead >= 100 && page?.hasNextPage) truncated = true;
   } finally {
-    const currentPageIndex = await getAppleHistoryPageIndexForTab(tabId);
-    if (currentPageIndex !== null && originalPageIndex !== currentPageIndex) {
-      await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: originalPageIndex }).catch(() => {});
+    if (originalPageIndex !== null) {
+      const currentPageIndex = await getAppleHistoryPageIndexForTab(tabId);
+      if (currentPageIndex !== null && originalPageIndex !== currentPageIndex) {
+        await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: originalPageIndex }).catch(() => {});
+      }
     }
+    submittedRoleAnalysisRuns.delete(analysisId);
+    pendingSubmittedRoleAnalysisStops.delete(analysisId);
   }
 
   return {
@@ -3195,8 +3212,20 @@ async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
     descriptionsReused,
     descriptionsUnavailable,
     cacheSaveFailed,
-    truncated
+    truncated,
+    stopped
   };
+}
+
+function requestStopSubmittedRoleAnalysis(analysisId) {
+  if (!analysisId) return { ok: false, error: "The submitted-role scan could not be identified." };
+  const run = submittedRoleAnalysisRuns.get(analysisId);
+  if (run) {
+    run.stopRequested = true;
+  } else {
+    pendingSubmittedRoleAnalysisStops.add(analysisId);
+  }
+  return { ok: true };
 }
 
 async function getAppleHistoryPageIndexForTab(tabId) {
@@ -3337,6 +3366,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_GET_SCAN_STATUS",
   "APPLE_CAREERS_SCORE_SUBMITTED_ROLES",
   "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
+  "APPLE_CAREERS_STOP_SUBMITTED_ROLES_ANALYSIS",
   "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
   "APPLE_CAREERS_GENERATE_ANSWER",
   "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
@@ -3379,8 +3409,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES") {
         sendResponse({
           ok: true,
-          data: await analyzeAppleSubmittedRolesPageByPage(message.tabId, message.userProfile)
+          data: await analyzeAppleSubmittedRolesPageByPage(message.tabId, message.userProfile, message.analysisId)
         });
+      } else if (message.type === "APPLE_CAREERS_STOP_SUBMITTED_ROLES_ANALYSIS") {
+        sendResponse(requestStopSubmittedRoleAnalysis(String(message.analysisId || "")));
       } else if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
         sendResponse(await runApplicationWorkflow(message.tab, { userProfile: message.userProfile }));
       } else if (message.type === "APPLE_CAREERS_GENERATE_ANSWER") {
