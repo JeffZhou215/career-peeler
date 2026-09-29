@@ -354,7 +354,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       : null;
     if (livePage?.roles?.length) {
       const savedById = new Map((snapshot?.roles || []).map((role) => [String(role.jobId), role]));
-      const currentRoles = livePage.roles.filter((role) => role.active !== false).map((role) => {
+      const currentRoles = livePage.roles.filter((role) =>
+        role.active !== false && String(role.jobId) !== String(jobId)
+      ).map((role) => {
         const saved = savedById.get(String(role.jobId));
         const merged = saved?.title === role.title
           ? { ...role, score: saved.score, reason: saved.reason, matchBasis: saved.matchBasis,
@@ -375,56 +377,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     setSavedPages(pages);
     if (snapshot) setSavedSnapshot(snapshot);
     if (completeSnapshot) setSavedCompleteSnapshot(completeSnapshot);
-  }
-
-  async function replaceSavedInventory(livePages) {
-    const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
-    const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
-    const priorById = new Map([
-      ...Object.values(archive.pages || {}).flatMap((review) => review.roles || []),
-      ...(archive.lastCompleteScan?.roles || []),
-      ...(archive.latestScan?.roles || [])
-    ].map((role) => [String(role.jobId), role]));
-    const pages = {};
-    const roles = [];
-    for (const livePage of livePages) {
-      const pageRoles = livePage.roles.filter((role) => role.active !== false).map((role) => {
-        const prior = priorById.get(String(role.jobId));
-        const scored = prior?.title === role.title && Number.isFinite(prior.score)
-          ? { score: prior.score, reason: prior.reason, matchBasis: prior.matchBasis,
-              descriptionAvailable: prior.descriptionAvailable, scoreSource: prior.scoreSource }
-          : {};
-        const current = { ...role, ...scored, sourcePageIndex: livePage.pageIndex };
-        const { cardText: _cardText, ...snapshotRole } = current;
-        roles.push(snapshotRole);
-        return current;
-      });
-      pages[livePage.pageIndex] = {
-        ...(archive.pages?.[livePage.pageIndex] || {}), pageIndex: livePage.pageIndex,
-        pageCount: livePages.length, roles: pageRoles, updatedAt: Date.now()
-      };
-    }
-    const snapshot = {
-      ...(archive.latestScan || {}), roles, pagesRead: livePages.length,
-      pageCount: livePages.length, complete: true, warning: null, updatedAt: Date.now()
-    };
-    setSavedPages(pages);
-    setSavedSnapshot(snapshot);
-    setSavedCompleteSnapshot(snapshot);
-    setRoles(rankSubmittedRoles(roles));
-    setReviewContext(null);
-    setSelectedPageIndex(null);
-    setPostingCacheStats(null);
-    await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: {
-      ...archive, pages, latestScan: snapshot, lastCompleteScan: snapshot, lastPageIndex: 1
-    } });
+    return snapshot;
   }
 
   async function withdrawSelected() {
     if (!selectedRoles.length) return;
-    const targets = selectedRoles.map(({ jobId, title, sourcePageIndex }) => ({
-      jobId, title, sourcePageIndex: sourcePageIndex || reviewContext?.pageIndex || null
-    }));
+    const targets = selectedRoles.map(({ jobId, title }) => ({ jobId, title }));
+    const pending = new Map(targets.map((role) => [String(role.jobId), role]));
+    const skipped = [];
     let confirmedCount = 0;
     setBusy(true);
     setError("");
@@ -442,114 +402,133 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         if (!response?.ok) throw new Error(response?.error || "Apple's active submissions page could not be read.");
         return response.data;
       };
-      const refreshAppleInventory = async (removedJobId) => {
+      const readSettledPage = async (preferredPageIndex = null) => {
+        const deadline = Date.now() + 15000;
+        const preferredDeadline = Date.now() + 3500;
+        let previousSignature = "";
+        let stableReads = 0;
         let lastError;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        while (Date.now() < deadline) {
           try {
-            const result = await readApplePage("APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
-            if (!Array.isArray(result.pages) || result.pages.length !== result.pageCount) {
-              throw new Error("Apple did not return every active submissions page.");
+            const page = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+            const signature = `${page.pageIndex}|${page.pageCount}|${page.roles.map((role) => role.jobId).join("|")}`;
+            stableReads = signature === previousSignature ? stableReads + 1 : 1;
+            previousSignature = signature;
+            if (stableReads >= 3 &&
+              (preferredPageIndex === null || page.pageIndex === preferredPageIndex || Date.now() >= preferredDeadline)) {
+              return page;
             }
-            const stillActive = removedJobId && result.pages.some((page) => page.roles.some((current) =>
-              String(current.jobId) === String(removedJobId) && current.active
-            ));
-            if (stillActive && attempt < 2) {
-              await new Promise((resolve) => setTimeout(resolve, 1200));
-              continue;
-            }
-            return result.pages;
           } catch (error) {
             lastError = error;
-            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 800));
+            stableReads = 0;
           }
+          await new Promise((resolve) => setTimeout(resolve, 300));
         }
-        throw lastError;
+        throw lastError || new Error("Apple's submissions list did not settle after the withdrawal.");
       };
-      const locateRole = async (role) => {
-        let page = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+      const verifyAcrossPages = async (role) => {
+        const result = await readApplePage("APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
+        if (!Array.isArray(result.pages) || result.pages.length !== result.pageCount) {
+          throw new Error("Apple did not return every active submissions page.");
+        }
+        return { confirmationOpen: false, active: result.pages.some((page) => page.roles.some((current) =>
+          String(current.jobId) === String(role.jobId) && current.active
+        )) };
+      };
+      let page = await readSettledPage();
+      const visitedPages = new Set();
+      let navigationRecoveries = 0;
+      while (pending.size) {
         if (page.withdrawalConfirmationOpen) {
           throw new Error("An Apple withdrawal confirmation is already open. Resolve it before continuing.");
         }
-        const pageIndices = [page.pageIndex, role.sourcePageIndex,
-          role.sourcePageIndex && role.sourcePageIndex - 1,
-          role.sourcePageIndex && role.sourcePageIndex + 1,
-          ...Array.from({ length: page.pageCount }, (_unused, index) => index + 1)];
-        for (const pageIndex of new Set(pageIndices)) {
-          if (!Number.isInteger(pageIndex) || pageIndex < 1 || pageIndex > page.pageCount) continue;
-          if (page.pageIndex !== pageIndex) {
-            page = await readApplePage("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex });
+        if (visitedPages.has(page.pageIndex)) break;
+        visitedPages.add(page.pageIndex);
+        const matchingCard = page.roles.find((card) =>
+          pending.has(String(card.jobId)) && card.active && card.protectedFromBatchWithdrawal === false
+        );
+        if (matchingCard) {
+          const role = pending.get(String(matchingCard.jobId));
+          const matchedPageIndex = page.pageIndex;
+          page = await readSettledPage();
+          if (page.pageIndex !== matchedPageIndex ||
+            !page.roles.some((card) => String(card.jobId) === String(role.jobId))) {
+            visitedPages.clear();
+            continue;
           }
-          if (page.withdrawalConfirmationOpen) {
-            throw new Error("Apple opened a withdrawal confirmation while locating the role.");
+          const liveCard = page.roles.find((card) => String(card.jobId) === String(role.jobId));
+          if (!liveCard?.active || liveCard.protectedFromBatchWithdrawal !== false) {
+            visitedPages.clear();
+            continue;
           }
-          const currentRole = page.roles.find((item) => String(item.jobId) === String(role.jobId));
-          if (currentRole) {
-            if (!currentRole.active || currentRole.protectedFromBatchWithdrawal !== false) {
-              throw new Error("The selected role is no longer an unstarred active submission. The batch stopped before clicking it.");
+          await withdrawSubmittedRolesSequentially([role], {
+            withdrawOne: () => chrome.tabs.sendMessage(tab.id, {
+              type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
+              roles: [role],
+              expectedPageIndex: page.pageIndex
+            }),
+            verifyRoleStatus: verifyAcrossPages,
+            onRoleStart: () => {
+              setWithdrawProgress({ index: confirmedCount + 1, total: targets.length, title: role.title });
+              setStatusMessage(`Withdrawing ${confirmedCount + 1} of ${targets.length}: ${role.title}...`);
+            },
+            onRoleConfirmed: async ({ verifiedAfterInterruption }) => {
+              confirmedCount += 1;
+              setStatusMessage(`Updating the visible submissions page after ${role.title}...`);
+              try {
+                page = await readSettledPage(matchedPageIndex > 1 ? 1 : null);
+              } catch (refreshError) {
+                await removeSavedRole(role.jobId);
+                setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
+                setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
+                throw new Error(`${role.title}: Apple confirmed the withdrawal, but its current page could not be read. ${refreshError?.message || "Sign in again to continue."}`);
+              }
+              const snapshot = await removeSavedRole(role.jobId, page);
+              setRoles((current) => rankSubmittedRoles(snapshot?.roles || current.filter((item) => String(item.jobId) !== String(role.jobId))));
+              setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
+              setReviewContext(null);
+              setSelectedPageIndex(null);
+              setStatusMessage(`${confirmedCount} of ${targets.length} withdrawn${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
             }
-            return page;
-          }
+          });
+          pending.delete(String(role.jobId));
+          visitedPages.clear();
+          navigationRecoveries = 0;
+          continue;
         }
-        throw new Error(`Job ID ${role.jobId} was not found in Apple's active submissions. The batch stopped before clicking it.`);
-      };
-
-      const withdrawalPageState = new Map();
-      const verifiedInventoryByJobId = new Map();
-      await withdrawSubmittedRolesSequentially(targets, {
-        withdrawOne: async (role) => {
-          const currentPage = await locateRole(role);
-          withdrawalPageState.set(String(role.jobId), {
-            pageIndex: currentPage.pageIndex,
-            beforeCount: currentPage.roles.filter((item) => item.active).length,
-            hadNextPage: currentPage.hasNextPage
-          });
-          return chrome.tabs.sendMessage(tab.id, {
-            type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
-            roles: [role],
-            expectedPageIndex: currentPage.pageIndex
-          });
-        },
-        verifyRoleStatus: async (role) => {
-          const pageState = withdrawalPageState.get(String(role.jobId));
-          if (!pageState) throw new Error("The role was not clicked, so its withdrawal cannot be verified.");
-          const pages = await refreshAppleInventory(role.jobId);
-          verifiedInventoryByJobId.set(String(role.jobId), pages);
-          return { confirmationOpen: false, active: pages.some((page) =>
-            page.roles.some((current) => String(current.jobId) === String(role.jobId) && current.active)
-          ) };
-        },
-        onRoleStart: (role, index, total) => {
-          setWithdrawProgress({ index: index + 1, total, title: role.title });
-          setStatusMessage(`Withdrawing ${index + 1} of ${total}: ${role.title}...`);
-        },
-        onRoleConfirmed: async ({ role, verifiedAfterInterruption }, index, total) => {
-          let pages;
-          setStatusMessage(`Refreshing Apple's active submissions after ${role.title}...`);
+        for (const card of page.roles) {
+          if (!pending.has(String(card.jobId))) continue;
+          if (card.active && card.protectedFromBatchWithdrawal === false) continue;
+          const role = pending.get(String(card.jobId));
+          pending.delete(String(card.jobId));
+          skipped.push(`${role.title} (${role.jobId}) is no longer active or is protected`);
+        }
+        if (!pending.size) break;
+        if (page.hasNextPage) {
           try {
-            pages = verifiedInventoryByJobId.get(String(role.jobId)) || await refreshAppleInventory(role.jobId);
-          } catch (refreshError) {
-            confirmedCount += 1;
-            await removeSavedRole(role.jobId);
-            setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
-            setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
-            throw new Error(`${role.title}: Apple confirmed the withdrawal, but its refreshed submissions list could not be read. ${refreshError?.message || "Sign in again to continue."}`);
+            const next = await readApplePage("APPLE_CAREERS_ADVANCE_SUBMITTED_HISTORY_PAGE");
+            if (!next.advanced) break;
+            page = next.page;
+          } catch (navigationError) {
+            const recovered = await readSettledPage();
+            if (recovered.pageIndex === page.pageIndex || navigationRecoveries >= 2) throw navigationError;
+            page = recovered;
+            visitedPages.clear();
+            navigationRecoveries += 1;
           }
-          if (pages.some((page) => page.roles.some((current) =>
-            String(current.jobId) === String(role.jobId) && current.active
-          ))) {
-            throw new Error(`${role.title} is still in Apple's active submissions after refresh; the batch stopped.`);
-          }
-          confirmedCount += 1;
-          await replaceSavedInventory(pages);
-          setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
-          const byId = new Map(pages.flatMap((page) => page.roles.map((item) => [String(item.jobId), page.pageIndex])));
-          for (const remaining of targets) remaining.sourcePageIndex = byId.get(String(remaining.jobId)) || remaining.sourcePageIndex;
-          setStatusMessage(`${confirmedCount} of ${total} no longer active${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
+        } else if (!visitedPages.has(1)) {
+          page = await readApplePage("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: 1 });
+        } else {
+          break;
         }
-      });
+      }
+      if (pending.size) {
+        throw new Error(`Selected job IDs were not found in Apple's active submissions: ${Array.from(pending.keys()).join(", ")}.`);
+      }
       setConfirmationOpen(false);
       setSelectedIds([]);
-      setStatusMessage(`${confirmedCount} selected applications are no longer active. The saved ranking was updated.`);
+      setError(skipped.length ? `Skipped ${skipped.length} role(s): ${skipped.join("; ")}.` : "");
+      setStatusMessage(`${confirmedCount} application${confirmedCount === 1 ? "" : "s"} withdrawn. ${skipped.length ? `${skipped.length} skipped.` : "The saved ranking was updated."}`);
     } catch (withdrawError) {
       setConfirmationOpen(false);
       setError(`Batch stopped after ${confirmedCount} of ${targets.length} were confirmed inactive. ${withdrawError?.message || "The next role could not be verified."}`);
@@ -652,7 +631,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
                     This will withdraw {selectedRoles.length} Apple applications from your account. That changes your candidacy for those roles. Confirm only if you want to withdraw every role listed here.
                   </p>
                   <p>
-                    The extension will locate each role across your active submissions pages, click Apple's confirmation one at a time, and stop if any role or withdrawal cannot be verified.
+                    The extension will walk your active submissions pages and withdraw selected roles as it finds them. It will stop if a withdrawal cannot be verified.
                   </p>
                   {withdrawProgress && (
                     <p role="status">Withdrawing {withdrawProgress.index} of {withdrawProgress.total}: {withdrawProgress.title}</p>
