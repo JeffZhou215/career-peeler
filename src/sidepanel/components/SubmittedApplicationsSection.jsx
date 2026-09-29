@@ -28,6 +28,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [postingCacheStats, setPostingCacheStats] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [savedPages, setSavedPages] = useState({});
+  const [savedSnapshot, setSavedSnapshot] = useState(null);
+  const [savedCompleteSnapshot, setSavedCompleteSnapshot] = useState(null);
   const [selectedPageIndex, setSelectedPageIndex] = useState(null);
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -90,6 +92,16 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     });
   }
 
+  function showSnapshot(snapshot) {
+    if (!snapshot?.roles?.length) return;
+    setRoles(rankSubmittedRoles(snapshot.roles));
+    setSelectedIds([]);
+    setSelectedPageIndex(null);
+    setReviewContext(null);
+    setPostingCacheStats(null);
+    setError([snapshot.complete ? "" : "This saved ranking is partial; the last scan did not reach every submissions page.", snapshot.warning].filter(Boolean).join(" "));
+  }
+
   async function showCurrentPageFromStorage(cancelled = () => false) {
     const tab = await getActiveTab();
     if (!tab?.id || !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
@@ -136,10 +148,19 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       if (cancelled || activeAnalysisIdRef.current) return;
       const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
       setSavedPages(archive.pages || {});
-      const saved = archive.pages?.[archive.lastPageIndex] || Object.values(archive.pages || {})[0];
-      if (saved) showReview(saved);
-
-      await showCurrentPageFromStorage(() => cancelled).catch(() => {});
+      setSavedSnapshot(archive.latestScan || null);
+      setSavedCompleteSnapshot(archive.lastCompleteScan || (archive.latestScan?.complete ? archive.latestScan : null));
+      if (archive.latestScan?.roles?.length) {
+        showSnapshot(archive.latestScan);
+      } else {
+        const previousPages = Object.values(archive.pages || {});
+        if (previousPages.length > 1) {
+          showAllReviews(previousPages.sort((left, right) => (left.updatedAt || 0) - (right.updatedAt || 0)));
+          setError("These saved pages predate the combined snapshot. Apple will verify every selected role before withdrawal.");
+        } else if (previousPages[0]) {
+          showReview(previousPages[0]);
+        }
+      }
     }
     loadSavedResults().catch(() => {});
     function handleProgress(message) {
@@ -174,6 +195,10 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   }
 
   function showAllSavedPages() {
+    if (savedSnapshot?.roles?.length) {
+      showSnapshot(savedSnapshot);
+      return;
+    }
     showAllReviews(Object.values(savedPages).sort((left, right) => (left.updatedAt || 0) - (right.updatedAt || 0)));
     setError("Saved pages may include roles that have since moved or been withdrawn. Open a page and refresh it before selecting withdrawals.");
   }
@@ -203,9 +228,16 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       });
       if (!response?.ok) throw new Error(response?.error || "Could not scan all Apple submissions.");
       showAllReviews(response.data.reviews || []);
+      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+      setSavedSnapshot(stored[SAVED_REVIEWS_KEY]?.latestScan || null);
+      setSavedCompleteSnapshot(stored[SAVED_REVIEWS_KEY]?.lastCompleteScan || null);
+      setSavedPages(stored[SAVED_REVIEWS_KEY]?.pages || {});
       setError(response.data.warning || "");
-      setStatusMessage(`${response.data.stopped ? "Stopped after" : "Scanned"} ${response.data.pagesRead} of ${response.data.pageCount} pages. Open a saved page to select withdrawals.`);
+      setStatusMessage(`${response.data.stopped ? "Stopped after" : "Scanned"} ${response.data.pagesRead} of ${response.data.pageCount} pages. Select roles from the saved ranking to queue withdrawals.`);
     } catch (scanError) {
+      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY).catch(() => ({}));
+      setSavedSnapshot(stored[SAVED_REVIEWS_KEY]?.latestScan || null);
+      setSavedCompleteSnapshot(stored[SAVED_REVIEWS_KEY]?.lastCompleteScan || null);
       setError(scanError?.message || "The all-submissions scan stopped.");
       setStatusMessage("All-submissions scan stopped. Saved pages remain available.");
     } finally {
@@ -287,7 +319,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             type="checkbox"
             checked={selectedIds.includes(role.jobId)}
             onChange={() => toggleRole(role.jobId)}
-            disabled={busy || !reviewContext || confirmationOpen || protectedFromBatch}
+            disabled={busy || confirmationOpen || protectedFromBatch}
           />
           <span>{role.score === null || role.score === undefined ? "Not scored · review manually" : `${role.score}% fit`}</span>
         </label>
@@ -304,7 +336,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     );
   }
 
-  async function removeSavedRole(jobId) {
+  async function removeSavedRole(jobId, livePage = null) {
     const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
     const archive = stored[SAVED_REVIEWS_KEY];
     if (!archive?.pages) return;
@@ -312,65 +344,102 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       pageIndex,
       { ...review, roles: (review.roles || []).filter((role) => String(role.jobId) !== String(jobId)) }
     ]));
-    await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: { ...archive, pages } });
+    const snapshot = archive.latestScan
+      ? { ...archive.latestScan, roles: (archive.latestScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() }
+      : null;
+    const completeSnapshot = archive.lastCompleteScan
+      ? { ...archive.lastCompleteScan,
+          roles: (archive.lastCompleteScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)),
+          updatedAt: Date.now() }
+      : null;
+    if (livePage?.roles?.length) {
+      const savedById = new Map((snapshot?.roles || []).map((role) => [String(role.jobId), role]));
+      const currentRoles = livePage.roles.filter((role) => role.active !== false).map((role) => {
+        const saved = savedById.get(String(role.jobId));
+        const merged = saved?.title === role.title
+          ? { ...role, score: saved.score, reason: saved.reason, matchBasis: saved.matchBasis,
+              descriptionAvailable: saved.descriptionAvailable, scoreSource: saved.scoreSource }
+          : role;
+        savedById.set(String(role.jobId), { ...saved, ...merged, sourcePageIndex: livePage.pageIndex });
+        return merged;
+      });
+      pages[livePage.pageIndex] = {
+        ...(pages[livePage.pageIndex] || {}), pageIndex: livePage.pageIndex,
+        pageCount: livePage.pageCount, roles: currentRoles, updatedAt: Date.now()
+      };
+      if (snapshot) snapshot.roles = Array.from(savedById.values());
+    }
+    await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: { ...archive, pages,
+      ...(snapshot ? { latestScan: snapshot } : {}),
+      ...(completeSnapshot ? { lastCompleteScan: completeSnapshot } : {}) } });
     setSavedPages(pages);
+    if (snapshot) setSavedSnapshot(snapshot);
+    if (completeSnapshot) setSavedCompleteSnapshot(completeSnapshot);
   }
 
   async function withdrawSelected() {
-    if (!selectedRoles.length || !reviewContext) return;
-    const targets = selectedRoles.map(({ jobId, title }) => ({ jobId, title }));
+    if (!selectedRoles.length) return;
+    const targets = selectedRoles.map(({ jobId, title, sourcePageIndex }) => ({
+      jobId, title, sourcePageIndex: sourcePageIndex || reviewContext?.pageIndex || null
+    }));
     let confirmedCount = 0;
     setBusy(true);
     setError("");
     setStatusMessage(`Preparing to withdraw ${targets.length} selected Apple applications...`);
     try {
       const tab = await getActiveTab();
-      if (!tab?.id || (reviewContext.tabId && tab.id !== reviewContext.tabId)) {
-        throw new Error("Return to the Apple tab containing this saved submissions page.");
+      if (!tab?.id || (reviewContext?.tabId && tab.id !== reviewContext.tabId)) {
+        throw new Error("Return to the Apple tab containing your submissions.");
       }
-      const page = await sendMessageWithFallback(tab.id, {
-        type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE"
-      });
-      if (!page?.ok) throw new Error(page?.error || "Apple's active submissions page could not be read.");
-      if (page.data?.pageIndex !== reviewContext.pageIndex) {
-        throw new Error("The visible Apple submissions page changed. Open the saved page and load it from saved results before withdrawing.");
+      if (!/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
+        throw new Error("Open Apple Careers → Your Roles → Submissions → Active before withdrawing.");
       }
-      if (page.data?.withdrawalConfirmationOpen) {
-        throw new Error("An Apple withdrawal confirmation is already open. Resolve it before starting another batch.");
-      }
-      if (targets.some((role) => !page.data.roles.some((current) =>
-        String(current.jobId) === String(role.jobId) && current.active && current.protectedFromBatchWithdrawal === false
-      ))) {
-        throw new Error("A selected role is no longer an unstarred active submission on this page. Load the current page from saved results again.");
-      }
+      const readApplePage = async (type, payload = {}) => {
+        const response = await sendMessageWithFallback(tab.id, { type, ...payload });
+        if (!response?.ok) throw new Error(response?.error || "Apple's active submissions page could not be read.");
+        return response.data;
+      };
+      const locateRole = async (role) => {
+        let page = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+        if (page.withdrawalConfirmationOpen) {
+          throw new Error("An Apple withdrawal confirmation is already open. Resolve it before continuing.");
+        }
+        const pageIndices = [page.pageIndex, role.sourcePageIndex,
+          role.sourcePageIndex && role.sourcePageIndex - 1,
+          role.sourcePageIndex && role.sourcePageIndex + 1,
+          ...Array.from({ length: page.pageCount }, (_unused, index) => index + 1)];
+        for (const pageIndex of new Set(pageIndices)) {
+          if (!Number.isInteger(pageIndex) || pageIndex < 1 || pageIndex > page.pageCount) continue;
+          if (page.pageIndex !== pageIndex) {
+            page = await readApplePage("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex });
+          }
+          if (page.withdrawalConfirmationOpen) {
+            throw new Error("Apple opened a withdrawal confirmation while locating the role.");
+          }
+          const currentRole = page.roles.find((item) => String(item.jobId) === String(role.jobId));
+          if (currentRole) {
+            if (!currentRole.active || currentRole.protectedFromBatchWithdrawal !== false) {
+              throw new Error("The selected role is no longer an unstarred active submission. The batch stopped before clicking it.");
+            }
+            return page;
+          }
+        }
+        throw new Error(`Job ID ${role.jobId} was not found in Apple's active submissions. The batch stopped before clicking it.`);
+      };
 
       const withdrawalPageState = new Map();
       await withdrawSubmittedRolesSequentially(targets, {
         withdrawOne: async (role) => {
-          // Apple pulls a role from the next page after each withdrawal. Read the
-          // settled page again before every click instead of reusing its first snapshot.
-          const currentPage = await sendMessageWithFallback(tab.id, {
-            type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE"
-          });
-          if (!currentPage?.ok) throw new Error(currentPage?.error || "Apple's submissions page could not be read after the previous withdrawal.");
-          if (currentPage.data?.pageIndex !== reviewContext.pageIndex) {
-            throw new Error("Apple changed the visible submissions page during the batch.");
-          }
-          if (currentPage.data?.withdrawalConfirmationOpen) {
-            throw new Error("Apple's previous withdrawal confirmation is still open.");
-          }
-          const currentRole = currentPage.data.roles.find((item) => String(item.jobId) === String(role.jobId));
-          if (!currentRole?.active || currentRole.protectedFromBatchWithdrawal !== false) {
-            throw new Error("The next selected role is missing, starred, or no longer active on this page.");
-          }
+          const currentPage = await locateRole(role);
           withdrawalPageState.set(String(role.jobId), {
-            beforeCount: currentPage.data.roles.filter((item) => item.active).length,
-            hadNextPage: currentPage.data.hasNextPage
+            pageIndex: currentPage.pageIndex,
+            beforeCount: currentPage.roles.filter((item) => item.active).length,
+            hadNextPage: currentPage.hasNextPage
           });
           return chrome.tabs.sendMessage(tab.id, {
             type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
             roles: [role],
-            expectedPageIndex: reviewContext.pageIndex
+            expectedPageIndex: currentPage.pageIndex
           });
         },
         verifyRoleStatus: async (role) => {
@@ -380,8 +449,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             type: "APPLE_CAREERS_CHECK_SUBMITTED_ROLE_STATUS",
             jobId: role.jobId,
             title: role.title,
-            expectedPageIndex: reviewContext.pageIndex,
-            ...pageState
+            expectedPageIndex: pageState.pageIndex,
+            beforeCount: pageState.beforeCount,
+            hadNextPage: pageState.hadNextPage
           });
           if (!response?.ok) throw new Error(response?.error || "Apple's current role status could not be read.");
           return response.data;
@@ -394,13 +464,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           confirmedCount += 1;
           setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
           setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
-          await removeSavedRole(role.jobId);
+          const currentPage = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE").catch(() => null);
+          await removeSavedRole(role.jobId, currentPage);
           setStatusMessage(`${confirmedCount} of ${total} no longer active${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
         }
       });
       setConfirmationOpen(false);
       setSelectedIds([]);
-      setStatusMessage(`${confirmedCount} selected applications are no longer active. Saved results were updated; refresh this page when you want current scores.`);
+      setStatusMessage(`${confirmedCount} selected applications are no longer active. The saved ranking was updated.`);
     } catch (withdrawError) {
       setConfirmationOpen(false);
       setError(`Batch stopped after ${confirmedCount} of ${targets.length} were confirmed inactive. ${withdrawError?.message || "The next role could not be verified."}`);
@@ -418,7 +489,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           <p className="eyebrow">APPLE CAREERS</p>
           <div className="submitted-history-title-row">
             <h2>Submitted Application Review</h2>
-            <HelpTooltip text="Scan the current page or all active submissions. Scores use your saved resume and cached posting details when available. The combined ranking is for review; open a saved page to select roles for withdrawal." />
+            <HelpTooltip text="Scan the current page or all active submissions. The full ranking is saved in Chrome storage and loads without another scan. Select unstarred roles across pages; each withdrawal is checked against Apple's live submissions before clicking." />
           </div>
         </div>
         {analysisRunning ? (
@@ -431,7 +502,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       </div>
 
       <p className="muted">
-        Open Your Roles → Submissions → Active. Scan all pages for a combined ranking, then open a saved page to select withdrawals. Saved pages and partial results remain available if matching stops. No roles are selected automatically.
+        Open Your Roles → Submissions → Active. Scan all pages for a saved ranking, then select roles across pages. Apple will be checked before each withdrawal. No roles are selected automatically.
       </p>
       <button type="button" onClick={analyzeAllRoles} disabled={busy}>Scan all submissions</button>
       <button type="button" className="secondary-button" onClick={loadCurrentPage} disabled={busy}>
@@ -440,6 +511,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       {savedPageIndices.length > 1 && (
         <button type="button" className="secondary-button" onClick={showAllSavedPages} disabled={busy}>
           Show all saved rankings
+        </button>
+      )}
+      {!savedSnapshot?.complete && savedCompleteSnapshot?.roles?.length > 0 && (
+        <button type="button" className="secondary-button" onClick={() => {
+          showSnapshot(savedCompleteSnapshot);
+          setError("This is the last complete saved scan. Apple will verify each selected role before withdrawal.");
+        }} disabled={busy}>
+          Show last complete scan
         </button>
       )}
 
@@ -485,9 +564,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               disabled={busy}
             />
           </label>
-          {reviewContext ? (
-            <>
-              <p className="muted">{selectedIds.length} role{selectedIds.length === 1 ? "" : "s"} selected from this page. Review the titles and job IDs before confirming.</p>
+          <>
+              <p className="muted">{selectedIds.length} role{selectedIds.length === 1 ? "" : "s"} selected. Review every title and job ID before confirming.</p>
 
               {confirmationOpen ? (
                 <div className="submitted-history-confirm" role="alertdialog" aria-modal="true" aria-labelledby="withdraw-confirm-title">
@@ -496,7 +574,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
                     This will withdraw {selectedRoles.length} Apple applications from your account. That changes your candidacy for those roles. Confirm only if you want to withdraw every role listed here.
                   </p>
                   <p>
-                    Apple will show a confirmation for each role. The extension will click Proceed one at a time and stop if a confirmation or withdrawal cannot be verified.
+                    The extension will locate each role across your active submissions pages, click Apple's confirmation one at a time, and stop if any role or withdrawal cannot be verified.
                   </p>
                   {withdrawProgress && (
                     <p role="status">Withdrawing {withdrawProgress.index} of {withdrawProgress.total}: {withdrawProgress.title}</p>
@@ -523,10 +601,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
                   Review withdrawal of {selectedRoles.length} selected roles
                 </button>
               )}
-            </>
-          ) : (
-            <p className="muted">Choose a saved page or analyze the visible page to select withdrawals. The combined ranking is read only.</p>
-          )}
+          </>
 
           {visibleRoles.length === 0 ? (
             <p className="muted">No submitted roles match that title or job ID.</p>

@@ -3363,8 +3363,45 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
   let page = null;
   let stopped = false;
   let warning = null;
-  const publish = (review) => {
+  let storageWarning = null;
+  const persistSnapshot = async (complete) => {
+    const byId = new Map();
+    for (const review of reviews.values()) {
+      for (const role of review.roles || []) {
+        if (role.active === false) continue;
+        const { jobId, title, url, submittedDate, favorite, protectedFromBatchWithdrawal,
+          score, reason, matchBasis, descriptionAvailable, scoreSource } = role;
+        byId.set(String(jobId), { jobId, title, url, submittedDate, favorite,
+          protectedFromBatchWithdrawal, score, reason, matchBasis,
+          descriptionAvailable, scoreSource, active: true, sourcePageIndex: review.pageIndex });
+      }
+    }
+    const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY);
+    const archive = stored[APPLE_SUBMITTED_ROLE_REVIEWS_KEY] || { version: 1, pages: {} };
+    if (!complete && archive.latestScan?.complete && !archive.lastCompleteScan) {
+      archive.lastCompleteScan = archive.latestScan;
+    }
+    archive.latestScan = {
+      roles: Array.from(byId.values()),
+      pagesRead: reviews.size,
+      pageCount: page?.pageCount || reviews.size,
+      complete,
+      warning,
+      updatedAt: Date.now()
+    };
+    if (complete) {
+      archive.pages = Object.fromEntries(reviews);
+      archive.lastCompleteScan = archive.latestScan;
+    }
+    await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
+  };
+  const publish = async (review) => {
     reviews.set(review.pageIndex, review);
+    try {
+      await persistSnapshot(false);
+    } catch (_error) {
+      storageWarning = "The combined ranking could not be saved to Chrome storage.";
+    }
     chrome.runtime.sendMessage({
       type: "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS",
       analysisId,
@@ -3384,24 +3421,24 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
     for (let count = 0; count < 100; count += 1) {
       if (run.stopRequested) { stopped = true; break; }
       let review = await saveAppleSubmittedRoleReview(page);
-      publish(review);
+      await publish(review);
       if (!warning) {
         try {
           const analysis = await scoreAppleSubmittedRoles(page.roles.filter((role) => role.active !== false), userProfile, {
             shouldStop: () => run.stopRequested,
             onProgress: async (partial) => {
               review = await saveAppleSubmittedRoleReview(page, partial);
-              publish(review);
+              await publish(review);
             }
           });
           review = await saveAppleSubmittedRoleReview(page, analysis);
-          publish(review);
+          await publish(review);
           if (analysis.error) warning = `Matching stopped: ${analysis.error} Remaining pages were saved without new scores.`;
           if (analysis.stopped) { stopped = true; break; }
         } catch (error) {
           warning = `Matching stopped: ${error?.message || "OpenAI matching failed."} Remaining pages were saved without new scores.`;
           review = await saveAppleSubmittedRoleReview(page, { error: warning });
-          publish(review);
+          await publish(review);
         }
       }
       if (run.stopRequested) { stopped = true; break; }
@@ -3410,8 +3447,14 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       if (!advance.advanced) break;
       page = advance.page;
     }
+    const complete = !stopped && reviews.size >= (page?.pageCount || reviews.size);
+    try {
+      await persistSnapshot(complete);
+    } catch (_error) {
+      storageWarning = "The combined ranking could not be saved to Chrome storage.";
+    }
     return { reviews: Array.from(reviews.values()), pagesRead: reviews.size,
-      pageCount: page?.pageCount || reviews.size, stopped, warning };
+      pageCount: page?.pageCount || reviews.size, stopped, warning: [warning, storageWarning].filter(Boolean).join(" ") || null };
   } finally {
     if (originalPageIndex !== null) {
       await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: originalPageIndex }).catch(() => {});
