@@ -1304,7 +1304,7 @@ function collectSubmittedRoleCards() {
       cardText: cardText.slice(0, 700),
       favorite: favoriteCheckbox ? Boolean(favoriteCheckbox.checked) : null,
       protectedFromBatchWithdrawal:
-        APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(jobId) || !favoriteCheckbox || favoriteCheckbox.checked,
+        APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(jobId.split("-")[0]) || !favoriteCheckbox || favoriteCheckbox.checked,
       active: Boolean(withdrawButton)
     });
   }
@@ -1314,20 +1314,11 @@ function collectSubmittedRoleCards() {
 
 function getAppleHistoryPageIndex() {
   const input = document.querySelector('#profile-roles-pagination input[type="number"]');
-  const value = Number(input?.value);
-  return Number.isFinite(value) ? value : null;
-}
-
-async function waitForSubmittedRolePageChange(previousFirstJobId, timeoutMs = 10000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await delay(200);
-    const firstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
-    if (firstJobId && firstJobId !== previousFirstJobId) {
-      return true;
-    }
+  if (!input) {
+    return Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) === 1 ? 1 : null;
   }
-  return false;
+  const value = Number(input?.value);
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function assertAppleActiveSubmittedRolesPage() {
@@ -1341,6 +1332,10 @@ function assertAppleActiveSubmittedRolesPage() {
 
 function collectCurrentAppleSubmittedHistoryPage() {
   assertAppleActiveSubmittedRolesPage();
+  const pageIndex = getAppleHistoryPageIndex();
+  if (pageIndex === null) {
+    throw new Error("Apple's current page number is unavailable. Wait for Your Roles to finish loading, then analyze again.");
+  }
   const roles = collectSubmittedRoleCards();
   if (roles.length === 0) {
     throw new Error("No submitted role cards were found on the current page. Apple may have signed you out; sign in again and analyze roles.");
@@ -1349,97 +1344,10 @@ function collectCurrentAppleSubmittedHistoryPage() {
   const nextButton = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
   return {
     roles,
-    pageIndex: getAppleHistoryPageIndex() || 1,
+    pageIndex,
     pageCount: Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) || 1,
     hasNextPage: Boolean(nextButton && !nextButton.disabled && nextButton.getAttribute("aria-disabled") !== "true"),
     withdrawalConfirmationOpen: Boolean(findAppleWithdrawalConfirmationModal())
-  };
-}
-
-async function goToAppleSubmittedHistoryPage(targetPage) {
-  assertAppleActiveSubmittedRolesPage();
-  const target = Math.max(1, Math.floor(Number(targetPage) || 1));
-  let current = getAppleHistoryPageIndex() || 1;
-  let guard = 0;
-  while (current !== target && guard < 100) {
-    const direction = current < target ? "Next Page" : "Previous Page";
-    const button = document.querySelector(`#profile-roles-pagination button[aria-label="${direction}"]`);
-    if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
-      throw new Error("Apple's submitted roles pagination could not reach the requested page.");
-    }
-    const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
-    button.click();
-    if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) {
-      throw new Error("Apple's submitted roles page did not change. The session may have expired; sign in again and analyze roles.");
-    }
-    current = getAppleHistoryPageIndex() || current + (direction === "Next Page" ? 1 : -1);
-    guard += 1;
-  }
-  if (current !== target) throw new Error("Apple's submitted roles page could not be restored.");
-  return collectCurrentAppleSubmittedHistoryPage();
-}
-
-async function advanceAppleSubmittedHistoryPage() {
-  assertAppleActiveSubmittedRolesPage();
-  const page = collectCurrentAppleSubmittedHistoryPage();
-  if (!page.hasNextPage) return { advanced: false, page };
-  const previousFirstJobId = page.roles[0]?.jobId || null;
-  document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]').click();
-  if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) {
-    throw new Error("Apple's submitted roles page did not advance. The session may have expired; sign in again and analyze roles.");
-  }
-  return { advanced: true, page: collectCurrentAppleSubmittedHistoryPage() };
-}
-
-async function collectAppleSubmittedHistory() {
-  assertAppleActiveSubmittedRolesPage();
-
-  const originalPageIndex = getAppleHistoryPageIndex();
-  const rolesById = new Map();
-  let pageCount = 0;
-  let navigationError = null;
-
-  try {
-    while (pageCount < 100) {
-      const pageRoles = collectSubmittedRoleCards();
-      if (pageRoles.length === 0) {
-        throw new Error("No submitted role cards were found on the current page.");
-      }
-      for (const role of pageRoles) rolesById.set(role.jobId, role);
-      pageCount += 1;
-
-      const nextButton = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
-      if (!nextButton || nextButton.disabled || nextButton.getAttribute("aria-disabled") === "true") {
-        break;
-      }
-
-      const previousFirstJobId = pageRoles[0]?.jobId || null;
-      nextButton.click();
-      if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) {
-        navigationError = "Apple's submitted roles page did not change after selecting Next Page.";
-        break;
-      }
-    }
-  } finally {
-    const currentPageIndex = getAppleHistoryPageIndex();
-    if (originalPageIndex !== null && currentPageIndex !== null && currentPageIndex !== originalPageIndex) {
-      const direction = currentPageIndex > originalPageIndex ? "Previous Page" : "Next Page";
-      const count = Math.abs(currentPageIndex - originalPageIndex);
-      for (let index = 0; index < count; index += 1) {
-        const button = document.querySelector(`#profile-roles-pagination button[aria-label="${direction}"]`);
-        if (!button || button.disabled) break;
-        const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
-        button.click();
-        if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) break;
-      }
-    }
-  }
-
-  return {
-    roles: Array.from(rolesById.values()),
-    pagesRead: pageCount,
-    pageCount: Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) || pageCount,
-    navigationError
   };
 }
 
@@ -1469,60 +1377,23 @@ function findSubmittedRoleCard(jobId) {
   return null;
 }
 
-async function findSubmittedRoleOnAnyPage(jobId, { requireCompleteSearch = false } = {}) {
+function checkAppleSubmittedRoleStatus(jobId, expectedPageIndex) {
   assertAppleActiveSubmittedRolesPage();
-  if (collectSubmittedRoleCards().length === 0) {
-    throw new Error("No active submission cards are visible. Sign in again, then open Submissions → Active.");
+  if (getAppleHistoryPageIndex() !== expectedPageIndex) {
+    throw new Error("The visible submissions page changed. Analyze this page again before withdrawing.");
   }
-  const currentPageMatch = findSubmittedRoleCard(jobId);
-  if (currentPageMatch) return currentPageMatch;
-
-  while (true) {
-    const previousButton = document.querySelector('#profile-roles-pagination button[aria-label="Previous Page"]');
-    if (!previousButton || previousButton.disabled || previousButton.getAttribute("aria-disabled") === "true") break;
-    const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
-    previousButton.click();
-    if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) {
-      if (requireCompleteSearch) throw new Error("Could not verify all Apple submission pages after navigation stopped.");
-      return null;
-    }
-  }
-
-  const visited = new Set();
-  while (true) {
-    const pageIndex = getAppleHistoryPageIndex();
-    if (pageIndex !== null && visited.has(pageIndex)) {
-      if (requireCompleteSearch) throw new Error("Could not verify all Apple submission pages after pagination repeated.");
-      return null;
-    }
-    if (pageIndex !== null) visited.add(pageIndex);
-
-    const match = findSubmittedRoleCard(jobId);
-    if (match) return match;
-
-    const nextButton = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
-    if (!nextButton || nextButton.disabled || nextButton.getAttribute("aria-disabled") === "true") return null;
-    const previousFirstJobId = collectSubmittedRoleCards()[0]?.jobId || null;
-    nextButton.click();
-    if (!(await waitForSubmittedRolePageChange(previousFirstJobId))) {
-      if (requireCompleteSearch) throw new Error("Could not verify all Apple submission pages after navigation stopped.");
-      return null;
-    }
-  }
-}
-
-async function checkAppleSubmittedRoleStatus(jobId) {
-  assertAppleActiveSubmittedRolesPage();
   if (findAppleWithdrawalConfirmationModal()) {
     return { confirmationOpen: true, active: null };
   }
-  const match = await findSubmittedRoleOnAnyPage(jobId, { requireCompleteSearch: true });
-  return { confirmationOpen: false, active: Boolean(match), favorite: match?.favorite ?? null };
+  const match = findSubmittedRoleCard(jobId);
+  // Absence on one page cannot prove that the role is inactive on every page.
+  return { confirmationOpen: false, active: match ? true : null, favorite: match?.favorite ?? null };
 }
 
-async function waitForSubmittedRoleWithdrawal(jobId, timeoutMs = 10000) {
+async function waitForSubmittedRoleWithdrawal(jobId, expectedPageIndex, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (getAppleHistoryPageIndex() !== expectedPageIndex) return false;
     if (!findSubmittedRoleCard(jobId)) return true;
     await delay(300);
   }
@@ -1563,13 +1434,16 @@ async function waitForAppleWithdrawalConfirmationToClose(timeoutMs = 10000) {
   return false;
 }
 
-async function withdrawAppleSubmittedRoles(requestedRoles = []) {
+async function withdrawAppleSubmittedRoles(requestedRoles = [], expectedPageIndex) {
   if (getSiteId() !== "apple" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
     throw new Error("Open your Apple Careers roles page before withdrawing applications.");
   }
 
   if (!Array.isArray(requestedRoles) || requestedRoles.length !== 1) {
     throw new Error("Send exactly one role per withdrawal request so each result can be verified before continuing.");
+  }
+  if (getAppleHistoryPageIndex() !== expectedPageIndex) {
+    throw new Error("The visible submissions page changed. Analyze this page again before withdrawing.");
   }
   const roles = requestedRoles;
   const withdrawn = [];
@@ -1581,20 +1455,20 @@ async function withdrawAppleSubmittedRoles(requestedRoles = []) {
       break;
     }
 
-    const match = await findSubmittedRoleOnAnyPage(role.jobId);
+    const match = findSubmittedRoleCard(role.jobId);
     if (!match) {
-      failed.push({ jobId: role.jobId, title: role.title, error: "The active role could not be found." });
+      failed.push({ jobId: role.jobId, title: role.title, error: "The active role is no longer on this page. Analyze the visible page again." });
       break;
     }
 
     if (
       match.favorite !== false ||
-      APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(String(match.jobId || role.jobId))
+      APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(String(match.jobId || role.jobId).split("-")[0])
     ) {
       failed.push({
         jobId: role.jobId,
         title: role.title,
-        error: APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(String(match.jobId || role.jobId))
+        error: APPLE_ROLE_IDS_PROTECTED_FROM_BATCH_WITHDRAWAL.has(String(match.jobId || role.jobId).split("-")[0])
           ? "This role is protected from batch withdrawal because you have an interview in progress."
           : match.favorite === true
             ? "This role is starred and is protected from batch withdrawal."
@@ -1620,8 +1494,8 @@ async function withdrawAppleSubmittedRoles(requestedRoles = []) {
       break;
     }
 
-    if (!(await waitForSubmittedRoleWithdrawal(role.jobId))) {
-      failed.push({ jobId: role.jobId, title: role.title, error: "Apple did not confirm that this application was withdrawn." });
+    if (!(await waitForSubmittedRoleWithdrawal(role.jobId, expectedPageIndex))) {
+      failed.push({ jobId: role.jobId, title: role.title, error: "Apple did not confirm this withdrawal on the same submissions page." });
       break;
     }
     withdrawn.push({ jobId: role.jobId, title: role.title });
@@ -4745,39 +4619,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE") {
-    goToAppleSubmittedHistoryPage(message.pageIndex)
-      .then((data) => sendResponse({ ok: true, data }))
-      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not navigate Apple submissions." }));
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_ADVANCE_SUBMITTED_HISTORY_PAGE") {
-    advanceAppleSubmittedHistoryPage()
-      .then((data) => sendResponse({ ok: true, data }))
-      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not advance Apple submissions." }));
-    return true;
-  }
-
-  if (message?.type === "APPLE_CAREERS_COLLECT_SUBMITTED_HISTORY") {
-    collectAppleSubmittedHistory()
-      .then((data) => sendResponse({ ok: true, data }))
-      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not read Apple submitted roles." }));
-    return true;
-  }
-
   if (message?.type === "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES") {
-    withdrawAppleSubmittedRoles(message.roles || [])
+    withdrawAppleSubmittedRoles(message.roles || [], message.expectedPageIndex)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not withdraw selected Apple roles." }));
     return true;
   }
 
   if (message?.type === "APPLE_CAREERS_CHECK_SUBMITTED_ROLE_STATUS") {
-    checkAppleSubmittedRoleStatus(message.jobId)
-      .then((data) => sendResponse({ ok: true, data }))
-      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not verify this Apple submission." }));
-    return true;
+    try {
+      sendResponse({ ok: true, data: checkAppleSubmittedRoleStatus(message.jobId, message.expectedPageIndex) });
+    } catch (error) {
+      sendResponse({ ok: false, error: error?.message || "Could not verify this Apple submission." });
+    }
+    return false;
   }
 
   if (message?.type === "APPLE_CAREERS_EXTRACT_JOB") {
