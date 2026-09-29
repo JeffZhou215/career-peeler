@@ -1,4 +1,4 @@
-importScripts("lib/core.js");
+importScripts("lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -1606,7 +1606,7 @@ async function initializeKnownSiteScanActivity(normalizedProfile) {
 }
 
 async function startScan(tab, userProfile) {
-  if (scanState.running) {
+  if (scanState.running || appleRankingIsRunning()) {
     return {
       ok: false,
       error: "A scan is already running."
@@ -1623,6 +1623,10 @@ async function startScan(tab, userProfile) {
   }
 
   const normalizedProfile = normalizeUserProfile(userProfile);
+  if (siteConfig.id === "apple" && normalizedProfile.scanMode === "auto_apply") {
+    const result = await startAppleJobRanking(tab, normalizedProfile);
+    return { ...result, rankedOnly: result.ok };
+  }
   const readinessError = getAutoApplyReadinessError(normalizedProfile);
 
   if (readinessError) {
@@ -1666,7 +1670,7 @@ async function startScan(tab, userProfile) {
 }
 
 async function startRetryErrorJobs(tab, userProfile) {
-  if (scanState.running) {
+  if (scanState.running || appleRankingIsRunning()) {
     return {
       ok: false,
       error: "A scan is already running."
@@ -1682,6 +1686,9 @@ async function startRetryErrorJobs(tab, userProfile) {
 
   const savedErrors = [...scanState.errors];
   const retryLinks = buildRetryableErrorLinks(savedErrors);
+  if (userProfile?.scanMode === "auto_apply" && retryLinks.some((link) => link.site === "apple")) {
+    return { ok: false, error: "Rank Apple jobs and use Ranked Job Queue to apply within the 50-application target. Use Scan Only to recheck saved errors." };
+  }
 
   if (retryLinks.length === 0) {
     return {
@@ -1749,7 +1756,7 @@ async function stopScan() {
 }
 
 async function clearAppliedJobs() {
-  if (scanState.running) {
+  if (scanState.running || appleRankingIsRunning()) {
     return {
       ok: false,
       error: "Stop the scan before clearing applied jobs."
@@ -1783,7 +1790,7 @@ async function clearAppliedJobs() {
 }
 
 async function clearErrorJobs() {
-  if (scanState.running) {
+  if (scanState.running || appleRankingIsRunning()) {
     return {
       ok: false,
       error: "Stop the scan before clearing error jobs."
@@ -1828,7 +1835,7 @@ async function clearErrorJobs() {
 }
 
 async function clearHistory() {
-  if (scanState.running) {
+  if (scanState.running || appleRankingIsRunning()) {
     return {
       ok: false,
       error: "Stop the scan before clearing history."
@@ -3335,6 +3342,7 @@ async function saveAppleSubmittedRoleReview(page, analysis = null) {
 }
 
 async function analyzeAppleSubmittedRolesCurrentPage(tabId, userProfile, analysisId) {
+  if (appleRankingIsRunning()) throw new Error("Stop the job ranking or application queue before reviewing submissions.");
   const run = { stopRequested: pendingSubmittedRoleAnalysisStops.delete(analysisId) };
   submittedRoleAnalysisRuns.set(analysisId, run);
   const readPage = async () => {
@@ -3393,6 +3401,7 @@ async function analyzeAppleSubmittedRolesCurrentPage(tabId, userProfile, analysi
 }
 
 async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
+  if (appleRankingIsRunning()) throw new Error("Stop the job ranking or application queue before reviewing submissions.");
   const run = { stopRequested: pendingSubmittedRoleAnalysisStops.delete(analysisId) };
   submittedRoleAnalysisRuns.set(analysisId, run);
   const sendPageRequest = async (type, payload = {}) => {
@@ -3428,6 +3437,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       pagesRead: reviews.size,
       pageCount: page?.pageCount || reviews.size,
       complete,
+      scannedAt: Date.now(),
       warning,
       updatedAt: Date.now()
     };
@@ -3584,6 +3594,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop } = {}) {
           title: details.title,
           description: String(details.description || "").slice(0, 7000),
           minimumQualifications: String(details.minimumQualifications || "").slice(0, 3500),
+          minimumQualificationItems: details.minimumQualificationItems || [],
           preferredQualifications: String(details.preferredQualifications || "").slice(0, 2500),
           requiredExperience: details.requiredExperience || [],
           fetchedAt: Date.now()
@@ -3636,6 +3647,13 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
 }
 
 const RECOGNIZED_MESSAGE_TYPES = new Set([
+  "APPLE_CAREERS_GET_JOB_RANKING",
+  "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
+  "APPLE_CAREERS_START_JOB_RANKING",
+  "APPLE_CAREERS_QUEUE_TOP_JOBS",
+  "APPLE_CAREERS_REMOVE_QUEUED_JOB",
+  "APPLE_CAREERS_APPLY_JOB_QUEUE",
+  "APPLE_CAREERS_STOP_JOB_RANKING",
   "APPLE_CAREERS_START_SCAN",
   "APPLE_CAREERS_RETRY_ERROR_JOBS",
   "APPLE_CAREERS_STOP_SCAN",
@@ -3665,7 +3683,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   scanStateReady.then(async () => {
     try {
-      if (message.type === "APPLE_CAREERS_START_SCAN") {
+      if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
+        sendResponse({ ok: true, data: await getAppleRankingView(message.userProfile, message.topN) });
+      } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {
+        sendResponse(await refreshAppleJobQueueCount(message.tab));
+      } else if (message.type === "APPLE_CAREERS_START_JOB_RANKING") {
+        sendResponse(await startAppleJobRanking(message.tab, message.userProfile));
+      } else if (message.type === "APPLE_CAREERS_QUEUE_TOP_JOBS") {
+        sendResponse(await queueTopAppleJobs(message.userProfile, message.topN));
+      } else if (message.type === "APPLE_CAREERS_REMOVE_QUEUED_JOB") {
+        sendResponse(await removeQueuedAppleJob(message.jobId));
+      } else if (message.type === "APPLE_CAREERS_APPLY_JOB_QUEUE") {
+        sendResponse(await startAppleJobQueue(message.tab, message.userProfile));
+      } else if (message.type === "APPLE_CAREERS_STOP_JOB_RANKING") {
+        sendResponse(await stopAppleJobRanking());
+      } else if (message.type === "APPLE_CAREERS_START_SCAN") {
         sendResponse(await startScan(message.tab, message.userProfile));
       } else if (message.type === "APPLE_CAREERS_RETRY_ERROR_JOBS") {
         sendResponse(await startRetryErrorJobs(message.tab, message.userProfile));
@@ -3700,6 +3732,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_STOP_SUBMITTED_ROLES_ANALYSIS") {
         sendResponse(requestStopSubmittedRoleAnalysis(message.analysisId));
       } else if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW") {
+        if (appleRankingIsRunning()) throw new Error("Stop the job ranking or application queue before starting another workflow.");
         sendResponse(await runApplicationWorkflow(message.tab, { userProfile: message.userProfile }));
       } else if (message.type === "APPLE_CAREERS_GENERATE_ANSWER") {
         let job = null;

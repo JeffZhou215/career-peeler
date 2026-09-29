@@ -1177,6 +1177,8 @@ function extractAppleSubmittedRoleDetails() {
     url: window.location.href,
     description,
     minimumQualifications,
+    minimumQualificationItems: Array.from(minimumElement?.querySelectorAll("li") || [])
+      .map((item) => normalizeText(item.innerText || item.textContent || "")).filter(Boolean),
     preferredQualifications,
     jobText: jobText.slice(0, 12000),
     requiredExperience: extractExperienceMatches(jobText)

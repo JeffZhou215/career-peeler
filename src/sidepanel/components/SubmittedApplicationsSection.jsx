@@ -345,10 +345,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       { ...review, roles: (review.roles || []).filter((role) => String(role.jobId) !== String(jobId)) }
     ]));
     const snapshot = archive.latestScan
-      ? { ...archive.latestScan, roles: (archive.latestScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() }
+      ? { ...archive.latestScan, scannedAt: archive.latestScan.scannedAt || archive.latestScan.updatedAt,
+          roles: (archive.latestScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() }
       : null;
     const completeSnapshot = archive.lastCompleteScan
       ? { ...archive.lastCompleteScan,
+          scannedAt: archive.lastCompleteScan.scannedAt || archive.lastCompleteScan.updatedAt,
           roles: (archive.lastCompleteScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)),
           updatedAt: Date.now() }
       : null;
@@ -371,7 +373,19 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       };
       if (snapshot) snapshot.roles = Array.from(savedById.values());
     }
-    await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: { ...archive, pages,
+    const ranking = (await chrome.storage.local.get("appleJobRanking")).appleJobRanking;
+    if (ranking) {
+      const baseId = String(jobId).split("-")[0];
+      ranking.withdrawnIds = [...new Set([...(ranking.withdrawnIds || []), baseId])];
+      ranking.reservations = (ranking.reservations || []).filter((role) => String(role.jobId).split("-")[0] !== baseId);
+      if (ranking.jobs?.[baseId]) {
+        ranking.jobs[baseId].queueStatus = "withdrawn";
+        ranking.jobs[baseId].eligible = false;
+      }
+      if (ranking.capacitySnapshot) ranking.capacitySnapshot = { ...ranking.capacitySnapshot,
+        roles: ranking.capacitySnapshot.roles.filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() };
+    }
+    await chrome.storage.local.set({ ...(ranking ? { appleJobRanking: ranking } : {}), [SAVED_REVIEWS_KEY]: { ...archive, pages,
       ...(snapshot ? { latestScan: snapshot } : {}),
       ...(completeSnapshot ? { lastCompleteScan: completeSnapshot } : {}) } });
     setSavedPages(pages);
@@ -390,6 +404,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     setError("");
     setStatusMessage(`Preparing to withdraw ${targets.length} selected Apple applications...`);
     try {
+      const ranking = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING" });
+      if (ranking?.data?.running) throw new Error("Stop the job ranking or application queue before withdrawing applications.");
       const tab = await getActiveTab();
       if (!tab?.id || (reviewContext?.tabId && tab.id !== reviewContext.tabId)) {
         throw new Error("Return to the Apple tab containing your submissions.");

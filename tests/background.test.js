@@ -49,7 +49,11 @@ const sandbox = {
   // background.js's real importScripts("lib/core.js") loads that file into the same global scope
   // (classic MV3 service workers support importScripts natively) -- simulate that here by
   // pre-populating the sandbox with lib/core.js's exports instead of actually loading a file.
-  importScripts: () => {},
+  importScripts: (...files) => {
+    for (const file of files.filter((name) => name !== "lib/core.js")) {
+      vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), sandbox, { filename: file });
+    }
+  },
   ...core,
   chrome: {
     storage: {

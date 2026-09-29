@@ -263,11 +263,13 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
       await refreshScanStatus();
       setStatusMessage(
-        savedProfile.scanMode === "scan_only"
+        response.rankedOnly
+          ? "Apple jobs are being ranked first. Open Ranked Job Queue to review the best matches and apply later."
+          : savedProfile.scanMode === "scan_only"
           ? "Scan-only mode is running. No applications will be submitted."
           : savedProfile.llmEnabled
             ? "Auto apply is running with LLM-assisted matching enabled."
-            : "Auto apply is running with local matching. Likely match and Review jobs may be submitted."
+            : "Auto apply is running with local matching. Only Likely Match jobs may be submitted."
       );
     } catch (error) {
       setStatusMessage(error?.message || "Could not start the list scan.");
@@ -465,11 +467,11 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
               <div className="settings-group-fields">
                 <label className="field-label" htmlFor="scanMode">
                   <span>Scan Mode</span>
-                  <HelpTooltip text="Scan only records decisions without submitting applications. Auto apply submits likely matches and review jobs." />
+                  <HelpTooltip text="Scan Only records decisions. Apple Auto Apply ranks the filtered search first; submit later from Ranked Job Queue. Other supported sites automatically submit only strong matches." />
                 </label>
                 <select id="scanMode" value={profile.scanMode} onChange={(event) => save({ scanMode: event.target.value })}>
                   <option value="scan_only">Scan Only</option>
-                  <option value="auto_apply">Auto Apply: Match &amp; Review</option>
+                  <option value="auto_apply">Auto Apply: Strong Matches</option>
                 </select>
 
                 <div className="compact-setting-row">

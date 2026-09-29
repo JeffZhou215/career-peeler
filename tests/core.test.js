@@ -1038,7 +1038,7 @@ asyncTest("applyLlmMatch(job, userProfile, {onError}) reports failures via the c
   );
 });
 
-asyncTest("applyLlmMatch promotes a 70%+ LLM skip with limited tool gaps to auto-apply Review", async () => {
+asyncTest("applyLlmMatch preserves an LLM rejection even when its numeric score is high", async () => {
   await withStubbedFetch(
     jsonFetchResponse({
       decision: "Likely skip",
@@ -1067,12 +1067,11 @@ asyncTest("applyLlmMatch promotes a 70%+ LLM skip with limited tool gaps to auto
 
       const result = await applyLlmMatch(job, profile, {});
 
-      assert.equal(LLM_AUTO_APPLY_SCORE_THRESHOLD, 70);
-      assert.equal(result.decision, "Review");
+      assert.equal(LLM_AUTO_APPLY_SCORE_THRESHOLD, 80);
+      assert.equal(result.decision, "Likely skip");
       assert.equal(result.llmMatch.decision, "Likely skip", "the raw LLM verdict remains available for diagnostics");
       assert.deepEqual(result.llmMatch.missingCriticalRequirements, ["Docker", "Kubernetes"]);
-      assert.equal(shouldAutoApply(statusFromDecision(result.decision), result, profile), true);
-      assert.match(result.reason, /70% auto-apply threshold/);
+      assert.equal(shouldAutoApply(statusFromDecision(result.decision), result, profile), false);
     }
   );
 });
@@ -1096,7 +1095,7 @@ asyncTest("applyLlmMatch leaves an otherwise identical LLM skip below 70% as Lik
   );
 });
 
-asyncTest("applyLlmMatch treats exactly 70% as meeting the auto-apply threshold", async () => {
+asyncTest("a strong local keyword match cannot promote a low-score LLM rejection", async () => {
   await withStubbedFetch(
     jsonFetchResponse({
       decision: "Likely skip",
@@ -1106,11 +1105,11 @@ asyncTest("applyLlmMatch treats exactly 70% as meeting the auto-apply threshold"
     }),
     async () => {
       const profile = buildRealisticProfile({ scanMode: "auto_apply", autoApplyConsent: true });
-      const job = { title: "Infrastructure Engineer", decision: "Review", requiredYears: 2, matches: [] };
+      const job = { title: "Infrastructure Engineer", decision: "Likely match", requiredYears: 2, matches: [] };
       const result = await applyLlmMatch(job, profile, {});
 
-      assert.equal(result.decision, "Review");
-      assert.equal(shouldAutoApply(statusFromDecision(result.decision), result, profile), true);
+      assert.equal(result.decision, "Likely skip");
+      assert.equal(shouldAutoApply(statusFromDecision(result.decision), result, profile), false);
     }
   );
 });

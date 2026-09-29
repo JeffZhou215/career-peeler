@@ -5,6 +5,7 @@ import { GenericAutofillSection } from "./components/GenericAutofillSection";
 import { useUserProfile } from "./hooks/useUserProfile";
 import { useScanStatus } from "./hooks/useScanStatus";
 import { SubmittedApplicationsSection } from "./components/SubmittedApplicationsSection";
+import { RankedJobsSection } from "./components/RankedJobsSection";
 
 export function App() {
   const { profile, loaded, save } = useUserProfile();
@@ -28,6 +29,7 @@ export function App() {
       </header>
 
       <SubmittedApplicationsSection profile={profile} setStatusMessage={setStatusMessage} />
+      <RankedJobsSection profile={profile} save={save} setStatusMessage={setStatusMessage} />
 
       <KnownSitesSection
         profile={profile}
