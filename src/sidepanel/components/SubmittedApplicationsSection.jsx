@@ -32,6 +32,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
   const activeAnalysisIdRef = useRef(null);
+  const allScanReviewsRef = useRef(new Map());
 
   const selectedRoles = useMemo(
     () => roles.filter((role) => selectedIds.includes(role.jobId)),
@@ -64,6 +65,29 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       scoresFetched: review.scoresFetched || 0
     });
     setSavedPages((current) => ({ ...current, [review.pageIndex]: review }));
+  }
+
+  function showAllReviews(reviews) {
+    const byId = new Map();
+    for (const review of reviews) {
+      for (const role of review.roles || []) {
+        if (role.active !== false) byId.set(String(role.jobId), { ...role, sourcePageIndex: review.pageIndex });
+      }
+    }
+    setRoles(rankSubmittedRoles(Array.from(byId.values())));
+    setSelectedIds([]);
+    setSelectedPageIndex(null);
+    setReviewContext(null);
+    setSavedPages((current) => Object.assign({}, current,
+      ...reviews.map((review) => ({ [review.pageIndex]: review }))));
+    setPostingCacheStats({
+      fetched: reviews.reduce((sum, review) => sum + (review.descriptionsFetched || 0), 0),
+      reused: reviews.reduce((sum, review) => sum + (review.descriptionsReused || 0), 0),
+      unavailable: reviews.reduce((sum, review) => sum + (review.descriptionsUnavailable || 0), 0),
+      saveFailed: reviews.some((review) => review.cacheSaveFailed),
+      scoresReused: reviews.reduce((sum, review) => sum + (review.scoresReused || 0), 0),
+      scoresFetched: reviews.reduce((sum, review) => sum + (review.scoresFetched || 0), 0)
+    });
   }
 
   async function showCurrentPageFromStorage(cancelled = () => false) {
@@ -121,7 +145,13 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     function handleProgress(message) {
       if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS" ||
         message.analysisId !== activeAnalysisIdRef.current) return;
-      showReview(message.data, message.tabId);
+      if (message.scope === "all") {
+        allScanReviewsRef.current.set(message.data.review.pageIndex, message.data.review);
+        showAllReviews(Array.from(allScanReviewsRef.current.values()));
+        setStatusMessage(`Scanned ${message.data.pagesRead} of ${message.data.pageCount} Apple submissions pages.`);
+      } else {
+        showReview(message.data, message.tabId);
+      }
     }
     chrome.runtime.onMessage.addListener(handleProgress);
     return () => {
@@ -139,6 +169,49 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     } catch (loadError) {
       setError(loadError?.message || "Could not load this Apple submissions page.");
     } finally {
+      setBusy(false);
+    }
+  }
+
+  function showAllSavedPages() {
+    showAllReviews(Object.values(savedPages).sort((left, right) => (left.updatedAt || 0) - (right.updatedAt || 0)));
+    setError("Saved pages may include roles that have since moved or been withdrawn. Open a page and refresh it before selecting withdrawals.");
+  }
+
+  async function analyzeAllRoles() {
+    setBusy(true);
+    setError("");
+    setConfirmationOpen(false);
+    try {
+      const tab = await getActiveTab();
+      if (!tab?.id || !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
+        throw new Error("Open Apple Careers → Your Roles → Submissions → Active before scanning all pages.");
+      }
+      allScanReviewsRef.current = new Map();
+      setSelectedIds([]);
+      setReviewContext(null);
+      const analysisId = crypto.randomUUID();
+      activeAnalysisIdRef.current = analysisId;
+      setAnalysisRunning(true);
+      setStopRequested(false);
+      setStatusMessage("Scanning Apple submissions one page at a time...");
+      const response = await chrome.runtime.sendMessage({
+        type: "APPLE_CAREERS_ANALYZE_ALL_SUBMITTED_ROLES",
+        tabId: tab.id,
+        userProfile: profile,
+        analysisId
+      });
+      if (!response?.ok) throw new Error(response?.error || "Could not scan all Apple submissions.");
+      showAllReviews(response.data.reviews || []);
+      setError(response.data.warning || "");
+      setStatusMessage(`${response.data.stopped ? "Stopped after" : "Scanned"} ${response.data.pagesRead} of ${response.data.pageCount} pages. Open a saved page to select withdrawals.`);
+    } catch (scanError) {
+      setError(scanError?.message || "The all-submissions scan stopped.");
+      setStatusMessage("All-submissions scan stopped. Saved pages remain available.");
+    } finally {
+      activeAnalysisIdRef.current = null;
+      setAnalysisRunning(false);
+      setStopRequested(false);
       setBusy(false);
     }
   }
@@ -220,6 +293,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         </label>
         <a href={role.url} target="_blank" rel="noopener noreferrer" className="submitted-role-title">{role.title}</a>
         <span className="submitted-role-id">Job ID {role.jobId}</span>
+        {role.sourcePageIndex && <span className="submitted-role-id">Saved page {role.sourcePageIndex}</span>}
         <span className="submitted-role-protected-label">
           {role.scoreSource === "previous_review" ? "Saved score from an earlier review" : role.descriptionAvailable ? "Scored against job description" : "Matching unavailable · review the posting yourself"}
         </span>
@@ -344,29 +418,36 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           <p className="eyebrow">APPLE CAREERS</p>
           <div className="submitted-history-title-row">
             <h2>Submitted Application Review</h2>
-            <HelpTooltip text="Reviews only the active submissions visible on your current Apple Your Roles page. Scores use your saved resume and each available posting. Posting details and matching results are reused when possible. Select any unstarred roles yourself before batch withdrawal." />
+            <HelpTooltip text="Scan the current page or all active submissions. Scores use your saved resume and cached posting details when available. The combined ranking is for review; open a saved page to select roles for withdrawal." />
           </div>
         </div>
         {analysisRunning ? (
           <button type="button" onClick={stopAnalysis} disabled={stopRequested}>{stopRequested ? "Stopping…" : "Stop analysis"}</button>
         ) : (
           <button type="button" onClick={analyzeRoles} disabled={busy}>
-            {busy ? "Working…" : roles.length ? "Refresh this page" : "Analyze this page"}
+            {busy ? "Working…" : "Analyze this page"}
           </button>
         )}
       </div>
 
       <p className="muted">
-        Open Your Roles → Submissions → Active and choose the page you want to review. Saved pages and partial results remain available if matching stops. No roles are selected automatically.
+        Open Your Roles → Submissions → Active. Scan all pages for a combined ranking, then open a saved page to select withdrawals. Saved pages and partial results remain available if matching stops. No roles are selected automatically.
       </p>
+      <button type="button" onClick={analyzeAllRoles} disabled={busy}>Scan all submissions</button>
       <button type="button" className="secondary-button" onClick={loadCurrentPage} disabled={busy}>
         Show current page from saved results
       </button>
+      {savedPageIndices.length > 1 && (
+        <button type="button" className="secondary-button" onClick={showAllSavedPages} disabled={busy}>
+          Show all saved rankings
+        </button>
+      )}
 
       {savedPageIndices.length > 1 && (
         <label className="submitted-history-search">
           <span>Saved submissions page</span>
-          <select value={selectedPageIndex || ""} onChange={(event) => showReview(savedPages[event.target.value])} disabled={busy}>
+          <select value={selectedPageIndex || ""} onChange={(event) => event.target.value ? showReview(savedPages[event.target.value]) : showAllSavedPages()} disabled={busy}>
+            <option value="">All saved pages</option>
             {savedPageIndices.map((pageIndex) => (
               <option key={pageIndex} value={pageIndex}>Page {pageIndex} · {savedPages[pageIndex].roles.length} saved roles</option>
             ))}
@@ -388,7 +469,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       {roles.length > 0 && (
         <>
           <div className="submitted-history-summary">
-            <span>{roles.length} saved submissions from page {reviewContext?.pageIndex || "?"} of {reviewContext?.pageCount || "?"}</span>
+            <span>{roles.length} saved submissions {reviewContext ? `from page ${reviewContext.pageIndex} of ${reviewContext.pageCount}` : "across scanned pages"}</span>
           </div>
           <p className="muted">
             Starred roles and job 200654506 are excluded from the low-match ranking and protected from batch withdrawal. Search by title or job ID to check any application before reviewing a withdrawal batch.
@@ -444,7 +525,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               )}
             </>
           ) : (
-            <p className="muted">Choose a saved page or analyze the visible page to review withdrawals.</p>
+            <p className="muted">Choose a saved page or analyze the visible page to select withdrawals. The combined ranking is read only.</p>
           )}
 
           {visibleRoles.length === 0 ? (
@@ -453,7 +534,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             <>
               {lowMatchRoles.length > 0 && (
                 <>
-                  <h3 className="submitted-role-group-heading">Lower-match roles on this page · unstarred</h3>
+                  <h3 className="submitted-role-group-heading">Lower-match roles · unstarred</h3>
                   <ol className="submitted-role-list">
                     {lowMatchRoles.map((role) => renderRoleCard(role))}
                   </ol>

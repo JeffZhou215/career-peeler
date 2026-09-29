@@ -3255,7 +3255,7 @@ async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, should
 async function saveAppleSubmittedRoleReview(page, analysis = null) {
   const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY);
   const archive = stored[APPLE_SUBMITTED_ROLE_REVIEWS_KEY] || { version: 1, pages: {} };
-  const previous = archive.pages?.[page.pageIndex]?.roles || [];
+  const previous = Object.values(archive.pages || {}).flatMap((savedPage) => savedPage.roles || []);
   const previousById = new Map(previous.map((role) => [String(role.jobId), role]));
   const scoredById = new Map((analysis?.roles || []).filter((role) => Number.isFinite(role?.score)).map((role) => [String(role.jobId), role]));
   const roles = page.roles.filter((role) => role.active !== false).map((role) => {
@@ -3345,6 +3345,77 @@ async function analyzeAppleSubmittedRolesCurrentPage(tabId, userProfile, analysi
     }
     return review;
   } finally {
+    submittedRoleAnalysisRuns.delete(analysisId);
+    pendingSubmittedRoleAnalysisStops.delete(analysisId);
+  }
+}
+
+async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
+  const run = { stopRequested: pendingSubmittedRoleAnalysisStops.delete(analysisId) };
+  submittedRoleAnalysisRuns.set(analysisId, run);
+  const sendPageRequest = async (type, payload = {}) => {
+    const response = await sendMessageWithFallback(tabId, { type, ...payload });
+    if (!response?.ok) throw new Error(response?.error || "Apple's submitted roles page could not be read.");
+    return response.data;
+  };
+  const reviews = new Map();
+  let originalPageIndex = null;
+  let page = null;
+  let stopped = false;
+  let warning = null;
+  const publish = (review) => {
+    reviews.set(review.pageIndex, review);
+    chrome.runtime.sendMessage({
+      type: "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS",
+      analysisId,
+      tabId,
+      scope: "all",
+      data: { review, pagesRead: reviews.size, pageCount: page.pageCount }
+    }).catch(() => {});
+  };
+
+  try {
+    page = await sendPageRequest("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+    if (page.withdrawalConfirmationOpen) {
+      throw new Error("Resolve Apple's open withdrawal confirmation before scanning submissions.");
+    }
+    originalPageIndex = page.pageIndex;
+    page = await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: 1 });
+    for (let count = 0; count < 100; count += 1) {
+      if (run.stopRequested) { stopped = true; break; }
+      let review = await saveAppleSubmittedRoleReview(page);
+      publish(review);
+      if (!warning) {
+        try {
+          const analysis = await scoreAppleSubmittedRoles(page.roles.filter((role) => role.active !== false), userProfile, {
+            shouldStop: () => run.stopRequested,
+            onProgress: async (partial) => {
+              review = await saveAppleSubmittedRoleReview(page, partial);
+              publish(review);
+            }
+          });
+          review = await saveAppleSubmittedRoleReview(page, analysis);
+          publish(review);
+          if (analysis.error) warning = `Matching stopped: ${analysis.error} Remaining pages were saved without new scores.`;
+          if (analysis.stopped) { stopped = true; break; }
+        } catch (error) {
+          warning = `Matching stopped: ${error?.message || "OpenAI matching failed."} Remaining pages were saved without new scores.`;
+          review = await saveAppleSubmittedRoleReview(page, { error: warning });
+          publish(review);
+        }
+      }
+      if (run.stopRequested) { stopped = true; break; }
+      if (!page.hasNextPage) break;
+      const advance = await sendPageRequest("APPLE_CAREERS_ADVANCE_SUBMITTED_HISTORY_PAGE");
+      if (!advance.advanced) break;
+      page = advance.page;
+    }
+    return { reviews: Array.from(reviews.values()), pagesRead: reviews.size,
+      pageCount: page?.pageCount || reviews.size, stopped, warning };
+  } finally {
+    if (originalPageIndex !== null) {
+      await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: originalPageIndex }).catch(() => {});
+    }
     submittedRoleAnalysisRuns.delete(analysisId);
     pendingSubmittedRoleAnalysisStops.delete(analysisId);
   }
@@ -3489,6 +3560,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_GET_SCAN_STATUS",
   "APPLE_CAREERS_SCORE_SUBMITTED_ROLES",
   "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
+  "APPLE_CAREERS_ANALYZE_ALL_SUBMITTED_ROLES",
   "APPLE_CAREERS_STOP_SUBMITTED_ROLES_ANALYSIS",
   "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
   "APPLE_CAREERS_GENERATE_ANSWER",
@@ -3534,6 +3606,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           ok: true,
           data: await analyzeAppleSubmittedRolesCurrentPage(message.tabId, message.userProfile, message.analysisId)
+        });
+      } else if (message.type === "APPLE_CAREERS_ANALYZE_ALL_SUBMITTED_ROLES") {
+        sendResponse({
+          ok: true,
+          data: await analyzeAllAppleSubmittedRoles(message.tabId, message.userProfile, message.analysisId)
         });
       } else if (message.type === "APPLE_CAREERS_STOP_SUBMITTED_ROLES_ANALYSIS") {
         sendResponse(requestStopSubmittedRoleAnalysis(message.analysisId));

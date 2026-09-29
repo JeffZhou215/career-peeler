@@ -1351,6 +1351,53 @@ function collectCurrentAppleSubmittedHistoryPage() {
   };
 }
 
+async function waitForAppleSubmittedHistoryPage(pageIndex, previousFirstJobId, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastSignature = "";
+  let stableReads = 0;
+  while (Date.now() < deadline) {
+    const currentIndex = getAppleHistoryPageIndex();
+    if (currentIndex === pageIndex) {
+      const roles = collectSubmittedRoleCards();
+      const signature = roles.map((role) => role.jobId).join("|");
+      stableReads = signature && signature === lastSignature ? stableReads + 1 : 1;
+      lastSignature = signature;
+      if (roles.length && roles[0].jobId !== previousFirstJobId && stableReads >= 3) {
+        return collectCurrentAppleSubmittedHistoryPage();
+      }
+    }
+    await delay(300);
+  }
+  throw new Error("Apple's submissions page did not finish loading. Sign in again if your session expired.");
+}
+
+async function goToAppleSubmittedHistoryPage(targetPageIndex) {
+  let page = collectCurrentAppleSubmittedHistoryPage();
+  const target = Number(targetPageIndex);
+  if (!Number.isInteger(target) || target < 1 || target > page.pageCount) {
+    throw new Error("The requested Apple submissions page is unavailable.");
+  }
+  while (page.pageIndex !== target) {
+    const forward = page.pageIndex < target;
+    const button = document.querySelector(`#profile-roles-pagination button[aria-label="${forward ? "Next Page" : "Previous Page"}"]`);
+    if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
+      throw new Error("Apple's submissions pagination could not reach the requested page.");
+    }
+    const previousFirstJobId = page.roles[0]?.jobId;
+    button.click();
+    page = await waitForAppleSubmittedHistoryPage(page.pageIndex + (forward ? 1 : -1), previousFirstJobId);
+  }
+  return page;
+}
+
+async function advanceAppleSubmittedHistoryPage() {
+  const page = collectCurrentAppleSubmittedHistoryPage();
+  if (!page.hasNextPage) return { advanced: false, page };
+  const button = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
+  button.click();
+  return { advanced: true, page: await waitForAppleSubmittedHistoryPage(page.pageIndex + 1, page.roles[0]?.jobId) };
+}
+
 function findSubmittedRoleCard(jobId) {
   const anchor = Array.from(document.querySelectorAll('a[href*="/en-us/details/"]')).find((candidate) =>
     isElementVisible(candidate) && getJobIdFromUrl(candidate.href) === String(jobId)
@@ -4690,6 +4737,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } catch (error) {
       sendResponse({ ok: false, error: error?.message || "Could not read this Apple submissions page." });
     }
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE") {
+    goToAppleSubmittedHistoryPage(message.pageIndex)
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not open the Apple submissions page." }));
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_ADVANCE_SUBMITTED_HISTORY_PAGE") {
+    advanceAppleSubmittedHistoryPage()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not advance Apple submissions." }));
     return true;
   }
 
