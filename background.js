@@ -35,6 +35,7 @@ const questionAgentJobsByTabId = new Map();
 const questionAgentActivityByTabId = new Map();
 const submittedRoleAnalysisRuns = new Map();
 const pendingSubmittedRoleAnalysisStops = new Set();
+const pendingAppleWithdrawalClickByTabId = new Map();
 
 let scanState = createIdleState();
 let storedJobRecordsAtScanStart = {};
@@ -2519,6 +2520,25 @@ function detachDebugger(tabId) {
   });
 }
 
+async function sendTrustedMouseClick(tabId, x, y) {
+  let attached = false;
+  try {
+    await attachDebugger(tabId);
+    attached = true;
+    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x, y, button: "none", clickCount: 0, pointerType: "mouse"
+    });
+    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse"
+    });
+    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse"
+    });
+  } finally {
+    if (attached) await detachDebugger(tabId);
+  }
+}
+
 async function dispatchTrustedWorkdayClick(sender, point = {}) {
   const tabId = sender?.tab?.id;
   const frameId = Number(sender?.frameId || 0);
@@ -2535,46 +2555,87 @@ async function dispatchTrustedWorkdayClick(sender, point = {}) {
     return { ok: false, error: "The Workday option no longer had a valid click point." };
   }
 
-  let attached = false;
   try {
-    await attachDebugger(tabId);
-    attached = true;
-    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x,
-      y,
-      button: "none",
-      clickCount: 0,
-      pointerType: "mouse"
-    });
-    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x,
-      y,
-      button: "left",
-      buttons: 1,
-      clickCount: 1,
-      pointerType: "mouse"
-    });
-    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x,
-      y,
-      button: "left",
-      buttons: 0,
-      clickCount: 1,
-      pointerType: "mouse"
-    });
+    await sendTrustedMouseClick(tabId, x, y);
     return { ok: true };
   } catch (error) {
     return {
       ok: false,
       error: `Trusted Workday click failed: ${error?.message || "Chrome rejected the input request."}`
     };
-  } finally {
-    if (attached) {
-      await detachDebugger(tabId);
+  }
+}
+
+async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expectedPageIndex) {
+  const tabId = sender?.tab?.id;
+  const roleId = String(jobId || "");
+  if (!Number.isInteger(tabId) || Number(sender?.frameId || 0) !== 0 ||
+    !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(sender?.tab?.url || "") ||
+    !/^\d+(?:-\d+)?$/.test(roleId) || !["open", "proceed"].includes(stage) ||
+    !Number.isInteger(expectedPageIndex) || expectedPageIndex < 1 ||
+    roleId.split("-")[0] === "200654506") {
+    return { ok: false, error: "Trusted withdrawal input requires a valid, unprotected Apple role on the active submissions page." };
+  }
+  if (stage === "proceed") {
+    const pending = pendingAppleWithdrawalClickByTabId.get(tabId);
+    if (pending?.jobId !== roleId || Date.now() - pending.startedAt > 30000) {
+      return { ok: false, error: "Apple's confirmation no longer matches the withdrawal that was opened." };
     }
+  }
+
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (requestedJobId, requestedStage, pageIndex) => {
+        const input = document.querySelector('#profile-roles-pagination input[type="number"]');
+        const currentPage = input ? Number(input.value) :
+          Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) === 1 ? 1 : null;
+        if (currentPage !== pageIndex) return { error: "Apple changed the visible submissions page." };
+        let button;
+        if (requestedStage === "open") {
+          button = document.getElementById(`js-withdraw-link-${requestedJobId}`);
+          const card = button?.closest(".rolecard");
+          const favorite = card?.querySelector(`input[type="checkbox"][id="addToFavoriteId-favorite-${requestedJobId}"]`);
+          if (!card || !favorite || favorite.checked ||
+            !card.querySelector(`[id="role-title-${requestedJobId}"]`)) {
+            return { error: "The selected role is missing, starred, or could not be verified on this page." };
+          }
+        } else {
+          const modal = Array.from(document.querySelectorAll(".rc-overlay-popup-outer")).find((candidate) => {
+            const heading = candidate.querySelector("#yourroles-withdrawmodal-header")?.textContent?.trim();
+            const rect = candidate.getBoundingClientRect();
+            return heading === "Are you sure you want to withdraw this submission?" && rect.width > 0 && rect.height > 0;
+          });
+          if (!modal) {
+            return { error: "Apple's withdrawal confirmation is not open." };
+          }
+          button = modal.querySelector("#yourroles-withdrawmodal-proceed-button");
+        }
+        if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
+          return { error: "Apple's withdrawal button is unavailable." };
+        }
+        button.scrollIntoView({ block: "center", inline: "center" });
+        const rect = button.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (rect.width < 2 || rect.height < 2 || !hit || (hit !== button && !button.contains(hit))) {
+          return { error: "Apple's withdrawal button is obscured or no longer visible." };
+        }
+        return { x, y };
+      },
+      args: [roleId, stage, expectedPageIndex]
+    });
+    const point = injection?.result;
+    if (point?.error || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
+      return { ok: false, error: point?.error || "Apple's withdrawal button could not be located." };
+    }
+    await sendTrustedMouseClick(tabId, point.x, point.y);
+    if (stage === "open") pendingAppleWithdrawalClickByTabId.set(tabId, { jobId: roleId, startedAt: Date.now() });
+    else pendingAppleWithdrawalClickByTabId.delete(tabId);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: `Apple withdrawal click failed: ${error?.message || "Chrome rejected the input request."}` };
   }
 }
 
@@ -3433,6 +3494,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_GENERATE_ANSWER",
   "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
   "APPLE_CAREERS_TRUSTED_WORKDAY_CLICK",
+  "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK",
   "APPLE_CAREERS_TRUSTED_WORKDAY_TEXT_REPLACEMENT",
   "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW",
   "APPLE_CAREERS_TEST_API_KEY",
@@ -3564,6 +3626,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       } else if (message.type === "APPLE_CAREERS_TRUSTED_WORKDAY_CLICK") {
         sendResponse(await dispatchTrustedWorkdayClick(sender, message.point));
+      } else if (message.type === "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK") {
+        sendResponse(await dispatchTrustedAppleWithdrawalClick(sender, message.jobId, message.stage, message.expectedPageIndex));
       } else if (message.type === "APPLE_CAREERS_TRUSTED_WORKDAY_TEXT_REPLACEMENT") {
         sendResponse(await dispatchTrustedWorkdayTextReplacement(sender, message.value));
       } else if (message.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW") {

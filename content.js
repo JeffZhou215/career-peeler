@@ -1390,14 +1390,28 @@ function checkAppleSubmittedRoleStatus(jobId, expectedPageIndex) {
   return { confirmationOpen: false, active: match ? true : null, favorite: match?.favorite ?? null };
 }
 
+function getAppleWithdrawalFailureMessage() {
+  const candidates = document.querySelectorAll('#global-alert, [role="alert"], [aria-live="assertive"], .rc-overlay-popup-outer');
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) continue;
+    const message = normalizeText(candidate.innerText || candidate.textContent || "");
+    if (/\b(unable|cannot|can't|could not|failed|not able|error)\b.{0,100}\bwithdraw\b|\bwithdraw\b.{0,100}\b(failed|unsuccessful|error|unavailable)\b/i.test(message)) {
+      return message.slice(0, 350);
+    }
+  }
+  return null;
+}
+
 async function waitForSubmittedRoleWithdrawal(jobId, expectedPageIndex, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (getAppleHistoryPageIndex() !== expectedPageIndex) return false;
-    if (!findSubmittedRoleCard(jobId)) return true;
+    if (getAppleHistoryPageIndex() !== expectedPageIndex) return { withdrawn: false, error: "Apple changed the visible submissions page." };
+    const error = getAppleWithdrawalFailureMessage();
+    if (error) return { withdrawn: false, error };
+    if (!findSubmittedRoleCard(jobId)) return { withdrawn: true };
     await delay(300);
   }
-  return false;
+  return { withdrawn: false, error: getAppleWithdrawalFailureMessage() || "Apple did not confirm that this application was withdrawn." };
 }
 
 function findAppleWithdrawalConfirmationModal() {
@@ -1415,14 +1429,26 @@ function findAppleWithdrawalConfirmationModal() {
     : { modal, proceedButton: null };
 }
 
-async function waitForAppleWithdrawalConfirmationModal(timeoutMs = 10000) {
+async function waitForAppleWithdrawalConfirmationModal(previousError = null, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const confirmation = findAppleWithdrawalConfirmationModal();
-    if (confirmation) return confirmation;
+    if (confirmation) return { confirmation };
+    const error = getAppleWithdrawalFailureMessage();
+    if (error && error !== previousError) return { error };
     await delay(150);
   }
-  return null;
+  return { error: getAppleWithdrawalFailureMessage() || null };
+}
+
+async function clickAppleWithdrawalControl(jobId, stage, expectedPageIndex) {
+  const response = await chrome.runtime.sendMessage({
+    type: "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK",
+    jobId,
+    stage,
+    expectedPageIndex
+  });
+  if (!response?.ok) throw new Error(response?.error || "Chrome could not click Apple's withdrawal control.");
 }
 
 async function waitForAppleWithdrawalConfirmationToClose(timeoutMs = 10000) {
@@ -1477,25 +1503,38 @@ async function withdrawAppleSubmittedRoles(requestedRoles = [], expectedPageInde
       break;
     }
 
-    match.withdrawButton.click();
-    const confirmation = await waitForAppleWithdrawalConfirmationModal();
-    if (!confirmation) {
-      failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal confirmation did not appear; the batch stopped before confirming this application." });
+    const previousError = getAppleWithdrawalFailureMessage();
+    try {
+      await clickAppleWithdrawalControl(role.jobId, "open", expectedPageIndex);
+    } catch (clickError) {
+      failed.push({ jobId: role.jobId, title: role.title, error: clickError?.message || "Apple's Withdraw button could not be clicked." });
       break;
     }
+    const outcome = await waitForAppleWithdrawalConfirmationModal(previousError);
+    if (!outcome.confirmation) {
+      failed.push({ jobId: role.jobId, title: role.title, error: outcome.error || "Apple's confirmation did not appear after clicking Withdraw. The batch stopped before confirming this application." });
+      break;
+    }
+    const confirmation = outcome.confirmation;
     if (!confirmation.proceedButton || confirmation.proceedButton.disabled || confirmation.proceedButton.getAttribute("aria-disabled") === "true") {
       failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal confirmation is missing an enabled Proceed button; the batch stopped for manual review." });
       break;
     }
 
-    confirmation.proceedButton.click();
+    try {
+      await clickAppleWithdrawalControl(role.jobId, "proceed", expectedPageIndex);
+    } catch (clickError) {
+      failed.push({ jobId: role.jobId, title: role.title, error: clickError?.message || "Apple's Proceed button could not be clicked." });
+      break;
+    }
     if (!(await waitForAppleWithdrawalConfirmationToClose())) {
       failed.push({ jobId: role.jobId, title: role.title, error: "Apple's withdrawal confirmation did not close after Proceed; the batch stopped." });
       break;
     }
 
-    if (!(await waitForSubmittedRoleWithdrawal(role.jobId, expectedPageIndex))) {
-      failed.push({ jobId: role.jobId, title: role.title, error: "Apple did not confirm this withdrawal on the same submissions page." });
+    const result = await waitForSubmittedRoleWithdrawal(role.jobId, expectedPageIndex);
+    if (!result.withdrawn) {
+      failed.push({ jobId: role.jobId, title: role.title, error: result.error || "Apple did not confirm this withdrawal on the same submissions page." });
       break;
     }
     withdrawn.push({ jobId: role.jobId, title: role.title });
