@@ -134,7 +134,8 @@ body {
   font-weight: 600;
 }
 
-.submitted-history-search input {
+.submitted-history-search input,
+.submitted-history-search select {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--color-border);

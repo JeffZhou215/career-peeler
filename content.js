@@ -1380,7 +1380,7 @@ function findSubmittedRoleCard(jobId) {
 function checkAppleSubmittedRoleStatus(jobId, expectedPageIndex) {
   assertAppleActiveSubmittedRolesPage();
   if (getAppleHistoryPageIndex() !== expectedPageIndex) {
-    throw new Error("The visible submissions page changed. Analyze this page again before withdrawing.");
+    throw new Error("The visible submissions page changed. Load the current page from saved results before withdrawing.");
   }
   if (findAppleWithdrawalConfirmationModal()) {
     return { confirmationOpen: true, active: null };
@@ -1443,7 +1443,7 @@ async function withdrawAppleSubmittedRoles(requestedRoles = [], expectedPageInde
     throw new Error("Send exactly one role per withdrawal request so each result can be verified before continuing.");
   }
   if (getAppleHistoryPageIndex() !== expectedPageIndex) {
-    throw new Error("The visible submissions page changed. Analyze this page again before withdrawing.");
+    throw new Error("The visible submissions page changed. Load the current page from saved results before withdrawing.");
   }
   const roles = requestedRoles;
   const withdrawn = [];
@@ -1457,7 +1457,7 @@ async function withdrawAppleSubmittedRoles(requestedRoles = [], expectedPageInde
 
     const match = findSubmittedRoleCard(role.jobId);
     if (!match) {
-      failed.push({ jobId: role.jobId, title: role.title, error: "The active role is no longer on this page. Analyze the visible page again." });
+      failed.push({ jobId: role.jobId, title: role.title, error: "The active role is no longer on this page. Load the current page from saved results again." });
       break;
     }
 
