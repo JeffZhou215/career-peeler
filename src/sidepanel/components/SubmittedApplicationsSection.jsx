@@ -402,9 +402,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         if (!response?.ok) throw new Error(response?.error || "Apple's active submissions page could not be read.");
         return response.data;
       };
-      const readSettledPage = async (preferredPageIndex = null) => {
+      const readSettledPage = async () => {
         const deadline = Date.now() + 15000;
-        const preferredDeadline = Date.now() + 3500;
         let previousSignature = "";
         let stableReads = 0;
         let lastError;
@@ -414,8 +413,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             const signature = `${page.pageIndex}|${page.pageCount}|${page.roles.map((role) => role.jobId).join("|")}`;
             stableReads = signature === previousSignature ? stableReads + 1 : 1;
             previousSignature = signature;
-            if (stableReads >= 3 &&
-              (preferredPageIndex === null || page.pageIndex === preferredPageIndex || Date.now() >= preferredDeadline)) {
+            if (stableReads >= 3) {
               return page;
             }
           } catch (error) {
@@ -476,7 +474,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               confirmedCount += 1;
               setStatusMessage(`Updating the visible submissions page after ${role.title}...`);
               try {
-                page = await readSettledPage(matchedPageIndex > 1 ? 1 : null);
+                page = await readSettledPage();
               } catch (refreshError) {
                 await removeSavedRole(role.jobId);
                 setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));

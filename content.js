@@ -1496,17 +1496,17 @@ async function waitForSubmittedRoleWithdrawal(jobId, title, expectedPageIndex, b
     const error = getAppleWithdrawalFailureMessage();
     if (error) return { withdrawn: false, error };
     sawSuccess ||= Boolean(getAppleWithdrawalSuccessMessage(title));
-    if (pageIndex === 1 && expectedPageIndex !== 1 && sawSuccess && !findAppleWithdrawalConfirmationModal()) {
-      return { withdrawn: true, pageReset: true };
-    }
+    const ids = collectSubmittedRoleCards().filter((role) => role.active).map((role) => String(role.jobId));
+    const signature = `${pageIndex}|${ids.join("|")}`;
+    stableReads = signature === lastSignature ? stableReads + 1 : 1;
+    lastSignature = signature;
     if (pageIndex !== expectedPageIndex) {
+      if (sawSuccess && ids.length > 0 && stableReads >= 3 && !findAppleWithdrawalConfirmationModal()) {
+        return { withdrawn: true, pageChangedTo: pageIndex };
+      }
       await delay(300);
       continue;
     }
-    const ids = collectSubmittedRoleCards().filter((role) => role.active).map((role) => String(role.jobId));
-    const signature = ids.join("|");
-    stableReads = signature === lastSignature ? stableReads + 1 : 1;
-    lastSignature = signature;
     if (sawSuccess && !ids.includes(String(jobId)) && ids.length >= targetCount && stableReads >= 3 &&
       !findAppleWithdrawalConfirmationModal()) {
       return { withdrawn: true };
