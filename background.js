@@ -3161,6 +3161,10 @@ async function analyzeAppleSubmittedRolesPageByPage(tabId, userProfile) {
           page: pagesRead,
           pageCount: page.pageCount,
           rolesAnalyzed: roleById.size,
+          roles: rolesToAnalyze.map((role) => ({
+            ...role,
+            ...(scoreById.get(String(role.jobId)) || {})
+          })),
           descriptionsFetched,
           descriptionsReused
         }

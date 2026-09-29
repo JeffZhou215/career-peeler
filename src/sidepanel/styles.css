@@ -108,6 +108,24 @@ body {
   font-weight: 600;
 }
 
+.submitted-history-progress {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  font-size: 12px;
+}
+
+.submitted-history-progress strong {
+  color: var(--color-text);
+}
+
+.submitted-history-progress span {
+  color: var(--color-text-secondary);
+}
+
 .submitted-history-search {
   display: grid;
   gap: 6px;

@@ -1,8 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
 
 const TARGET_ACTIVE_APPLICATIONS = 50;
+
+function rankSubmittedRoles(roles) {
+  const activeRoles = roles.filter((role) => role.active !== false);
+  const lowMatches = activeRoles
+    .filter((role) => role.protectedFromBatchWithdrawal === false)
+    .sort((left, right) => (left.score ?? 101) - (right.score ?? 101));
+  const protectedRoles = activeRoles
+    .filter((role) => role.protectedFromBatchWithdrawal !== false)
+    .sort((left, right) => String(left.title || "").localeCompare(String(right.title || "")));
+  return [...lowMatches, ...protectedRoles];
+}
 
 export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [roles, setRoles] = useState([]);
@@ -11,7 +22,10 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [error, setError] = useState("");
   const [pagesRead, setPagesRead] = useState(0);
+  const [scanProgress, setScanProgress] = useState(null);
+  const [analysisComplete, setAnalysisComplete] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const scanActiveRef = useRef(false);
 
   const selectedRoles = useMemo(
     () => roles.filter((role) => selectedIds.includes(role.jobId)),
@@ -30,7 +44,17 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   useEffect(() => {
     function handleSubmittedRoleProgress(message) {
       if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS") return;
+      if (!scanActiveRef.current) return;
       const progress = message.data || {};
+      setPagesRead(progress.page || 0);
+      setScanProgress(progress);
+      if (Array.isArray(progress.roles) && progress.roles.length) {
+        setRoles((current) => {
+          const byId = new Map(current.map((role) => [String(role.jobId), role]));
+          for (const role of progress.roles) byId.set(String(role.jobId), role);
+          return rankSubmittedRoles(Array.from(byId.values()));
+        });
+      }
       setStatusMessage(
         `Reviewing Apple submissions page ${progress.page}${progress.pageCount ? ` of ${progress.pageCount}` : ""} · ${progress.rolesAnalyzed || 0} roles matched so far.`
       );
@@ -51,6 +75,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         throw new Error("Open Apple Careers → Profile → Your Roles, then choose Submissions and Active.");
       }
 
+      setRoles([]);
+      setSelectedIds([]);
+      setPagesRead(0);
+      setScanProgress({ page: 0, pageCount: 0, rolesAnalyzed: 0 });
+      setAnalysisComplete(false);
+      scanActiveRef.current = true;
       setStatusMessage("Reviewing Apple submissions page by page and matching postings with your saved profile...");
       const response = await chrome.runtime.sendMessage({
         type: "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
@@ -59,16 +89,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       });
       if (!response?.ok) throw new Error(response?.error || "Could not score the submitted roles.");
 
+      const ranked = rankSubmittedRoles(response.data?.roles || []);
+      const rankedLowMatches = ranked.filter((role) => role.protectedFromBatchWithdrawal === false);
       setPagesRead(response.data?.pagesRead || 0);
-      const scoredRoles = (response.data?.roles || []).filter((role) => role.active !== false);
-      const rankedLowMatches = scoredRoles
-        .filter((role) => role.protectedFromBatchWithdrawal === false)
-        .sort((left, right) => (left.score ?? 101) - (right.score ?? 101));
-      const protectedFromBatch = scoredRoles
-        .filter((role) => role.protectedFromBatchWithdrawal !== false)
-        .sort((left, right) => String(left.title || "").localeCompare(String(right.title || "")));
-      const ranked = [...rankedLowMatches, ...protectedFromBatch];
       setRoles(ranked);
+      setAnalysisComplete(true);
+      setScanProgress(null);
       setSelectedIds(
         rankedLowMatches
           .filter((role) => Number.isFinite(role.score) && role.descriptionAvailable)
@@ -80,8 +106,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       );
     } catch (analyzeError) {
       setError(analyzeError?.message || "Could not analyze Apple submitted roles.");
+      if (scanActiveRef.current) {
+        setScanProgress((current) => ({ ...current, failed: true }));
+      }
       setStatusMessage("Could not analyze Apple submitted roles.");
     } finally {
+      scanActiveRef.current = false;
       setBusy(false);
     }
   }
@@ -109,7 +139,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             type="checkbox"
             checked={selectedIds.includes(role.jobId)}
             onChange={() => toggleRole(role.jobId)}
-            disabled={busy || confirmationOpen || protectedFromBatch || !Number.isFinite(role.score)}
+            disabled={busy || !analysisComplete || confirmationOpen || protectedFromBatch || !Number.isFinite(role.score)}
           />
           <span>{role.score === null || role.score === undefined ? "No score" : `${role.score}% fit`}</span>
         </label>
@@ -177,11 +207,34 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
 
       {error && <p className="submitted-history-error" role="alert">{error}</p>}
 
+      {scanProgress && (
+        <div className="submitted-history-progress" role="status" aria-live="polite">
+          <strong>
+            {scanProgress.failed
+              ? "Scan stopped before completion"
+              : busy
+                ? "Reviewing submissions"
+                : "Scan incomplete"}
+          </strong>
+          <span>
+            {scanProgress.rolesAnalyzed || 0} roles scored
+            {scanProgress.pageCount ? ` · page ${scanProgress.page || 0} of ${scanProgress.pageCount}` : " · preparing first page"}
+          </span>
+          {!analysisComplete && (
+            <span>{scanProgress.failed ? "Refresh to complete the ranking. Withdrawal selection is unavailable." : "Roles appear as each page finishes. Withdrawal selection unlocks after the full scan."}</span>
+          )}
+        </div>
+      )}
+
       {roles.length > 0 && (
         <>
           <div className="submitted-history-summary">
-            <span>{roles.length} active submissions across {pagesRead} pages</span>
-            <span>{neededToReachTarget} withdrawals needed to reach {TARGET_ACTIVE_APPLICATIONS}</span>
+            <span>
+              {analysisComplete
+                ? `${roles.length} active submissions across ${pagesRead} pages`
+                : `${roles.length} submissions scored so far across ${pagesRead} pages`}
+            </span>
+            {analysisComplete && <span>{neededToReachTarget} withdrawals needed to reach {TARGET_ACTIVE_APPLICATIONS}</span>}
           </div>
           <p className="muted">
             Starred roles and job 200654506 are excluded from the low-match ranking and protected from batch withdrawal. Search by title or job ID to check any application before reviewing a withdrawal batch.
@@ -197,41 +250,47 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               disabled={busy}
             />
           </label>
-          <p className="muted">
-            {selectedIds.length} eligible role{selectedIds.length === 1 ? " is" : "s are"} preselected; {neededToReachTarget} withdrawal{neededToReachTarget === 1 ? " is" : "s are"} needed to reach {TARGET_ACTIVE_APPLICATIONS}.
-            {selectedIds.length < neededToReachTarget && " There are not enough description-scored, unstarred roles to fill that batch."}
-          </p>
+          {analysisComplete ? (
+            <>
+              <p className="muted">
+                {selectedIds.length} eligible role{selectedIds.length === 1 ? " is" : "s are"} preselected; {neededToReachTarget} withdrawal{neededToReachTarget === 1 ? " is" : "s are"} needed to reach {TARGET_ACTIVE_APPLICATIONS}.
+                {selectedIds.length < neededToReachTarget && " There are not enough description-scored, unstarred roles to fill that batch."}
+              </p>
 
-          {confirmationOpen ? (
-            <div className="submitted-history-confirm" role="alertdialog" aria-modal="true" aria-labelledby="withdraw-confirm-title">
-              <h3 id="withdraw-confirm-title">Confirm application withdrawals</h3>
-              <p>
-                This will withdraw {selectedRoles.length} Apple applications from your account. That changes your candidacy for those roles. Confirm only if you want to withdraw every role listed here.
-              </p>
-              <p>
-                Apple will show a confirmation for each role. The extension will click Proceed one at a time and stop if a confirmation or withdrawal cannot be verified.
-              </p>
-              <ul>
-                {selectedRoles.map((role) => (
-                  <li key={role.jobId}>{role.title} · {role.jobId}</li>
-                ))}
-              </ul>
-              <div className="row">
-                <button type="button" className="secondary-button" onClick={() => setConfirmationOpen(false)} disabled={busy}>Cancel</button>
-                <button type="button" className="danger-button" onClick={withdrawSelected} disabled={busy || !selectedRoles.length}>
-                  {busy ? "Withdrawing…" : `Confirm withdraw ${selectedRoles.length}`}
+              {confirmationOpen ? (
+                <div className="submitted-history-confirm" role="alertdialog" aria-modal="true" aria-labelledby="withdraw-confirm-title">
+                  <h3 id="withdraw-confirm-title">Confirm application withdrawals</h3>
+                  <p>
+                    This will withdraw {selectedRoles.length} Apple applications from your account. That changes your candidacy for those roles. Confirm only if you want to withdraw every role listed here.
+                  </p>
+                  <p>
+                    Apple will show a confirmation for each role. The extension will click Proceed one at a time and stop if a confirmation or withdrawal cannot be verified.
+                  </p>
+                  <ul>
+                    {selectedRoles.map((role) => (
+                      <li key={role.jobId}>{role.title} · {role.jobId}</li>
+                    ))}
+                  </ul>
+                  <div className="row">
+                    <button type="button" className="secondary-button" onClick={() => setConfirmationOpen(false)} disabled={busy}>Cancel</button>
+                    <button type="button" className="danger-button" onClick={withdrawSelected} disabled={busy || !selectedRoles.length}>
+                      {busy ? "Withdrawing…" : `Confirm withdraw ${selectedRoles.length}`}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={busy || selectedRoles.length === 0}
+                  onClick={() => setConfirmationOpen(true)}
+                >
+                  Review withdrawal of {selectedRoles.length} selected roles
                 </button>
-              </div>
-            </div>
+              )}
+            </>
           ) : (
-            <button
-              type="button"
-              className="danger-button"
-              disabled={busy || selectedRoles.length === 0}
-              onClick={() => setConfirmationOpen(true)}
-            >
-              Review withdrawal of {selectedRoles.length} selected roles
-            </button>
+            <p className="muted">Live ranking preview · complete the scan to review withdrawal selections.</p>
           )}
 
           {visibleRoles.length === 0 ? (
@@ -240,7 +299,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
             <>
               {lowMatchRoles.length > 0 && (
                 <>
-                  <h3 className="submitted-role-group-heading">Low-match roles · unstarred</h3>
+                  <h3 className="submitted-role-group-heading">Low-match roles · unstarred{analysisComplete ? "" : " · so far"}</h3>
                   <ol className="submitted-role-list">
                     {lowMatchRoles.map((role) => renderRoleCard(role))}
                   </ol>
