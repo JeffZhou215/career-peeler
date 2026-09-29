@@ -1535,12 +1535,14 @@ async function waitForAppleWithdrawalConfirmationModal(previousError = null, tim
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const confirmation = findAppleWithdrawalConfirmationModal();
-    if (confirmation) return { confirmation };
+    if (confirmation?.proceedButton && !confirmation.proceedButton.disabled &&
+      confirmation.proceedButton.getAttribute("aria-disabled") !== "true") return { confirmation };
     const error = getAppleWithdrawalFailureMessage();
     if (error && error !== previousError) return { error };
     await delay(150);
   }
-  return { error: getAppleWithdrawalFailureMessage() || null };
+  return { error: getAppleWithdrawalFailureMessage() ||
+    (findAppleWithdrawalConfirmationModal() ? "Apple's Proceed button did not become enabled and visible." : null) };
 }
 
 async function clickAppleWithdrawalControl(jobId, stage, expectedPageIndex) {

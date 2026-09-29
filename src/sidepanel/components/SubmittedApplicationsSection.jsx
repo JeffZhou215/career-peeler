@@ -425,6 +425,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         throw lastError || new Error("Apple's submissions list did not settle after the withdrawal.");
       };
       const verifyAcrossPages = async (role) => {
+        const currentPage = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+        if (currentPage.withdrawalConfirmationOpen) return { confirmationOpen: true, active: null };
         const result = await readApplePage("APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
         if (!Array.isArray(result.pages) || result.pages.length !== result.pageCount) {
           throw new Error("Apple did not return every active submissions page.");

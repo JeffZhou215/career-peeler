@@ -2490,7 +2490,7 @@ function attachDebugger(tabId) {
     chrome.debugger.attach({ tabId }, "1.3", () => {
       const error = chrome.runtime.lastError;
       if (error) {
-        reject(new Error(error.message || "Chrome could not attach trusted input to the Workday tab."));
+        reject(new Error(error.message || "Chrome could not attach trusted input to the requesting tab."));
         return;
       }
       resolve();
@@ -2520,20 +2520,24 @@ function detachDebugger(tabId) {
   });
 }
 
+async function sendMouseClickWithAttachedDebugger(tabId, x, y) {
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved", x, y, button: "none", clickCount: 0, pointerType: "mouse"
+  });
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse"
+  });
+  await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse"
+  });
+}
+
 async function sendTrustedMouseClick(tabId, x, y) {
   let attached = false;
   try {
     await attachDebugger(tabId);
     attached = true;
-    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseMoved", x, y, button: "none", clickCount: 0, pointerType: "mouse"
-    });
-    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
-      type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse"
-    });
-    await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse"
-    });
+    await sendMouseClickWithAttachedDebugger(tabId, x, y);
   } finally {
     if (attached) await detachDebugger(tabId);
   }
@@ -2583,46 +2587,82 @@ async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expecte
     }
   }
 
+  let attached = false;
   try {
+    // Attaching can change Chrome's viewport. Locate the button after attachment,
+    // and keep that session open until the input has been dispatched.
+    await attachDebugger(tabId);
+    attached = true;
     const [injection] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: (requestedJobId, requestedStage, pageIndex) => {
-        const input = document.querySelector('#profile-roles-pagination input[type="number"]');
-        const currentPage = input ? Number(input.value) :
-          Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) === 1 ? 1 : null;
-        if (currentPage !== pageIndex) return { error: "Apple changed the visible submissions page." };
-        let button;
-        if (requestedStage === "open") {
-          button = document.getElementById(`js-withdraw-link-${requestedJobId}`);
-          const card = button?.closest(".rolecard");
-          const favorite = card?.querySelector(`input[type="checkbox"][id="addToFavoriteId-favorite-${requestedJobId}"]`);
-          if (!card || !favorite || favorite.checked ||
-            !card.querySelector(`[id="role-title-${requestedJobId}"]`)) {
-            return { error: "The selected role is missing, starred, or could not be verified on this page." };
+      func: async (requestedJobId, requestedStage, pageIndex) => {
+        const deadline = Date.now() + 5000;
+        let previousButton;
+        let previousSignature = "";
+        let stableReads = 0;
+        let lastError = "Apple's withdrawal button is unavailable.";
+        const visible = (element) => {
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0 && style.display !== "none" &&
+            style.visibility !== "hidden" && style.opacity !== "0";
+        };
+        while (Date.now() < deadline) {
+          const input = document.querySelector('#profile-roles-pagination input[type="number"]');
+          const currentPage = input ? Number(input.value) :
+            Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) === 1 ? 1 : null;
+          if (currentPage !== pageIndex) return { error: "Apple changed the visible submissions page." };
+          let button;
+          if (requestedStage === "open") {
+            button = document.getElementById(`js-withdraw-link-${requestedJobId}`);
+            const card = button?.closest(".rolecard");
+            const favorite = card?.querySelector(`input[type="checkbox"][id="addToFavoriteId-favorite-${requestedJobId}"]`);
+            if (!card || !favorite || favorite.checked ||
+              !card.querySelector(`[id="role-title-${requestedJobId}"]`)) {
+              return { error: "The selected role is missing, starred, or could not be verified on this page." };
+            }
+          } else {
+            const modal = Array.from(document.querySelectorAll(".rc-overlay-popup-outer")).find((candidate) => {
+              const heading = candidate.querySelector("#yourroles-withdrawmodal-header")?.textContent?.replace(/\s+/g, " ").trim();
+              return heading === "Are you sure you want to withdraw this submission?" && visible(candidate);
+            });
+            if (!modal) {
+              stableReads = 0;
+              lastError = "Apple's withdrawal confirmation did not become visible.";
+              await new Promise((resolve) => setTimeout(resolve, 150));
+              continue;
+            }
+            button = modal.querySelector("#yourroles-withdrawmodal-proceed-button");
           }
-        } else {
-          const modal = Array.from(document.querySelectorAll(".rc-overlay-popup-outer")).find((candidate) => {
-            const heading = candidate.querySelector("#yourroles-withdrawmodal-header")?.textContent?.trim();
-            const rect = candidate.getBoundingClientRect();
-            return heading === "Are you sure you want to withdraw this submission?" && rect.width > 0 && rect.height > 0;
-          });
-          if (!modal) {
-            return { error: "Apple's withdrawal confirmation is not open." };
+          if (visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true") {
+            let rect = button.getBoundingClientRect();
+            if (rect.top < 0 || rect.left < 0 || rect.bottom > window.innerHeight || rect.right > window.innerWidth) {
+              button.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+              rect = button.getBoundingClientRect();
+            }
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const hit = document.elementFromPoint(x, y);
+            const signature = [rect.left, rect.top, rect.width, rect.height, window.innerWidth, window.innerHeight]
+              .map((value) => value.toFixed(1)).join("|");
+            if (rect.width >= 2 && rect.height >= 2 && hit && (hit === button || button.contains(hit))) {
+              stableReads = button === previousButton && signature === previousSignature ? stableReads + 1 : 1;
+              previousButton = button;
+              previousSignature = signature;
+              if (stableReads >= 3) return { x, y };
+              lastError = "Apple's withdrawal button did not stop moving.";
+            } else {
+              stableReads = 0;
+              lastError = "Apple's withdrawal button is obscured or no longer visible.";
+            }
+          } else {
+            stableReads = 0;
+            lastError = "Apple's withdrawal button did not become enabled and visible.";
           }
-          button = modal.querySelector("#yourroles-withdrawmodal-proceed-button");
+          await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
-          return { error: "Apple's withdrawal button is unavailable." };
-        }
-        button.scrollIntoView({ block: "center", inline: "center" });
-        const rect = button.getBoundingClientRect();
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + rect.height / 2;
-        const hit = document.elementFromPoint(x, y);
-        if (rect.width < 2 || rect.height < 2 || !hit || (hit !== button && !button.contains(hit))) {
-          return { error: "Apple's withdrawal button is obscured or no longer visible." };
-        }
-        return { x, y };
+        return { error: lastError };
       },
       args: [roleId, stage, expectedPageIndex]
     });
@@ -2630,12 +2670,14 @@ async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expecte
     if (point?.error || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
       return { ok: false, error: point?.error || "Apple's withdrawal button could not be located." };
     }
-    await sendTrustedMouseClick(tabId, point.x, point.y);
+    await sendMouseClickWithAttachedDebugger(tabId, point.x, point.y);
     if (stage === "open") pendingAppleWithdrawalClickByTabId.set(tabId, { jobId: roleId, startedAt: Date.now() });
     else pendingAppleWithdrawalClickByTabId.delete(tabId);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: `Apple withdrawal click failed: ${error?.message || "Chrome rejected the input request."}` };
+  } finally {
+    if (attached) await detachDebugger(tabId);
   }
 }
 

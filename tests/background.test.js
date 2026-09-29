@@ -123,6 +123,7 @@ globalThis.__backgroundTestApi = {
   isWorkdayHostname,
   isWorkdayUrl,
   dispatchTrustedWorkdayClick,
+  dispatchTrustedAppleWithdrawalClick,
   dispatchTrustedWorkdayTextReplacement,
   mergeWorkdayAutofillPage,
   persistObservedWorkdayCandidateProfile,
@@ -206,6 +207,7 @@ const {
   isWorkdayHostname,
   isWorkdayUrl,
   dispatchTrustedWorkdayClick,
+  dispatchTrustedAppleWithdrawalClick,
   dispatchTrustedWorkdayTextReplacement,
   mergeWorkdayAutofillPage,
   persistObservedWorkdayCandidateProfile,
@@ -769,6 +771,90 @@ asyncTest("trusted Workday clicks use a bounded CDP mouse sequence and detach im
     assert.equal(calls.length, 5, "a non-Workday sender must never reach chrome.debugger");
   } finally {
     sandbox.chrome.debugger = originalDebugger;
+  }
+});
+
+asyncTest("Apple Proceed waits for popup layout after debugger attachment and never clicks an obscured button", async () => {
+  const originalDebugger = sandbox.chrome.debugger;
+  const originalScripting = sandbox.chrome.scripting;
+  const calls = [];
+  let attached = false;
+  let obscured = false;
+  const sender = { tab: { id: 63, url: "https://jobs.apple.com/app/en-us/profile/roles" } };
+  const roleId = "200674539";
+
+  try {
+    sandbox.chrome.debugger = {
+      attach(target, version, callback) { attached = true; calls.push("attach"); callback(); },
+      sendCommand(target, method, params, callback) {
+        assert.equal(attached, true);
+        calls.push(params);
+        callback({});
+      },
+      detach(target, callback) { attached = false; calls.push("detach"); callback(); }
+    };
+    sandbox.chrome.scripting = {
+      executeScript: async ({ func, args }) => {
+        assert.equal(attached, true, "locate the button only after Chrome changes the viewport on attachment");
+        calls.push("locate");
+        let clock = 0;
+        let tick = 0;
+        const button = {
+          get disabled() { return args[1] === "proceed" && tick < 2; },
+          getAttribute: () => null,
+          getBoundingClientRect: () => ({ left: 100, top: tick < 3 ? 100 + tick * 10 : 160,
+            width: 100, height: 40, right: 200, bottom: 200 }),
+          contains: () => false,
+          closest: () => ({ querySelector: (selector) => selector.includes("checkbox") ? { checked: false } : {} }),
+          scrollIntoView: () => {}
+        };
+        const modal = {
+          getBoundingClientRect: () => ({ width: 300, height: 200 }),
+          querySelector: (selector) => selector.includes("header")
+            ? { textContent: "Are you sure you want to withdraw this submission?" } : button
+        };
+        const result = await vm.runInNewContext(`(${func.toString()})(...args)`, {
+          args,
+          Date: { now: () => clock },
+          setTimeout: (callback, ms) => { clock += ms; tick += 1; callback(); },
+          window: { innerWidth: 800, innerHeight: 600,
+            getComputedStyle: (element) => ({ display: "block", visibility: "visible",
+              opacity: element === modal && tick === 0 ? "0" : "1" }) },
+          document: {
+            querySelector: () => ({ value: "2" }),
+            querySelectorAll: () => [modal],
+            getElementById: () => button,
+            elementFromPoint: () => obscured ? {} : button
+          }
+        });
+        return [{ result }];
+      }
+    };
+
+    assert.equal((await dispatchTrustedAppleWithdrawalClick(sender, roleId, "proceed", 2)).ok, false);
+    assert.equal(calls.length, 0, "Proceed requires this role's own opened confirmation");
+    assert.equal((await dispatchTrustedAppleWithdrawalClick(sender, roleId, "open", 2)).ok, true);
+    assert.equal((await dispatchTrustedAppleWithdrawalClick(sender, "200654506", "open", 2)).ok, false);
+    calls.length = 0;
+    assert.equal((await dispatchTrustedAppleWithdrawalClick(sender, roleId, "proceed", 2)).ok, true);
+    assert.deepEqual(calls.filter((call) => typeof call === "string"), ["attach", "locate", "detach"]);
+    const events = calls.filter((call) => typeof call === "object");
+    assert.deepEqual(events.map((event) => event.type), ["mouseMoved", "mousePressed", "mouseReleased"]);
+    assert.ok(events.every((event) => event.x === 150 && event.y === 180), "click the final position after animation and enabling");
+
+    assert.equal((await dispatchTrustedAppleWithdrawalClick(sender, roleId, "open", 2)).ok, true);
+    obscured = true;
+    calls.length = 0;
+    const blocked = await dispatchTrustedAppleWithdrawalClick(sender, roleId, "proceed", 2);
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.error, /obscured/);
+    assert.deepEqual(calls, ["attach", "locate", "detach"], "no click is dispatched when another element covers Proceed");
+    obscured = false;
+    assert.equal((await dispatchTrustedAppleWithdrawalClick(sender, roleId, "proceed", 2)).ok, true,
+      "a failed preflight keeps the pending confirmation tied to the same role");
+  } finally {
+    sandbox.chrome.debugger = originalDebugger;
+    sandbox.chrome.scripting = originalScripting;
   }
 });
 

@@ -100,7 +100,8 @@ globalThis.__contentTestApi = {
   runApplicationWorkflowStep,
   shouldAgentAnswerRequiredControl,
   shouldAnswerTikTokAuthorizationField,
-  textIncludesTerm
+  textIncludesTerm,
+  waitForAppleWithdrawalConfirmationModal
 };`,
   sandbox,
   { filename: "content.js" }
@@ -155,7 +156,8 @@ const {
   runApplicationWorkflowStep,
   shouldAgentAnswerRequiredControl,
   shouldAnswerTikTokAuthorizationField,
-  textIncludesTerm
+  textIncludesTerm,
+  waitForAppleWithdrawalConfirmationModal
 } = sandbox.__contentTestApi;
 
 function classify(
@@ -2325,6 +2327,32 @@ asyncTest("a ByteDance popup mounting during the Submit search interrupts it imm
     sandbox.document.querySelector = originalQuerySelector;
     sandbox.document.querySelectorAll = originalQuerySelectorAll;
     sandbox.window.scrollTo = originalScrollTo;
+  }
+});
+
+asyncTest("Apple confirmation waits for Proceed to render and become enabled", async () => {
+  const originalQuerySelectorAll = sandbox.document.querySelectorAll;
+  const originalSetTimeout = sandbox.setTimeout;
+  let tick = 0;
+  const button = {
+    get disabled() { return tick < 2; },
+    getBoundingClientRect: () => ({ width: tick ? 100 : 0, height: 40 }),
+    getAttribute: () => null
+  };
+  const modal = {
+    getBoundingClientRect: () => ({ width: 300, height: 200 }),
+    querySelector: (selector) => selector.includes("header")
+      ? { textContent: "Are you sure you want to withdraw this submission?" } : button
+  };
+  try {
+    sandbox.document.querySelectorAll = (selector) => selector === ".rc-overlay-popup-outer" ? [modal] : [];
+    sandbox.setTimeout = (callback) => { tick += 1; callback(); };
+    const result = await waitForAppleWithdrawalConfirmationModal();
+    assert.equal(result.confirmation?.proceedButton, button);
+    assert.equal(tick, 2, "the popup appearing before an enabled Proceed button must not stop the batch");
+  } finally {
+    sandbox.document.querySelectorAll = originalQuerySelectorAll;
+    sandbox.setTimeout = originalSetTimeout;
   }
 });
 
