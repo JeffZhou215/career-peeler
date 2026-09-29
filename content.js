@@ -1398,6 +1398,29 @@ async function advanceAppleSubmittedHistoryPage() {
   return { advanced: true, page: await waitForAppleSubmittedHistoryPage(page.pageIndex + 1, page.roles[0]?.jobId) };
 }
 
+async function collectAllAppleSubmittedHistoryPages() {
+  const startingPage = collectCurrentAppleSubmittedHistoryPage();
+  if (startingPage.withdrawalConfirmationOpen) {
+    throw new Error("Resolve Apple's withdrawal confirmation before refreshing submissions.");
+  }
+  let page = await goToAppleSubmittedHistoryPage(1);
+  const pages = [];
+  while (pages.length < 100) {
+    pages.push(page);
+    if (!page.hasNextPage) {
+      if (page.pageIndex !== page.pageCount || pages.length !== page.pageCount) {
+        throw new Error("Apple's submissions pagination changed before every page could be refreshed.");
+      }
+      await goToAppleSubmittedHistoryPage(1);
+      return { pages, pageCount: page.pageCount };
+    }
+    const next = await advanceAppleSubmittedHistoryPage();
+    if (!next.advanced) break;
+    page = next.page;
+  }
+  throw new Error("Apple's active submissions could not be refreshed across every page.");
+}
+
 function findSubmittedRoleCard(jobId) {
   const anchor = Array.from(document.querySelectorAll('a[href*="/en-us/details/"]')).find((candidate) =>
     isElementVisible(candidate) && getJobIdFromUrl(candidate.href) === String(jobId)
@@ -1466,17 +1489,21 @@ async function waitForSubmittedRoleWithdrawal(jobId, title, expectedPageIndex, b
   let sawSuccess = false;
   while (Date.now() < deadline) {
     const pageIndex = getAppleHistoryPageIndex();
-    if (pageIndex !== null && pageIndex !== expectedPageIndex) {
-      return { withdrawn: false, error: "Apple changed the visible submissions page." };
-    }
     if (pageIndex === null) {
       await delay(300);
       continue;
     }
     const error = getAppleWithdrawalFailureMessage();
     if (error) return { withdrawn: false, error };
-    const ids = collectSubmittedRoleCards().filter((role) => role.active).map((role) => String(role.jobId));
     sawSuccess ||= Boolean(getAppleWithdrawalSuccessMessage(title));
+    if (pageIndex === 1 && expectedPageIndex !== 1 && sawSuccess && !findAppleWithdrawalConfirmationModal()) {
+      return { withdrawn: true, pageReset: true };
+    }
+    if (pageIndex !== expectedPageIndex) {
+      await delay(300);
+      continue;
+    }
+    const ids = collectSubmittedRoleCards().filter((role) => role.active).map((role) => String(role.jobId));
     const signature = ids.join("|");
     stableReads = signature === lastSignature ? stableReads + 1 : 1;
     lastSignature = signature;
@@ -4744,6 +4771,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     goToAppleSubmittedHistoryPage(message.pageIndex)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not open the Apple submissions page." }));
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
+    collectAllAppleSubmittedHistoryPages()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not refresh all Apple submissions." }));
     return true;
   }
 

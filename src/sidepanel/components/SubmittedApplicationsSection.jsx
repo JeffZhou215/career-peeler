@@ -339,8 +339,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   async function removeSavedRole(jobId, livePage = null) {
     const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
     const archive = stored[SAVED_REVIEWS_KEY];
-    if (!archive?.pages) return;
-    const pages = Object.fromEntries(Object.entries(archive.pages).map(([pageIndex, review]) => [
+    if (!archive) return;
+    const pages = Object.fromEntries(Object.entries(archive.pages || {}).map(([pageIndex, review]) => [
       pageIndex,
       { ...review, roles: (review.roles || []).filter((role) => String(role.jobId) !== String(jobId)) }
     ]));
@@ -377,6 +377,49 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     if (completeSnapshot) setSavedCompleteSnapshot(completeSnapshot);
   }
 
+  async function replaceSavedInventory(livePages) {
+    const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+    const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
+    const priorById = new Map([
+      ...Object.values(archive.pages || {}).flatMap((review) => review.roles || []),
+      ...(archive.lastCompleteScan?.roles || []),
+      ...(archive.latestScan?.roles || [])
+    ].map((role) => [String(role.jobId), role]));
+    const pages = {};
+    const roles = [];
+    for (const livePage of livePages) {
+      const pageRoles = livePage.roles.filter((role) => role.active !== false).map((role) => {
+        const prior = priorById.get(String(role.jobId));
+        const scored = prior?.title === role.title && Number.isFinite(prior.score)
+          ? { score: prior.score, reason: prior.reason, matchBasis: prior.matchBasis,
+              descriptionAvailable: prior.descriptionAvailable, scoreSource: prior.scoreSource }
+          : {};
+        const current = { ...role, ...scored, sourcePageIndex: livePage.pageIndex };
+        const { cardText: _cardText, ...snapshotRole } = current;
+        roles.push(snapshotRole);
+        return current;
+      });
+      pages[livePage.pageIndex] = {
+        ...(archive.pages?.[livePage.pageIndex] || {}), pageIndex: livePage.pageIndex,
+        pageCount: livePages.length, roles: pageRoles, updatedAt: Date.now()
+      };
+    }
+    const snapshot = {
+      ...(archive.latestScan || {}), roles, pagesRead: livePages.length,
+      pageCount: livePages.length, complete: true, warning: null, updatedAt: Date.now()
+    };
+    setSavedPages(pages);
+    setSavedSnapshot(snapshot);
+    setSavedCompleteSnapshot(snapshot);
+    setRoles(rankSubmittedRoles(roles));
+    setReviewContext(null);
+    setSelectedPageIndex(null);
+    setPostingCacheStats(null);
+    await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: {
+      ...archive, pages, latestScan: snapshot, lastCompleteScan: snapshot, lastPageIndex: 1
+    } });
+  }
+
   async function withdrawSelected() {
     if (!selectedRoles.length) return;
     const targets = selectedRoles.map(({ jobId, title, sourcePageIndex }) => ({
@@ -398,6 +441,29 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         const response = await sendMessageWithFallback(tab.id, { type, ...payload });
         if (!response?.ok) throw new Error(response?.error || "Apple's active submissions page could not be read.");
         return response.data;
+      };
+      const refreshAppleInventory = async (removedJobId) => {
+        let lastError;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            const result = await readApplePage("APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
+            if (!Array.isArray(result.pages) || result.pages.length !== result.pageCount) {
+              throw new Error("Apple did not return every active submissions page.");
+            }
+            const stillActive = removedJobId && result.pages.some((page) => page.roles.some((current) =>
+              String(current.jobId) === String(removedJobId) && current.active
+            ));
+            if (stillActive && attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 1200));
+              continue;
+            }
+            return result.pages;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 800));
+          }
+        }
+        throw lastError;
       };
       const locateRole = async (role) => {
         let page = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
@@ -428,6 +494,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       };
 
       const withdrawalPageState = new Map();
+      const verifiedInventoryByJobId = new Map();
       await withdrawSubmittedRolesSequentially(targets, {
         withdrawOne: async (role) => {
           const currentPage = await locateRole(role);
@@ -445,27 +512,38 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         verifyRoleStatus: async (role) => {
           const pageState = withdrawalPageState.get(String(role.jobId));
           if (!pageState) throw new Error("The role was not clicked, so its withdrawal cannot be verified.");
-          const response = await sendMessageWithFallback(tab.id, {
-            type: "APPLE_CAREERS_CHECK_SUBMITTED_ROLE_STATUS",
-            jobId: role.jobId,
-            title: role.title,
-            expectedPageIndex: pageState.pageIndex,
-            beforeCount: pageState.beforeCount,
-            hadNextPage: pageState.hadNextPage
-          });
-          if (!response?.ok) throw new Error(response?.error || "Apple's current role status could not be read.");
-          return response.data;
+          const pages = await refreshAppleInventory(role.jobId);
+          verifiedInventoryByJobId.set(String(role.jobId), pages);
+          return { confirmationOpen: false, active: pages.some((page) =>
+            page.roles.some((current) => String(current.jobId) === String(role.jobId) && current.active)
+          ) };
         },
         onRoleStart: (role, index, total) => {
           setWithdrawProgress({ index: index + 1, total, title: role.title });
           setStatusMessage(`Withdrawing ${index + 1} of ${total}: ${role.title}...`);
         },
         onRoleConfirmed: async ({ role, verifiedAfterInterruption }, index, total) => {
+          let pages;
+          setStatusMessage(`Refreshing Apple's active submissions after ${role.title}...`);
+          try {
+            pages = verifiedInventoryByJobId.get(String(role.jobId)) || await refreshAppleInventory(role.jobId);
+          } catch (refreshError) {
+            confirmedCount += 1;
+            await removeSavedRole(role.jobId);
+            setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
+            setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
+            throw new Error(`${role.title}: Apple confirmed the withdrawal, but its refreshed submissions list could not be read. ${refreshError?.message || "Sign in again to continue."}`);
+          }
+          if (pages.some((page) => page.roles.some((current) =>
+            String(current.jobId) === String(role.jobId) && current.active
+          ))) {
+            throw new Error(`${role.title} is still in Apple's active submissions after refresh; the batch stopped.`);
+          }
           confirmedCount += 1;
-          setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
+          await replaceSavedInventory(pages);
           setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
-          const currentPage = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE").catch(() => null);
-          await removeSavedRole(role.jobId, currentPage);
+          const byId = new Map(pages.flatMap((page) => page.roles.map((item) => [String(item.jobId), page.pageIndex])));
+          for (const remaining of targets) remaining.sourcePageIndex = byId.get(String(remaining.jobId)) || remaining.sourcePageIndex;
           setStatusMessage(`${confirmedCount} of ${total} no longer active${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
         }
       });
