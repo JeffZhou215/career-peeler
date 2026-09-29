@@ -26,6 +26,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [error, setError] = useState("");
   const [pagesRead, setPagesRead] = useState(0);
   const [scanProgress, setScanProgress] = useState(null);
+  const [postingCacheStats, setPostingCacheStats] = useState(null);
   const [analysisComplete, setAnalysisComplete] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const scanActiveRef = useRef(false);
@@ -53,6 +54,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       const progress = message.data || {};
       const { roles: pageRoles, ...progressStatus } = progress;
       setPagesRead(progress.page || 0);
+      setPostingCacheStats({ fetched: progress.descriptionsFetched || 0, reused: progress.descriptionsReused || 0 });
       setScanProgress((current) => ({ ...progressStatus, stopRequested: current?.stopRequested || false }));
       if (Array.isArray(pageRoles) && pageRoles.length) {
         setRoles((current) => {
@@ -85,6 +87,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setSelectedIds([]);
       setPagesRead(0);
       setScanProgress({ page: 0, pageCount: 0, rolesAnalyzed: 0 });
+      setPostingCacheStats(null);
       setAnalysisComplete(false);
       scanActiveRef.current = true;
       setAnalysisRunning(true);
@@ -102,6 +105,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       const ranked = rankSubmittedRoles(response.data?.roles || []);
       const rankedLowMatches = ranked.filter((role) => role.protectedFromBatchWithdrawal === false);
       setPagesRead(response.data?.pagesRead || 0);
+      setPostingCacheStats({
+        fetched: response.data?.descriptionsFetched || 0,
+        reused: response.data?.descriptionsReused || 0,
+        unavailable: response.data?.descriptionsUnavailable || 0,
+        saveFailed: Boolean(response.data?.cacheSaveFailed)
+      });
       setRoles(ranked);
       if (response.data?.stopped) {
         setAnalysisComplete(false);
@@ -288,6 +297,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       <p className="muted">
         Apple says some roles are exempt from its 50-role cap. The count and suggested batch here target exactly 50 entries in the visible Active submissions list; they may differ from Apple’s cap-eligible count.
       </p>
+
+      {postingCacheStats && (
+        <p className="muted" role="status">
+          Posting details: {postingCacheStats.reused} reused from Chrome storage · {postingCacheStats.fetched} fetched this review
+          {postingCacheStats.unavailable ? ` · ${postingCacheStats.unavailable} unavailable` : ""}
+          {postingCacheStats.saveFailed ? " · some fetched details could not be saved" : ""}
+        </p>
+      )}
 
       {error && <p className="submitted-history-error" role="alert">{error}</p>}
 

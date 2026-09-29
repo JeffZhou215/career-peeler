@@ -3237,6 +3237,11 @@ async function getAppleHistoryPageIndexForTab(tabId) {
   }
 }
 
+function normalizeAppleSubmittedJobId(jobId) {
+  const value = String(jobId || "").trim();
+  return value.match(/^(\d+)(?:-\d+)?$/)?.[1] || value;
+}
+
 async function fetchAppleSubmittedRoleDetails(roles) {
   const detailsByJobId = new Map();
   let detailTab = null;
@@ -3253,13 +3258,11 @@ async function fetchAppleSubmittedRoleDetails(roles) {
   let cacheSaveFailed = false;
 
   for (const role of appleRoles) {
-    const cached = cache[String(role.jobId)];
+    const cached = cache[normalizeAppleSubmittedJobId(role.jobId)] || cache[String(role.jobId)];
     if (
       cached?.version === 1 &&
-      cached.url === role.url &&
       now - Number(cached.fetchedAt || 0) < APPLE_SUBMITTED_ROLE_DETAILS_CACHE_TTL_MS &&
-      cached.description &&
-      cached.minimumQualifications
+      cached.description
     ) {
       detailsByJobId.set(String(role.jobId), cached);
       cachedCount += 1;
@@ -3300,7 +3303,7 @@ async function fetchAppleSubmittedRoleDetails(roles) {
 
         const cachedDetails = {
           version: 1,
-          url: role.url,
+          url: details.url || role.url,
           title: details.title,
           description: String(details.description || "").slice(0, 7000),
           minimumQualifications: String(details.minimumQualifications || "").slice(0, 3500),
@@ -3308,7 +3311,7 @@ async function fetchAppleSubmittedRoleDetails(roles) {
           requiredExperience: details.requiredExperience || [],
           fetchedAt: Date.now()
         };
-        cache[String(role.jobId)] = cachedDetails;
+        cache[normalizeAppleSubmittedJobId(role.jobId)] = cachedDetails;
         detailsByJobId.set(String(role.jobId), cachedDetails);
         fetchedCount += 1;
         pendingCacheWrites += 1;
@@ -3342,9 +3345,8 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
       if (
         response?.ok &&
         response.data?.ready &&
-        String(response.data.jobId) === expectedJobId &&
-        response.data.description &&
-        response.data.minimumQualifications
+        normalizeAppleSubmittedJobId(response.data.jobId) === normalizeAppleSubmittedJobId(expectedJobId) &&
+        response.data.description
       ) {
         return response.data;
       }

@@ -1167,7 +1167,7 @@ function extractAppleSubmittedRoleDetails() {
     jobId &&
     title &&
     description.length > 80 &&
-    minimumQualifications.length > 25 &&
+    (!minimumElement || minimumQualifications.length > 25) &&
     (!preferredElement || preferredQualifications.length > 25)
   );
 

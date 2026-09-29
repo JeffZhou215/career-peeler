@@ -101,11 +101,14 @@ globalThis.__backgroundTestApi = {
   activateListTab,
   activateTab,
   normalizeLlmDecision,
+  normalizeAppleSubmittedJobId,
   normalizeNoMatchKeywords,
   normalizeUserProfile,
   normalizeUserYearsOfExperience,
   normalizeYoeAssessment,
   pruneJobRecords,
+  fetchAppleSubmittedRoleDetails,
+  waitForAppleSubmittedRoleDetails,
   recordAppliedCheckpoint,
   rememberAppliedJob,
   rememberPersistedError,
@@ -181,11 +184,14 @@ const {
   activateListTab,
   activateTab,
   normalizeLlmDecision,
+  normalizeAppleSubmittedJobId,
   normalizeNoMatchKeywords,
   normalizeUserProfile,
   normalizeUserYearsOfExperience,
   normalizeYoeAssessment,
   pruneJobRecords,
+  fetchAppleSubmittedRoleDetails,
+  waitForAppleSubmittedRoleDetails,
   recordAppliedCheckpoint,
   rememberAppliedJob,
   rememberPersistedError,
@@ -1667,6 +1673,58 @@ asyncTest("tab cleanup removes only extension-owned workflow tabs", async () => 
     assert.equal(removedTabIds.includes(99), false, "a user-owned application tab must never be removed");
   } finally {
     setOwnedWorkflowTabIdsForTest([]);
+    sandbox.chrome.tabs = originalTabs;
+  }
+});
+
+test("Apple submitted job IDs match across canonical detail redirects", () => {
+  assert.equal(normalizeAppleSubmittedJobId("200651307"), "200651307");
+  assert.equal(normalizeAppleSubmittedJobId("200651307-0836"), "200651307");
+});
+
+asyncTest("cached Apple details survive redirected URLs and optional qualifications", async () => {
+  const key = "appleSubmittedRoleDetailsCache";
+  const previous = storageData[key];
+  try {
+    storageData[key] = {
+      "200651307": {
+        version: 1,
+        url: "https://jobs.apple.com/en-us/details/200651307-0836/hid-algorithms-engineer",
+        description: "Cached role description",
+        minimumQualifications: "",
+        preferredQualifications: "",
+        fetchedAt: Date.now()
+      }
+    };
+    const result = await fetchAppleSubmittedRoleDetails([{
+      jobId: "200651307",
+      url: "https://jobs.apple.com/en-us/details/200651307/HID-Algorithms-Engineer"
+    }]);
+    assert.equal(result.cachedCount, 1);
+    assert.equal(result.fetchedCount, 0);
+    assert.equal(result.detailsByJobId.get("200651307")?.description, "Cached role description");
+  } finally {
+    if (previous === undefined) delete storageData[key];
+    else storageData[key] = previous;
+  }
+});
+
+asyncTest("redirected Apple posting IDs pass detail extraction", async () => {
+  const originalTabs = sandbox.chrome.tabs;
+  try {
+    sandbox.chrome.tabs = {
+      sendMessage: async () => ({
+        ok: true,
+        data: {
+          ready: true,
+          jobId: "200651307-0836",
+          description: "A complete Apple job description"
+        }
+      })
+    };
+    const details = await waitForAppleSubmittedRoleDetails(1, "200651307", 100);
+    assert.equal(details?.jobId, "200651307-0836");
+  } finally {
     sandbox.chrome.tabs = originalTabs;
   }
 });

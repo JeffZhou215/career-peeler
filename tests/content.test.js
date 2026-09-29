@@ -59,6 +59,7 @@ globalThis.__contentTestApi = {
   clickAndDetectSubmission,
   clickPrimaryAction,
   extractExperienceMatches,
+  extractAppleSubmittedRoleDetails,
   getAlreadyAppliedSignal,
   getRequiredFieldAuditFingerprint,
   getSubmittedSignal,
@@ -113,6 +114,7 @@ const {
   clickAndDetectSubmission,
   clickPrimaryAction,
   extractExperienceMatches,
+  extractAppleSubmittedRoleDetails,
   getAlreadyAppliedSignal,
   getRequiredFieldAuditFingerprint,
   getSubmittedSignal,
@@ -211,6 +213,27 @@ test("extracts Apple role id from details URL", () => {
     getJobIdFromUrl("https://jobs.apple.com/en-us/details/200637724-0836/software-qa-engineer?team=SFTWR"),
     "200637724-0836"
   );
+});
+
+test("Apple posting details remain usable when qualification sections are absent", () => {
+  const originalHref = sandbox.window.location.href;
+  const originalTitle = sandbox.document.title;
+  const originalQuerySelector = sandbox.document.querySelector;
+  try {
+    sandbox.window.location.href = "https://jobs.apple.com/en-us/details/200651307-0836/hid-algorithms-engineer";
+    sandbox.document.title = "HID Algorithms Engineer - Jobs - Careers at Apple";
+    sandbox.document.querySelector = (selector) => selector === "#jobdetails-jobdescription"
+      ? { innerText: "Build and integrate sensing algorithms with the software stack, collaborate with engineers, and ship reliable user experiences." }
+      : null;
+    const details = extractAppleSubmittedRoleDetails();
+    assert.equal(details.jobId, "200651307-0836");
+    assert.equal(details.ready, true);
+    assert.equal(details.minimumQualifications, "");
+  } finally {
+    sandbox.window.location.href = originalHref;
+    sandbox.document.title = originalTitle;
+    sandbox.document.querySelector = originalQuerySelector;
+  }
 });
 
 test("extracts TikTok and ByteDance role ids from details URLs", () => {
