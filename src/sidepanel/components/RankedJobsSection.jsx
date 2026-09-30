@@ -7,12 +7,13 @@ import { getActiveTab, formatRelativeTime } from "../lib/format";
 export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange }) {
   const [view, setView] = useState(null);
   const [topN, setTopN] = useState(50);
+  const [topNDraft, setTopNDraft] = useState("50");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
-  const refresh = useCallback(async () => {
-    const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN });
+  const refresh = useCallback(async (requestedTopN = topN) => {
+    const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: requestedTopN });
     if (response?.ok) setView(response.data);
   }, [profile, topN]);
 
@@ -32,14 +33,28 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     return () => clearInterval(timer);
   }, [view?.running, refresh]);
 
+  function commitTopN() {
+    // Keep the displayed draft as text so clearing or replacing digits is possible.
+    // Normalize only on commit; an empty/invalid draft restores the last chosen value.
+    const parsed = Number(topNDraft);
+    const minimum = Math.max(1, view?.capacity?.remaining || 0);
+    const requestedTopN = Math.min(1000, Math.max(minimum,
+      Math.floor(topNDraft.trim() && Number.isFinite(parsed) ? parsed : topN)));
+    setTopN(requestedTopN);
+    setTopNDraft(String(requestedTopN));
+    return requestedTopN;
+  }
+
   async function act(type) {
+    // Use the committed draft directly, including when clicking immediately after editing.
+    const requestedTopN = commitTopN();
     setBusy(true);
     setError("");
     try {
       const savedProfile = await save();
-      const response = await chrome.runtime.sendMessage({ type, userProfile: savedProfile, topN, tab: await getActiveTab() });
+      const response = await chrome.runtime.sendMessage({ type, userProfile: savedProfile, topN: requestedTopN, tab: await getActiveTab() });
       if (!response?.ok) throw new Error(response?.error || "The job queue could not be updated.");
-      await refresh();
+      await refresh(requestedTopN);
       if (type === "APPLE_CAREERS_QUEUE_TOP_JOBS") setQueueOpen(true);
       setStatusMessage(type === "APPLE_CAREERS_QUEUE_TOP_JOBS" ? `${response.count} strong matches saved to the application queue.`
         : type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY" ? "Active submission count refreshed without LLM matching."
@@ -135,8 +150,9 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     </details>
     <div className="compact-list-heading"><strong>Top Ranked Jobs</strong>
       <HelpTooltip label="Top Ranked Jobs" text="Highest scored jobs remain visible even when they fail automatic application checks. Expand a role for its explanation and blockers. Ranking saves scores; Queue Top N adds eligible jobs to the saved queue." />
-      <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" value={topN} aria-label="Top Matches"
-        onChange={(event) => setTopN(Math.min(1000, Math.max(1, Number(event.target.value) || 50)))} /></label>
+      <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" step="1" value={topNDraft} aria-label="Top Matches"
+        onChange={(event) => setTopNDraft(event.target.value)} onBlur={commitTopN}
+        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>
     </div>
     <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
     {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No ranked jobs match this search." : "No ranked jobs yet."}</p>}
