@@ -1156,6 +1156,9 @@ button:disabled {
 .help::before {
   content: "";
   position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   width: 16px;
   height: 16px;
   border: 1px solid var(--color-help-border);
@@ -1490,8 +1493,9 @@ pre {
 .function-section:not([open]) > .function-body { display: none; }
 .function-body > .muted { color: var(--color-text-secondary); font-size: 12px; }
 .compact-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 8px; }
-.compact-actions > button, .compact-progress > button { min-height: 36px; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.35; }
+.compact-actions > button:not(.help), .compact-progress > button:not(.help) { min-height: 36px; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.35; }
 .compact-actions.queue-actions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 20px; }
+.queue-actions > .help { justify-self: center; align-self: center; margin: 0; }
 .compact-progress { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border-radius: 7px; background: var(--color-surface-subtle); font-size: 12px; }
 .compact-progress > span { flex: 1; }
 .compact-progress > button { flex-shrink: 0; }
@@ -1530,7 +1534,7 @@ pre {
 .compact-stat-row { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
 .compact-stat-row strong { flex-shrink: 0; }
 .compact-selection-bar { display: grid; grid-template-columns: auto minmax(0, 1fr) 20px; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary); }
-.compact-selection-bar > button { border-radius: 6px; font-size: 12px; }
+.compact-selection-bar > button:not(.help) { border-radius: 6px; font-size: 12px; }
 .score-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 12px; }
 .score-breakdown > span { display: flex; justify-content: space-between; gap: 8px; }
 .settings.settings-flat { padding: 0; border: 0; border-radius: 0; background: transparent; }
@@ -1552,7 +1556,7 @@ pre {
   .help { width: 44px; height: 44px; flex-basis: 44px; }
   .compact-actions.queue-actions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
   .compact-selection-bar { grid-template-columns: auto minmax(0, 1fr) 44px; }
-  .compact-actions > button, .compact-progress > button { min-height: 44px; }
+  .compact-actions > button:not(.help), .compact-progress > button:not(.help) { min-height: 44px; }
   .compact-search, .saved-view-control select { min-height: 44px; font-size: 16px; }
 }
 
