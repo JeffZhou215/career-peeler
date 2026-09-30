@@ -3694,7 +3694,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_REMOVE_QUEUED_JOB") {
         sendResponse(await removeQueuedAppleJob(message.jobId));
       } else if (message.type === "APPLE_CAREERS_APPLY_JOB_QUEUE") {
-        sendResponse(await startAppleJobQueue(message.tab, message.userProfile));
+        sendResponse(await startAppleJobQueue(message.tab, message.userProfile, message.reviewAcknowledgement));
       } else if (message.type === "APPLE_CAREERS_STOP_JOB_RANKING") {
         sendResponse(await stopAppleJobRanking());
       } else if (message.type === "APPLE_CAREERS_START_SCAN") {
