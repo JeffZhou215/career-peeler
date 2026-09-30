@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
+import { FunctionSection } from "./FunctionSection";
+import { CompactRoleCard } from "./CompactRoleCard";
 import { getActiveTab, formatRelativeTime } from "../lib/format";
 
-export function RankedJobsSection({ profile, save, setStatusMessage }) {
+export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange }) {
   const [view, setView] = useState(null);
   const [topN, setTopN] = useState(50);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [queueOpen, setQueueOpen] = useState(false);
   const refresh = useCallback(async () => {
     const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN });
     if (response?.ok) setView(response.data);
@@ -37,6 +40,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage }) {
       const response = await chrome.runtime.sendMessage({ type, userProfile: savedProfile, topN, tab: await getActiveTab() });
       if (!response?.ok) throw new Error(response?.error || "The job queue could not be updated.");
       await refresh();
+      if (type === "APPLE_CAREERS_QUEUE_TOP_JOBS") setQueueOpen(true);
       setStatusMessage(type === "APPLE_CAREERS_QUEUE_TOP_JOBS" ? `${response.count} strong matches saved to the application queue.`
         : type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY" ? "Active submission count refreshed without LLM matching."
         : type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? "Checking Apple submission count, then applying the best queued matches."
@@ -53,109 +57,114 @@ export function RankedJobsSection({ profile, save, setStatusMessage }) {
     await refresh();
   }
 
+  useEffect(() => {
+    if (view) onSummaryChange?.({ capacity: view.capacity, queued: view.queued?.length || 0 });
+  }, [view, onSummaryChange]);
+
   const capacity = view?.capacity;
   const n = Math.max(topN || 50, capacity?.remaining || 0);
-  const jobs = [...new Map([...(view?.ranked || []), ...(view?.candidates || []), ...(view?.queued || [])]
-    .map((job) => [String(job.jobId), job])).values()].sort((a, b) => b.score - a.score);
+  const jobs = [...new Map([...(view?.ranked || []), ...(view?.candidates || [])]
+    .map((job) => [String(job.jobId), job])).values()].filter((job) => job.queueStatus !== "queued").sort((a, b) => b.score - a.score);
   const search = query.trim().toLowerCase();
-  const visible = jobs.filter((job) => `${job.jobId} ${job.title}`.toLowerCase().includes(search));
-  const shownIds = new Set(jobs.map((job) => String(job.jobId)));
-  const otherMatches = (view?.otherMatches || []).filter((job) => !shownIds.has(String(job.jobId)));
+  const matchesSearch = (job) => `${job.jobId} ${job.title}`.toLowerCase().includes(search);
+  const visible = jobs.filter(matchesSearch);
+  const shownIds = new Set([...jobs, ...(view?.queued || [])].map((job) => String(job.jobId)));
+  const otherMatches = (view?.otherMatches || []).filter((job) => !shownIds.has(String(job.jobId)) && matchesSearch(job));
   const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
-  const diagnosticLabels = { qualifications: "Minimum qualifications missing or unverified",
-    evidence: "Insufficient verified responsibility evidence", confidence: "Confidence below high",
-    score: "Score or fit breakdown below automatic application threshold", hardSkip: "Excluded by title, experience, or your keywords",
-    unscored: "Matching unfinished or description unavailable", alreadyApplied: "Previously applied or withdrawn",
-    applicationReview: "Previous application needs review" };
+  const diagnosticLabels = { qualifications: "Minimum Qualifications Missing Or Unverified",
+    evidence: "Insufficient Responsibility Evidence", confidence: "Confidence Below High",
+    score: "Below Fit Threshold", hardSkip: "Excluded By Title, Experience Or Keywords",
+    unscored: "Matching Unfinished Or Posting Unavailable", alreadyApplied: "Previously Applied Or Withdrawn",
+    applicationReview: "Application Needs Review" };
+  const progressLabel = view?.running
+    ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Saved Queue"
+      : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
+    : view?.error ? "Ranking Paused" : view?.phase ? "Rankings Saved" : "Ready To Rank";
 
   function jobCard(job) {
-    return <li key={job.jobId} className="submitted-role-card">
-      <div className="submitted-role-select">
-        <a className="submitted-role-title" href={job.url} target="_blank" rel="noreferrer">{job.title}</a>
-        <strong>{Number.isFinite(job.score) ? `${job.score}%` : "Unscored"}</strong>
-      </div>
-      <span className="submitted-role-id">Job ID {job.jobId} · {job.queueStatus === "queued" ? "Queued" : job.eligible ? "Ready To Queue" : "Not Ready To Queue"}</span>
-      <p>{job.reason}</p>
-      {!job.eligible && !!job.blockers?.length && <div className="muted" aria-label="Queue blockers">
-        <strong>Not Queueable:</strong><ul>{job.blockers.map((blocker, index) => <li key={index}>{blocker}</li>)}</ul>
+    const status = job.queueStatus === "queued" ? "Queued" : job.eligible ? "Ready To Queue" : "Needs Review";
+    return <CompactRoleCard key={job.jobId} role={job} status={status}>
+      {!job.eligible && !!job.blockers?.length && <div>
+        <strong>Queue Blockers</strong><ul>{job.blockers.map((blocker, index) => <li key={index}>{blocker}</li>)}</ul>
       </div>}
-      {job.breakdown && <details className="ranking-evidence"><summary>Fit Evidence</summary>
-        <p>Responsibilities {job.breakdown.responsibilities} · Qualifications {job.breakdown.qualifications} · Level {job.breakdown.level} · Domain {job.breakdown.domain}</p>
+      {job.breakdown && <details className="compact-fold ranking-evidence"><summary>Fit Evidence
+        <HelpTooltip label="Fit Evidence" text="Scores weigh responsibilities (40%), minimum qualifications (35%), level (15%) and domain (10%). Automatic applications require 80 overall, strong individual scores, high confidence and verified evidence for every minimum qualification." />
+      </summary><div className="compact-fold-body">
+        <div className="score-breakdown">{Object.entries(job.breakdown).map(([key, value]) => <span key={key}>{key.charAt(0).toUpperCase() + key.slice(1)} <strong>{value}</strong></span>)}</div>
         {(job.evidence || []).map((item, index) => <div key={index}>
           <p><strong>Role:</strong> {item.job_quote}</p><p><strong>Resume:</strong> {item.resume_quote}</p>
         </div>)}
-        {(job.minimumChecks || []).map((item, index) => <p key={`minimum-${index}`}>
-          <strong>Minimum Qualification ({item.status}):</strong> {item.requirement_quote}
-          {item.resume_quote && <> · Resume: {item.resume_quote}</>}
-        </p>)}
-      </details>}
-      {job.queueStatus === "queued" && <button type="button" className="secondary" disabled={view?.running} onClick={() => remove(job.jobId)}>Remove From Queue</button>}
-    </li>;
+        {(job.minimumChecks || []).map((item, index) => <div key={`minimum-${index}`}>
+          <strong>Minimum Qualification ({item.status})</strong><p>{item.requirement_quote}</p>
+          {item.resume_quote && <p><strong>Resume:</strong> {item.resume_quote}</p>}
+        </div>)}
+      </div></details>}
+      {job.queueStatus === "queued" && <button type="button" className="secondary" disabled={busy || view?.running} onClick={() => remove(job.jobId)}>Remove From Queue</button>}
+    </CompactRoleCard>;
   }
 
-  return <section className="submitted-history" aria-labelledby="ranked-job-title">
-    <div className="submitted-history-heading">
-      <div className="submitted-history-title-row"><h2 id="ranked-job-title">Ranked Job Queue</h2>
-        <HelpTooltip text="Rank every page of your current Apple search against your saved resume. Scores weigh responsibilities (40%), minimum qualifications (35%), level (15%) and domain (10%). Top ranked jobs are shown even when they cannot be queued. Queue Top N only selects jobs with 80% overall, verified resume evidence, compatible experience and satisfied minimum qualifications. Ranking saves scores; click Queue Top N to save eligible jobs for later applications. Repeat with different filters to combine results. Descriptions, scores and the queue are saved locally. Apply Queue refreshes your active submission count without repeating matching and stops at the conservative 50-submission target; Apple may exempt some roles from its cap." />
-      </div>
+  return <FunctionSection title="Ranked Job Queue" meta={view?.running ? "Running" : `${view?.queued?.length || 0} Queued`}
+    defaultOpen running={view?.running}
+    headerAction={view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
+    help="Rank every page of the current filtered Apple search against your saved resume. Descriptions, scores and the queue are stored locally. Ranking does not submit applications. Queue Top N adds only eligible jobs; Apply Queue submits those jobs after checking active submissions and stops at the conservative 50-submission target. Apple may exempt some roles from its cap.">
+    <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong>
+      <span className="compact-role-meta">{view?.reviewedCount || 0} Saved · {view?.eligibleCount || 0} Ready To Queue</span>
+    </span>
+      {view?.running ? <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>
+        : <button type="button" className="primary" disabled={busy} onClick={() => act("APPLE_CAREERS_START_JOB_RANKING")}>Rank Filtered Search</button>}
     </div>
-    <div className="submitted-history-summary">
-      <span>{capacity?.known ? `${capacity.submitted} Submitted · ${capacity.remaining} Open Slots` : "Submission Count Not Yet Verified"}</span>
-      <span>{view?.queued?.length || 0} Queued</span>
-    </div>
-    {capacity?.checkedAt && <span className="submitted-role-id">Count checked {formatRelativeTime(capacity.checkedAt)}; checked again before applying.</span>}
-    <div className="ranking-controls">
-      <label className="submitted-history-search">Top Matches (N)
-        <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" value={topN}
-          onChange={(event) => setTopN(Math.min(1000, Math.max(1, Number(event.target.value) || 50)))} />
-      </label>
-      <button type="button" className="primary" disabled={busy || view?.running} onClick={() => act("APPLE_CAREERS_START_JOB_RANKING")}>Rank Filtered Search</button>
-    </div>
-    {view?.phase && <div className="submitted-history-progress" aria-live="polite"><strong>{view.phase}</strong>
-      <span>{view.reviewedCount || 0} Saved Jobs · {view.eligibleCount || 0} Ready To Queue · {view.scoresReused || 0} Scores Reused</span>
-    </div>}
-    {view?.recovered && <p className="muted">The previous run was interrupted. Saved scores and queued jobs are available; rank the filter again to finish it.</p>}
-    {latestSearch && <p className="muted">Latest Filter: {latestSearch.jobsRead || 0} jobs found
-      {Number.isFinite(latestSearch.alreadyApplied) && <> · {latestSearch.alreadyApplied} skipped as previously applied</>}
-      {!!latestSearch.applicationReview && <> · {latestSearch.applicationReview} applications needing review</>}.</p>}
-    {view?.staleCount > 0 && <p className="muted">{view.staleCount} saved jobs need matching against your current resume/settings.</p>}
-    {!view?.running && view?.reviewedCount > 0 && view.eligibleCount < n && <p className="muted">{view.eligibleCount} jobs pass the automatic application checks for a target of {n}. Review the ranked jobs and exclusion reasons below.</p>}
-    {view?.eligibleCount > 0 && !view?.queued?.length && <p className="muted">Ranking has saved your scores. Click Queue Top {n} to add eligible jobs to the application queue.</p>}
-    {view?.diagnostics && Object.keys(diagnosticLabels).some((key) => view.diagnostics[key] > 0) &&
-      <div className="submitted-history-progress"><strong>Why Jobs Are Not Queueable</strong>
-        <ul>{Object.entries(diagnosticLabels).filter(([key]) => view.diagnostics[key] > 0)
-          .map(([key, label]) => <li key={key}>{view.diagnostics[key]} · {label}</li>)}</ul>
-        <span>A job can have several blocking reasons. Expand Fit Evidence to inspect its scores and resume quotes.</span>
-      </div>}
     {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}</p>}
-    <div className="actions">
-      <button type="button" className="secondary" disabled={busy || view?.running}
-        onClick={() => act("APPLE_CAREERS_REFRESH_QUEUE_CAPACITY")}>Refresh Submission Count</button>
-      <button type="button" className="secondary" disabled={busy || view?.running || !view?.candidates?.length}
-        onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>Queue Top {n}</button>
-      <button type="button" className="primary" disabled={busy || view?.running || !view?.queued?.length || !profile.autoApplyConsent}
-        onClick={() => act("APPLE_CAREERS_APPLY_JOB_QUEUE")}>Apply Queue</button>
-      {view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
+    <details className="compact-fold"><summary>Scan Details<HelpTooltip label="Scan Details" text="Inspect the current job, cache use, saved filter history and the last active submission count. Refresh Submission Count reads Apple without repeating OpenAI matching." /></summary>
+      <div className="compact-fold-body">
+        {view?.phase && <span>{view.phase}</span>}
+        <span>{view?.scoresReused || 0} Scores Reused</span>
+        {capacity?.checkedAt && <span>Count checked {formatRelativeTime(capacity.checkedAt)}.</span>}
+        {latestSearch && <span>{latestSearch.jobsRead || 0} Found In Latest Filter
+          {Number.isFinite(latestSearch.alreadyApplied) && <> · {latestSearch.alreadyApplied} Previously Applied</>}
+          {!!latestSearch.applicationReview && <> · {latestSearch.applicationReview} Applications Needing Review</>}.</span>}
+        {view?.recovered && <p>The previous run was interrupted. Saved scores and queued jobs remain available.</p>}
+        {view?.staleCount > 0 && <p>{view.staleCount} saved jobs need matching against your current resume/settings.</p>}
+        <button type="button" className="secondary" disabled={busy || view?.running} onClick={() => act("APPLE_CAREERS_REFRESH_QUEUE_CAPACITY")}>Refresh Submission Count</button>
+        {!!Object.keys(view?.searches || {}).length && <details className="compact-fold"><summary>Scanned Filters</summary>
+          {Object.values(view.searches).map((item) => <p key={item.url}>
+            <a href={item.url} target="_blank" rel="noreferrer">Open Filter</a> · {item.jobsRead} Jobs · {item.pagesRead} Pages · {item.complete ? "Complete" : "Partial"}
+            {!!item.alreadyApplied && <> · {item.alreadyApplied} Previously Applied</>}
+          </p>)}
+        </details>}
+      </div>
+    </details>
+    <div className="compact-list-heading"><strong>Top Ranked Jobs</strong>
+      <HelpTooltip label="Top Ranked Jobs" text="Highest scored jobs remain visible even when they fail automatic application checks. Expand a role for its explanation and blockers. Ranking saves scores; Queue Top N adds eligible jobs to the saved queue." />
+      <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" value={topN} aria-label="Top Matches"
+        onChange={(event) => setTopN(Math.min(1000, Math.max(1, Number(event.target.value) || 50)))} /></label>
     </div>
-    <label className="checkbox-row consent-row"><input type="checkbox" checked={profile.autoApplyConsent}
-      onChange={(event) => save({ autoApplyConsent: event.target.checked })} />
-      <span>I Understand Apply Queue Can Submit Applications</span>
-    </label>
-    {jobs.length > 0 && <><h3>Top Ranked Jobs And Saved Queue</h3><label className="submitted-history-search">Find Job ID Or Title
-      <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Job ID or title" />
-    </label><ul className="submitted-role-list">{visible.map((job) => jobCard(job))}</ul></>}
-    {!!view?.needsReview?.length && <details><summary>Applications Needing Review ({view.needsReview.length})</summary>
-      <ul className="submitted-role-list">{view.needsReview.map((job) => jobCard(job))}</ul>
+    <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
+    {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No ranked jobs match this search." : "No ranked jobs yet."}</p>}
+    {view?.diagnostics && Object.keys(diagnosticLabels).some((key) => view.diagnostics[key] > 0) &&
+      <details className="compact-fold"><summary>Queue Blockers <span className="function-meta">{view.eligibleCount || 0} Ready</span>
+        <HelpTooltip label="Queue Blockers" text="These counts explain why jobs are not eligible for automatic applications. A job may have several reasons, so the counts overlap. Expand each job for its specific evidence." /></summary>
+        <div className="compact-fold-body">{Object.entries(diagnosticLabels).filter(([key]) => view.diagnostics[key] > 0)
+          .map(([key, label]) => <div className="compact-stat-row" key={key}><span>{label}</span><strong>{view.diagnostics[key]}</strong></div>)}</div>
+      </details>}
+    {!!view?.needsReview?.length && <details className="compact-fold"><summary>Applications Needing Review <span className="function-meta">{view.needsReview.length}</span></summary>
+      <ul className="submitted-role-list compact-role-list">{view.needsReview.filter(matchesSearch).map(jobCard)}</ul>
     </details>}
-    {!!otherMatches.length && <details open={!jobs.length}><summary>Other Excluded Or Unscored Jobs ({otherMatches.length})</summary>
-      <ul className="submitted-role-list">{otherMatches.map((job) => jobCard(job))}</ul>
+    {!!otherMatches.length && <details className="compact-fold"><summary>Other Excluded Or Unscored Jobs <span className="function-meta">{otherMatches.length}</span></summary>
+      <ul className="submitted-role-list compact-role-list">{otherMatches.map(jobCard)}</ul>
     </details>}
-    {!!Object.keys(view?.searches || {}).length && <details><summary>Scanned Filters</summary>
-      {Object.values(view.searches).map((item) => <p className="muted" key={item.url}>
-        <a href={item.url} target="_blank" rel="noreferrer">Open Filter</a> · {item.jobsRead} Jobs · {item.pagesRead} Pages · {item.complete ? "Complete" : "Partial"}
-        {!!item.alreadyApplied && <> · {item.alreadyApplied} Previously Applied</>}
-        {!!item.applicationReview && <> · {item.applicationReview} Applications Needing Review</>}
-      </p>)}
-    </details>}
-  </section>;
+    <details className="compact-fold" open={queueOpen || undefined} onToggle={(event) => setQueueOpen(event.currentTarget.open)}><summary>Saved Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
+      <HelpTooltip label="Saved Queue" text="Only jobs added with Queue Top N are queued for later applications. Expand a queued role to remove it. Apply Queue submits only eligible queued jobs; it does not apply to every ranked result." /></summary>
+      <div className="compact-fold-body">
+        {view?.queued?.length ? <ul className="submitted-role-list compact-role-list">{view.queued.filter(matchesSearch).map(jobCard)}</ul> : <span>No jobs queued.</span>}
+        <label className="checkbox-row consent-row"><input type="checkbox" checked={profile.autoApplyConsent} onChange={(event) => save({ autoApplyConsent: event.target.checked })} />
+          <span>I Allow Application Submission</span><HelpTooltip label="Application Submission" text="This acknowledgement enables the separate Apply Queue action. Ranking and queueing alone do not submit applications." />
+        </label>
+      </div>
+    </details>
+    <div className="compact-actions queue-actions">
+      <button type="button" className="secondary" disabled={busy || view?.running || !view?.candidates?.length} onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>Queue Top {n}</button>
+      <button type="button" className="primary" disabled={busy || view?.running || !view?.queued?.length || !profile.autoApplyConsent} onClick={() => act("APPLE_CAREERS_APPLY_JOB_QUEUE")}>Apply Queue</button>
+      <HelpTooltip label="Apply Queue" text="Requires eligible queued jobs, your application-submission acknowledgement in Saved Queue, a validated API key, a current resume and required application answers. It checks current active submissions before applying and stops at 50." />
+    </div>
+  </FunctionSection>;
 }

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
+import { FunctionSection } from "./FunctionSection";
+import { CompactRoleCard } from "./CompactRoleCard";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
 import { withdrawSubmittedRolesSequentially } from "../lib/submittedWithdrawals.mjs";
 
@@ -30,8 +32,10 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   const [savedPages, setSavedPages] = useState({});
   const [savedSnapshot, setSavedSnapshot] = useState(null);
   const [savedCompleteSnapshot, setSavedCompleteSnapshot] = useState(null);
-  const [selectedPageIndex, setSelectedPageIndex] = useState(null);
   const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [savedView, setSavedView] = useState("all");
+  const [analysisProgress, setAnalysisProgress] = useState(null);
+  const confirmationRef = useRef(null);
   const [stopRequested, setStopRequested] = useState(false);
   const activeAnalysisIdRef = useRef(null);
   const allScanReviewsRef = useRef(new Map());
@@ -55,7 +59,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     if (!review) return;
     setRoles(rankSubmittedRoles(review.roles || []));
     setSelectedIds([]);
-    setSelectedPageIndex(review.pageIndex);
+    setSavedView(`page:${review.pageIndex}`);
     setReviewContext({ tabId, pageIndex: review.pageIndex, pageCount: review.pageCount });
     setError(review.warning || "");
     setPostingCacheStats({
@@ -78,7 +82,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     }
     setRoles(rankSubmittedRoles(Array.from(byId.values())));
     setSelectedIds([]);
-    setSelectedPageIndex(null);
+    setSavedView("all");
     setReviewContext(null);
     setSavedPages((current) => Object.assign({}, current,
       ...reviews.map((review) => ({ [review.pageIndex]: review }))));
@@ -96,7 +100,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     if (!snapshot?.roles?.length) return;
     setRoles(rankSubmittedRoles(snapshot.roles));
     setSelectedIds([]);
-    setSelectedPageIndex(null);
+    setSavedView("all");
     setReviewContext(null);
     setPostingCacheStats(null);
     setError([snapshot.complete ? "" : "This saved ranking is partial; the last scan did not reach every submissions page.", snapshot.warning].filter(Boolean).join(" "));
@@ -166,6 +170,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     function handleProgress(message) {
       if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS" ||
         message.analysisId !== activeAnalysisIdRef.current) return;
+      setAnalysisProgress(message.scope === "all" ? { page: message.data.pagesRead, total: message.data.pageCount } : { page: message.data.pageIndex, total: message.data.pageCount });
       if (message.scope === "all") {
         allScanReviewsRef.current.set(message.data.review.pageIndex, message.data.review);
         showAllReviews(Array.from(allScanReviewsRef.current.values()));
@@ -187,6 +192,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     try {
       const review = await showCurrentPageFromStorage();
       if (review) setStatusMessage(`Loaded ${review.roles.length} roles on Apple page ${review.pageIndex} from saved results. No OpenAI matching was run.`);
+      return review;
     } catch (loadError) {
       setError(loadError?.message || "Could not load this Apple submissions page.");
     } finally {
@@ -218,6 +224,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       const analysisId = crypto.randomUUID();
       activeAnalysisIdRef.current = analysisId;
       setAnalysisRunning(true);
+      setAnalysisProgress(null);
       setStopRequested(false);
       setStatusMessage("Scanning Apple submissions one page at a time...");
       const response = await chrome.runtime.sendMessage({
@@ -264,6 +271,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       const analysisId = crypto.randomUUID();
       activeAnalysisIdRef.current = analysisId;
       setAnalysisRunning(true);
+      setAnalysisProgress(null);
       setStopRequested(false);
       setStatusMessage("Matching submissions on the visible Apple page with your saved profile...");
       const response = await chrome.runtime.sendMessage({
@@ -302,38 +310,39 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     );
   }
 
-  function renderRoleCard(role, protectedFromBatch = false) {
-    const favoriteStatusLabel =
-      String(role.jobId).split("-")[0] === "200654506"
-        ? "Interview in progress · protected from batch withdrawal"
-        : role.favorite === true
-          ? "Starred · protected from batch withdrawal"
-          : role.favorite === false
-            ? null
-            : "Star status unavailable · protected from batch withdrawal";
+  useEffect(() => {
+    const dialog = confirmationRef.current;
+    if (!dialog) return;
+    if (confirmationOpen && !dialog.open) dialog.showModal();
+    if (!confirmationOpen && dialog.open) dialog.close();
+  }, [confirmationOpen]);
 
-    return (
-      <li key={role.jobId} className={`submitted-role-card${protectedFromBatch ? " submitted-role-card-protected" : ""}`}>
-        <label className="submitted-role-select">
-          <input
-            type="checkbox"
-            checked={selectedIds.includes(role.jobId)}
-            onChange={() => toggleRole(role.jobId)}
-            disabled={busy || confirmationOpen || protectedFromBatch}
-          />
-          <span>{role.score === null || role.score === undefined ? "Not scored · review manually" : `${role.score}% fit`}</span>
-        </label>
-        <a href={role.url} target="_blank" rel="noopener noreferrer" className="submitted-role-title">{role.title}</a>
-        <span className="submitted-role-id">Job ID {role.jobId}</span>
-        {role.sourcePageIndex && <span className="submitted-role-id">Saved page {role.sourcePageIndex}</span>}
-        <span className="submitted-role-protected-label">
-          {role.scoreSource === "previous_review" ? "Saved score from an earlier review" : role.descriptionAvailable ? "Scored against job description" : "Matching unavailable · review the posting yourself"}
-        </span>
-        {favoriteStatusLabel && <span className="submitted-role-protected-label">{favoriteStatusLabel}</span>}
-        <p>{role.reason || "No explanation was returned."}</p>
-        {role.submittedDate && <span className="muted">Submitted {role.submittedDate}</span>}
-      </li>
-    );
+  async function changeSavedView(value) {
+    if (value === "current") {
+      if (await loadCurrentPage()) setSavedView("current");
+    } else if (value === "complete") {
+      showSnapshot(savedCompleteSnapshot);
+      setSavedView("complete");
+      setError("This is the last complete saved scan. Apple will verify each selected role before withdrawal.");
+    } else if (value.startsWith("page:")) {
+      showReview(savedPages[value.slice(5)]);
+    } else {
+      showAllSavedPages();
+      setSavedView("all");
+    }
+  }
+
+  function renderRoleCard(role, protectedFromBatch = false) {
+    const protectedLabel = String(role.jobId).split("-")[0] === "200654506"
+      ? "Interview In Progress · Protected"
+      : role.favorite === true ? "Starred · Protected" : "Star Status Unknown · Protected";
+    return <CompactRoleCard key={role.jobId} role={role}
+      status={protectedFromBatch ? protectedLabel : role.submittedDate ? `Submitted ${role.submittedDate}` : "Submitted"}
+      selectable={!protectedFromBatch} selected={selectedIds.includes(role.jobId)}
+      disabled={busy || confirmationOpen} onSelect={() => toggleRole(role.jobId)}>
+      {role.sourcePageIndex && <span className="submitted-role-id">Saved Page {role.sourcePageIndex}</span>}
+      <span className="submitted-role-id">{role.scoreSource === "previous_review" ? "Saved Score" : role.descriptionAvailable ? "Scored Against Job Description" : "Review Posting Manually"}</span>
+    </CompactRoleCard>;
   }
 
   async function removeSavedRole(jobId, livePage = null) {
@@ -503,7 +512,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
               setRoles((current) => rankSubmittedRoles(snapshot?.roles || current.filter((item) => String(item.jobId) !== String(role.jobId))));
               setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
               setReviewContext(null);
-              setSelectedPageIndex(null);
+              setSavedView("all");
               setStatusMessage(`${confirmedCount} of ${targets.length} withdrawn${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
             }
           });
@@ -556,159 +565,69 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   }
 
   return (
-    <section className="submitted-history">
-      <div className="submitted-history-heading">
-        <div>
-          <p className="eyebrow">APPLE CAREERS</p>
-          <div className="submitted-history-title-row">
-            <h2>Submitted Application Review</h2>
-            <HelpTooltip text="Scan the current page or all active submissions. The full ranking is saved in Chrome storage and loads without another scan. Select unstarred roles across pages; each withdrawal is checked against Apple's live submissions before clicking." />
-          </div>
-        </div>
-        {analysisRunning ? (
-          <button type="button" onClick={stopAnalysis} disabled={stopRequested}>{stopRequested ? "Stopping…" : "Stop analysis"}</button>
-        ) : (
-          <button type="button" onClick={analyzeRoles} disabled={busy}>
-            {busy ? "Working…" : "Analyze this page"}
-          </button>
-        )}
+    <FunctionSection title="Submitted Application Review" meta={analysisRunning ? "Scanning" : `${roles.length} Saved`}
+      running={analysisRunning}
+      headerAction={analysisRunning && <button type="button" className="danger" onClick={stopAnalysis} disabled={stopRequested}>Stop</button>}
+      help="Open Apple Your Roles → Submissions → Active. Scan all pages once, then use saved results without repeating matching. Select roles across pages; Apple checks every role before withdrawal. No roles are selected automatically.">
+      <div className="compact-actions">
+        <button type="button" className="primary" onClick={analyzeAllRoles} disabled={busy}>Scan All Submissions</button>
+        <button type="button" className="secondary" onClick={analyzeRoles} disabled={busy}>Analyze This Page</button>
       </div>
-
-      <p className="muted">
-        Open Your Roles → Submissions → Active. Scan all pages for a saved ranking, then select roles across pages. Apple will be checked before each withdrawal. No roles are selected automatically.
-      </p>
-      <button type="button" onClick={analyzeAllRoles} disabled={busy}>Scan all submissions</button>
-      <button type="button" className="secondary-button" onClick={loadCurrentPage} disabled={busy}>
-        Show current page from saved results
-      </button>
-      {savedPageIndices.length > 1 && (
-        <button type="button" className="secondary-button" onClick={showAllSavedPages} disabled={busy}>
-          Show all saved rankings
-        </button>
-      )}
-      {!savedSnapshot?.complete && savedCompleteSnapshot?.roles?.length > 0 && (
-        <button type="button" className="secondary-button" onClick={() => {
-          showSnapshot(savedCompleteSnapshot);
-          setError("This is the last complete saved scan. Apple will verify each selected role before withdrawal.");
-        }} disabled={busy}>
-          Show last complete scan
-        </button>
-      )}
-
-      {savedPageIndices.length > 1 && (
-        <label className="submitted-history-search">
-          <span>Saved submissions page</span>
-          <select value={selectedPageIndex || ""} onChange={(event) => event.target.value ? showReview(savedPages[event.target.value]) : showAllSavedPages()} disabled={busy}>
-            <option value="">All saved pages</option>
-            {savedPageIndices.map((pageIndex) => (
-              <option key={pageIndex} value={pageIndex}>Page {pageIndex} · {savedPages[pageIndex].roles.length} saved roles</option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {postingCacheStats && (
-        <p className="muted" role="status">
-          Posting details: {postingCacheStats.reused} reused from Chrome storage · {postingCacheStats.fetched} fetched this review
-          {postingCacheStats.unavailable ? ` · ${postingCacheStats.unavailable} unavailable` : ""}
-          {postingCacheStats.saveFailed ? " · some cached results could not be saved" : ""}
-          {` · scores: ${postingCacheStats.scoresReused} reused, ${postingCacheStats.scoresFetched} newly matched`}
-        </p>
-      )}
-
+      {analysisRunning && <div className="compact-progress" role="status">
+        <span><strong>{stopRequested ? "Stopping…" : "Scanning Submissions"}</strong>
+          <span className="compact-role-meta">{analysisProgress ? `Page ${analysisProgress.page} Of ${analysisProgress.total} · ` : ""}{roles.length} Saved</span>
+        </span>
+        <button type="button" className="danger" onClick={stopAnalysis} disabled={stopRequested}>Stop</button>
+      </div>}
+      <label className="saved-view-control"><span>View</span>
+        <select aria-label="Saved Roles View" value={savedView} disabled={busy} onChange={(event) => changeSavedView(event.target.value)}>
+          <option value="all">All Saved Roles</option>
+          <option value="current">Current Page</option>
+          {!savedSnapshot?.complete && savedCompleteSnapshot?.roles?.length > 0 && <option value="complete">Last Complete Scan</option>}
+          {savedPageIndices.map((pageIndex) => <option key={pageIndex} value={`page:${pageIndex}`}>Saved Page {pageIndex} · {savedPages[pageIndex].roles.length} Roles</option>)}
+        </select>
+        <HelpTooltip label="Saved Roles" text="Choose all saved roles, the live current page using saved scores, or one saved page. Loading saved results does not run OpenAI matching. The last complete scan is available if a newer scan stopped early." />
+      </label>
+      {postingCacheStats && <details className="compact-fold"><summary>Scan Details<HelpTooltip label="Scan Details" text="Descriptions and scores are cached locally. These counts show which results were reused and which needed new reads or matching." /></summary>
+        <div className="compact-fold-body"><span>{postingCacheStats.reused} Descriptions Reused · {postingCacheStats.fetched} Fetched</span>
+          <span>{postingCacheStats.scoresReused} Scores Reused · {postingCacheStats.scoresFetched} Matched</span>
+          {!!postingCacheStats.unavailable && <span>{postingCacheStats.unavailable} Postings Unavailable</span>}
+          {postingCacheStats.saveFailed && <p role="alert">Some cached results could not be saved.</p>}
+        </div>
+      </details>}
       {error && <p className="submitted-history-error" role="alert">{error}</p>}
-
-      {roles.length > 0 && (
-        <>
-          <div className="submitted-history-summary">
-            <span>{roles.length} saved submissions {reviewContext ? `from page ${reviewContext.pageIndex} of ${reviewContext.pageCount}` : "across scanned pages"}</span>
-          </div>
-          <p className="muted">
-            Starred roles and job 200654506 are excluded from the low-match ranking and protected from batch withdrawal. Search by title or job ID to check any application before reviewing a withdrawal batch.
-          </p>
-          <label className="submitted-history-search">
-            <span>Search submitted roles</span>
-            <input
-              type="search"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Job title or job ID"
-              aria-label="Search submitted roles by job title or job ID"
-              disabled={busy}
-            />
-          </label>
-          <>
-              <p className="muted">{selectedIds.length} role{selectedIds.length === 1 ? "" : "s"} selected. Review every title and job ID before confirming.</p>
-
-              {confirmationOpen ? (
-                <div className="submitted-history-confirm" role="alertdialog" aria-modal="true" aria-labelledby="withdraw-confirm-title">
-                  <h3 id="withdraw-confirm-title">Confirm application withdrawals</h3>
-                  <p>
-                    This will withdraw {selectedRoles.length} Apple applications from your account. That changes your candidacy for those roles. Confirm only if you want to withdraw every role listed here.
-                  </p>
-                  <p>
-                    The extension will walk your active submissions pages and withdraw selected roles as it finds them. It will stop if a withdrawal cannot be verified.
-                  </p>
-                  {withdrawProgress && (
-                    <p role="status">Withdrawing {withdrawProgress.index} of {withdrawProgress.total}: {withdrawProgress.title}</p>
-                  )}
-                  <ul>
-                    {selectedRoles.map((role) => (
-                      <li key={role.jobId}>{role.title} · {role.jobId}</li>
-                    ))}
-                  </ul>
-                  <div className="row">
-                    <button type="button" className="secondary-button" onClick={() => setConfirmationOpen(false)} disabled={busy}>Cancel</button>
-                    <button type="button" className="danger-button" onClick={withdrawSelected} disabled={busy || !selectedRoles.length}>
-                      {busy ? "Withdrawing…" : `Confirm withdraw ${selectedRoles.length}`}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="danger-button"
-                  disabled={busy || selectedRoles.length === 0}
-                  onClick={() => setConfirmationOpen(true)}
-                >
-                  Review withdrawal of {selectedRoles.length} selected roles
-                </button>
-              )}
-          </>
-
-          {visibleRoles.length === 0 ? (
-            <p className="muted">No submitted roles match that title or job ID.</p>
-          ) : (
-            <>
-              {lowMatchRoles.length > 0 && (
-                <>
-                  <h3 className="submitted-role-group-heading">Lower-match roles · unstarred</h3>
-                  <ol className="submitted-role-list">
-                    {lowMatchRoles.map((role) => renderRoleCard(role))}
-                  </ol>
-                </>
-              )}
-              {unscoredRoles.length > 0 && (
-                <>
-                  <h3 className="submitted-role-group-heading">Not scored · review manually</h3>
-                  <ol className="submitted-role-list">
-                    {unscoredRoles.map((role) => renderRoleCard(role))}
-                  </ol>
-                </>
-              )}
-              {protectedRoles.length > 0 && (
-                <>
-                  <h3 className="submitted-role-group-heading">Starred or protected roles</h3>
-                  <p className="muted">These roles are not ranked as low matches and cannot be selected for batch withdrawal. Job 200654506 remains protected even if it is unstarred.</p>
-                  <ol className="submitted-role-list">
-                    {protectedRoles.map((role) => renderRoleCard(role, true))}
-                  </ol>
-                </>
-              )}
-            </>
-          )}
-        </>
-      )}
-    </section>
+      {roles.length > 0 ? <>
+        <input className="compact-search" type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="Find Job ID Or Title" aria-label="Find Submitted Roles By Job ID Or Title" disabled={busy} />
+        <div className="compact-list-heading"><strong>Submitted Roles</strong><span>Lowest Fit First</span></div>
+        {!visibleRoles.length && <p className="muted">No submitted roles match that title or job ID.</p>}
+        {!!lowMatchRoles.length && <ol className="submitted-role-list compact-role-list">{lowMatchRoles.map((role) => renderRoleCard(role))}</ol>}
+        {!!unscoredRoles.length && <details className="compact-fold"><summary>Unscored Roles <span className="function-meta">{unscoredRoles.length}</span>
+          <HelpTooltip label="Unscored Roles" text="These roles could not be scored. Review each posting manually before selecting it for withdrawal." /></summary>
+          <ol className="submitted-role-list compact-role-list">{unscoredRoles.map((role) => renderRoleCard(role))}</ol>
+        </details>}
+        {!!protectedRoles.length && <details className="compact-fold" open={normalizedSearch ? true : undefined}><summary>Protected Roles <span className="function-meta">{protectedRoles.length}</span>
+          <HelpTooltip label="Protected Roles" text="Starred roles and job 200654506 are excluded from the withdrawal ranking and cannot be selected. Job 200654506 remains protected even if unstarred. Unknown star status is also protected." /></summary>
+          <ol className="submitted-role-list compact-role-list">{protectedRoles.map((role) => renderRoleCard(role, true))}</ol>
+        </details>}
+        <div className="compact-selection-bar"><span>{selectedIds.length} Selected</span>
+          <button type="button" className="danger-button" disabled={busy || !selectedRoles.length} onClick={() => setConfirmationOpen(true)}>Review Withdrawal</button>
+          <HelpTooltip label="Review Withdrawal" text="Review every selected job title and ID before confirming. Apple withdrawals cannot be undone, and you cannot reapply to those roles." />
+        </div>
+      </> : !analysisRunning && <p className="muted">No saved submissions yet.</p>}
+      <dialog ref={confirmationRef} className="submitted-history-confirm" aria-labelledby="withdraw-confirm-title"
+        onCancel={(event) => { if (busy) event.preventDefault(); else setConfirmationOpen(false); }} onClose={() => setConfirmationOpen(false)}>
+        <h3 id="withdraw-confirm-title">Confirm Application Withdrawals</h3>
+        <p>This will withdraw {selectedRoles.length} Apple applications. Withdrawals cannot be undone, and you cannot reapply to these roles.</p>
+        <ul>{selectedRoles.map((role) => <li key={role.jobId}>{role.title} · {role.jobId}</li>)}</ul>
+        {withdrawProgress && <p role="status">Withdrawing {withdrawProgress.index} Of {withdrawProgress.total}: {withdrawProgress.title}</p>}
+        <div className="compact-actions">
+          <button type="button" className="secondary" onClick={() => setConfirmationOpen(false)} disabled={busy}>Cancel</button>
+          <button type="button" className="danger-button" onClick={withdrawSelected} disabled={busy || !selectedRoles.length}>
+            {busy ? "Withdrawing…" : `Confirm Withdrawal (${selectedRoles.length})`}
+          </button>
+        </div>
+      </dialog>
+    </FunctionSection>
   );
 }

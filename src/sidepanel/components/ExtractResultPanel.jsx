@@ -20,15 +20,15 @@ export function ExtractResultPanel({ data }) {
         <strong>{data.jobId}</strong>
       </div>
       <div className="row">
-        <span>Local fit score</span>
+        <span>Local Fit Score</span>
         <strong>{data.matchScore ? `${data.matchScore.percentage}%` : "Unknown"}</strong>
       </div>
       <div className="row stacked">
-        <span>Matched keywords</span>
+        <span>Matched Keywords</span>
         <strong>{data.resumeMatch?.keywords?.length ? data.resumeMatch.keywords.join(", ") : "None"}</strong>
       </div>
       <div className="row stacked">
-        <span>Scoring reasons</span>
+        <span>Scoring Reasons</span>
         <strong>{data.matchScore?.reasons?.length ? data.matchScore.reasons.join("; ") : "None"}</strong>
       </div>
 

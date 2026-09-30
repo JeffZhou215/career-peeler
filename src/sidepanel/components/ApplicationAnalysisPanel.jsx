@@ -13,7 +13,7 @@ export function ApplicationAnalysisPanel({ data }) {
         <strong>{data.fieldCount}</strong>
         <span>Required</span>
         <strong>{data.requiredCount}</strong>
-        <span>Unsupported/unknown</span>
+        <span>Unsupported/Unknown</span>
         <strong>{data.unsupportedCount}</strong>
         <span>Forms</span>
         <strong>{data.formCount}</strong>

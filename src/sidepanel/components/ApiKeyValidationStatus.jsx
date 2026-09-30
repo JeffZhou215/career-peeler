@@ -1,9 +1,9 @@
 const STATUS_LABELS = {
-  not_tested: "Not tested",
+  not_tested: "Not Tested",
   testing: "Testing…",
   valid: "Valid",
-  invalid: "Invalid API key",
-  error: "Provider/network error"
+  invalid: "Invalid API Key",
+  error: "Provider/Network Error"
 };
 
 // Deliberately separate visual weight for "invalid" (a confirmed problem with the key -- the provider
@@ -13,7 +13,7 @@ const STATUS_LABELS = {
 export function ApiKeyValidationStatus({ status, message, testing, onTest, buttonLabel = "Test API Key" }) {
   return (
     <div className="api-key-validation">
-      <span className={`api-key-validation-status api-key-validation-status--${status}`}>{STATUS_LABELS[status] || "Not tested"}</span>
+      <span className={`api-key-validation-status api-key-validation-status--${status}`}>{STATUS_LABELS[status] || "Not Tested"}</span>
       {message && <span className="muted">{message}</span>}
       <button type="button" className="secondary" disabled={testing} onClick={onTest}>
         {buttonLabel}

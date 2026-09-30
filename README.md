@@ -16,6 +16,12 @@ Two interfaces share the same matching/apply logic: a **Chrome extension** (the 
 
 ### Ranked Apple job queue
 
+The side panel uses folded function sections; opening one closes the previous section. Submission reviews, ranked jobs, shared matching settings, and activity/advanced tools each have their own section. Click the small **?** beside a function for its description. Job rows keep the title, job ID, status, and score visible; expand a row for explanations, evidence, and its job-page link. Active runs keep **Stop** accessible even when folded.
+
+In **Submitted Application Review**, the **View** dropdown loads all saved roles, the current page with saved scores, individual saved pages, or the last complete scan. **Protected Roles** stays separate and cannot be selected for withdrawal. Select roles and click **Review Withdrawal** to check their titles and IDs in the confirmation dialog.
+
+In **Ranked Job Queue**, **Scan Details** contains cache counts, saved filters, and **Refresh Submission Count**. **Queue Blockers** and **Saved Queue** are folded; expand **Saved Queue** to review/remove queued roles and enable the application-submission acknowledgement. Matching settings, application history, logs, and maintenance actions are available in their respective folded sections.
+
 Open an Apple jobs search with your chosen filters and click **Rank Filtered Search** in **Ranked Job Queue**. The extension starts at page 1, evaluates every page, and saves results as it goes. Repeat with other filters to combine candidates; overlapping job IDs are deduplicated. Saved descriptions and unchanged resume/model scores are reused. Stop or API errors preserve completed scores, and quota failures show OpenAI's detailed error.
 
 Ranking weighs demonstrated responsibilities (40%), minimum qualifications (35%), level (15%), and domain (10%). Automatic candidates require at least 80 overall, strong responsibility/qualification/level scores, high confidence, checked resume quotations, and evidence for every minimum qualification. Preferred qualifications do not disqualify a role. An LLM rejection is preserved even if the local keyword score is high; Review jobs are no longer automatically submitted.

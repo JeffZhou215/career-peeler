@@ -34,7 +34,7 @@ export function GenericAutofillResultPanel({ data }) {
       <div className="summary-grid">
         <span>Filled</span>
         <strong>{data.filledFields.length}</strong>
-        <span>Needs review</span>
+        <span>Needs Review</span>
         <strong>{data.flaggedFields.length}</strong>
       </div>
       <p className="muted">{buildSummary(data)}</p>

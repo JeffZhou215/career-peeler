@@ -9,7 +9,7 @@ import {
 } from "../lib/profile";
 
 const SKILL_CATEGORY_LABELS = {
-  programmingLanguages: "Programming languages",
+  programmingLanguages: "Programming Languages",
   frameworks: "Frameworks",
   mlAi: "ML / AI",
   backend: "Backend",
@@ -17,25 +17,21 @@ const SKILL_CATEGORY_LABELS = {
   cloud: "Cloud",
   databases: "Databases",
   infrastructure: "Infrastructure / DevOps",
-  distributedSystems: "Distributed systems",
-  dataEngineering: "Data engineering",
+  distributedSystems: "Distributed Systems",
+  dataEngineering: "Data Engineering",
   protocols: "Protocols / APIs",
   tools: "Tools",
   other: "Other"
 };
 
-// Scrolls to and opens the API key field over in KnownSitesSection -- the two top-level sections share
-// a details[name="autofillMode"] accordion (native browser exclusive-open behavior), so opening this
-// one closes GenericAutofillSection's automatically, no extra code needed for that part.
+// Open every ancestor before focusing the API key in the shared matching settings.
 function focusApiKeyField() {
   const input = document.getElementById("llmApiKey");
   if (!input) {
     return;
   }
-  for (const details of [input.closest("details.settings"), input.closest("details[name='autofillMode']")]) {
-    if (details) {
-      details.open = true;
-    }
+  for (let ancestor = input.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    if (ancestor.tagName === "DETAILS") ancestor.open = true;
   }
   input.scrollIntoView({ behavior: "smooth", block: "center" });
   input.focus();
@@ -76,7 +72,7 @@ function CandidateDomainExpertiseField({ profile, save, idPrefix }) {
   return (
     <>
       <label className="field-label" htmlFor={id}>
-        <span>Domain expertise</span>
+        <span>Domain Expertise</span>
         <HelpTooltip text="Comma-separated subject-matter areas (e.g. fintech, computer vision) -- not technologies, see Skills below." />
       </label>
       <input id={id} type="text" autoComplete="off" {...draftField} />
@@ -116,7 +112,7 @@ function CandidateSummaryField({ profile, save, idPrefix }) {
   return (
     <>
       <label className="field-label" htmlFor={id}>
-        <span>Professional summary</span>
+        <span>Professional Summary</span>
       </label>
       <textarea id={id} rows={3} {...draftField} />
     </>
@@ -169,7 +165,7 @@ function renderCertificationEntry(entry) {
 }
 
 // idPrefix keeps element ids unique when this renders in more than one place at once -- this repo's
-// two mode-sections (KnownSitesSection, GenericAutofillSection) share a details[name="autofillMode"]
+// two mode-sections (KnownSitesSection, GenericAutofillSection) share a details[name="careerPeelerFunctions"]
 // accordion, which only controls VISIBILITY (native browser behavior for same-name <details>) -- the
 // collapsed one's content, including every id here, is still in the DOM, not removed. Without a
 // distinct prefix per caller, duplicate ids would make a <label for=...> click in one section
@@ -226,7 +222,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
             <HelpTooltip text="Used for matching, LLM answers, and autofill. It can be extracted from your resume and enriched from populated Workday experience/education entries stored locally. Edit fields freely, or re-extract from the current resume." />
           </summary>
           <div className="settings-fields">
-            <CandidateBasicInfoField id={`${idPrefix}candidateFullName`} label="Full name" field="fullName" profile={profile} save={save} />
+            <CandidateBasicInfoField id={`${idPrefix}candidateFullName`} label="Full Name" field="fullName" profile={profile} save={save} />
             <CandidateBasicInfoField id={`${idPrefix}candidateEmail`} label="Email" field="email" profile={profile} save={save} />
             <CandidateBasicInfoField id={`${idPrefix}candidatePhone`} label="Phone" field="phone" profile={profile} save={save} />
             <CandidateBasicInfoField
@@ -247,7 +243,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
             <CandidateBasicInfoField id={`${idPrefix}candidateCity`} label="City" field="city" profile={profile} save={save} />
             <CandidateBasicInfoField
               id={`${idPrefix}candidateState`}
-              label="State / province"
+              label="State / Province"
               field="state"
               profile={profile}
               save={save}
@@ -255,7 +251,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
             <CandidateBasicInfoField id={`${idPrefix}candidateCountry`} label="Country" field="country" profile={profile} save={save} />
             <CandidateBasicInfoField
               id={`${idPrefix}candidateYoe`}
-              label="Total years of experience"
+              label="Total Years Of Experience"
               field="totalYearsOfExperience"
               type="number"
               profile={profile}
@@ -293,7 +289,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
                   disabled={!canExtract || extractionStatus === "extracting"}
                   onClick={() => onExtractNow(profile)}
                 >
-                  {extractionStatus === "extracting" ? "Re-extracting..." : "Re-extract From Resume"}
+                  {extractionStatus === "extracting" ? "Re-Extracting..." : "Re-Extract From Resume"}
                 </button>
                 {!canExtract && <p className="muted">Re-extraction requires a valid API key.</p>}
                 {extractionStatus === "error" && <p className="muted">{extractionError}</p>}

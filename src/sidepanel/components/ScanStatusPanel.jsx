@@ -83,13 +83,13 @@ export function ScanStatusPanel({ status }) {
         <strong>{status.phase || "Idle"}</strong>
         <span>Applied</span>
         <strong>{stats.applied || 0}</strong>
-        <span>Saved applied</span>
+        <span>Saved Applied</span>
         <strong>{status.savedAppliedCount || 0}</strong>
         <span>Reviewed</span>
         <strong>{stats.reviewed ?? stats.review ?? 0}</strong>
-        <span>Saved errors</span>
+        <span>Saved Errors</span>
         <strong>{status.savedErrorCount ?? status.errors?.length ?? 0}</strong>
-        <span>API calls</span>
+        <span>API Calls</span>
         <strong>{stats.apiCalls || 0}</strong>
       </div>
       <p className="last-applied">
@@ -136,17 +136,17 @@ export function ScanStatusPanel({ status }) {
           <strong>{status.scanned || 0}</strong>
           <span>Queued</span>
           <strong>{status.queued || 0}</strong>
-          <span>Page total</span>
+          <span>Page Total</span>
           <strong>{status.currentPageStats?.total || 0}</strong>
-          <span>Page unapplied</span>
+          <span>Page Unapplied</span>
           <strong>{status.currentPageStats?.unapplied || 0}</strong>
-          <span>Page applied</span>
+          <span>Page Applied</span>
           <strong>{status.currentPageStats?.applied || 0}</strong>
           <span>Submitted</span>
           <strong>{stats.submitted || 0}</strong>
-          <span>Likely match</span>
+          <span>Likely Match</span>
           <strong>{stats.likelyMatch || 0}</strong>
-          <span>Likely skip</span>
+          <span>Likely Skip</span>
           <strong>{stats.likelySkip || 0}</strong>
           <span>Seen</span>
           <strong>{stats.seen ?? stats.unknown ?? 0}</strong>
@@ -154,11 +154,11 @@ export function ScanStatusPanel({ status }) {
           <strong>{stats.skippedStored || 0}</strong>
           <span>Skipped (unqualified)</span>
           <strong>{stats.skippedUnqualified || 0}</strong>
-          <span>Apply failed</span>
+          <span>Apply Failed</span>
           <strong>{stats.applyFailed || 0}</strong>
-          <span>Run errors</span>
+          <span>Run Errors</span>
           <strong>{stats.errors || 0}</strong>
-          <span>Needs review</span>
+          <span>Needs Review</span>
           <strong>{stats.needsReview || 0}</strong>
         </div>
         <h2>Recent Failures</h2>

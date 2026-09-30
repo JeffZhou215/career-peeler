@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
+import { FunctionSection } from "./FunctionSection";
 import { TagInput } from "./TagInput";
 import { ScanStatusPanel } from "./ScanStatusPanel";
 import { ExtractResultPanel } from "./ExtractResultPanel";
@@ -423,10 +424,6 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
     ).size;
   const savedAppliedCount = status.savedAppliedCount || 0;
   const savedErrorCount = status.savedErrorCount ?? status.errors?.length ?? 0;
-  const scanModeLabel = profile.scanMode === "auto_apply" ? "Auto Apply" : "Scan Only";
-  const matchingModeLabel = profile.llmEnabled
-    ? (profile.llmModel || "AI Matching").replace(/^gpt/i, "GPT")
-    : "Local Matching";
   const resumeProfileIsCurrent = isCandidateProfileFreshForResume(profile);
   const resumeStatusLabel =
     resumeExtraction.extractionStatus === "extracting"
@@ -446,19 +443,11 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
           : "Resume Uploaded";
 
   return (
-    <details name="autofillMode" className="mode-section" open>
-      <summary>
-        <h2>
-          Apple / TikTok / ByteDance
-          <HelpTooltip text="Scan a job list page across pagination and auto-apply with site-specific handling." />
-        </h2>
-      </summary>
-      <div className="mode-section-body">
-        <details ref={settingsRef} className="settings">
-          <summary className="settings-summary">
-            <span>Matching And Application Settings</span>
-            <span className="settings-summary-meta">{`${scanModeLabel} · ${matchingModeLabel} · ${resumeSummaryLabel}`}</span>
-          </summary>
+    <>
+      <FunctionSection title="Matching And Application Settings" sectionRef={settingsRef}
+        meta={resumeSummaryLabel}
+        help="Manage your saved resume, OpenAI model and API key, experience, filters, application consent and required application answers. These settings are shared by submission reviews, rankings and supported job sites.">
+        <div className="settings settings-flat">
           <div className="settings-groups">
             <section className="settings-group" aria-labelledby="application-settings-title">
               <p id="application-settings-title" className="settings-group-title">
@@ -518,6 +507,7 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
                 <p id="ai-settings-title" className="settings-group-title">
                   AI Matching
                 </p>
+                <HelpTooltip label="AI Matching" text="When disabled, supported legacy scans use the local matcher only. Ranked Job Queue requires AI matching." />
                 <label className="settings-toggle" htmlFor="llmEnabled">
                   <input
                     id="llmEnabled"
@@ -559,9 +549,7 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
                     <input id="llmModel" className="model-control" type="text" {...llmModelField} />
                   </div>
                 </div>
-              ) : (
-                <p className="settings-group-description">Jobs use the fast local matcher only.</p>
-              )}
+              ) : null}
             </section>
 
             <section className="settings-group" aria-labelledby="resume-settings-title">
@@ -628,8 +616,16 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
               </div>
             </details>
           </div>
-        </details>
-
+        </div>
+      </FunctionSection>
+      <FunctionSection title="Activity And Advanced Tools"
+        running={running && !/ranked queue/i.test(status.phase || "")}
+        meta={running ? "Running" : undefined}
+        headerAction={running && <button type="button" className="danger" disabled={busy.stopScan} onClick={stopListScan}>Stop</button>}
+        help="View application activity, scan progress, saved history and diagnostic tools. Apple job searches can be ranked from Ranked Job Queue; this section also retains list scans for TikTok and ByteDance.">
+        <div className="compact-list-heading"><strong>Supported Site Scans</strong>
+          <HelpTooltip label="Supported Site Scans" text="Scan Apple, TikTok or ByteDance careers lists using the selected scan mode. Apple Auto Apply ranks first; actual submission happens from the saved queue." />
+        </div>
         <div className="actions primary-actions known-site-actions">
           <button type="button" className="primary action-wide" disabled={running} onClick={startListScan}>
             {running ? "Scan Running" : "Scan Visible Job List"}
@@ -639,45 +635,49 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
               Stop Scan
             </button>
           )}
-          <button
-            type="button"
-            className="secondary"
-            disabled={running || busy.clearApplied || savedAppliedCount === 0}
-            onClick={clearAppliedJobs}
-          >
-            Clear Applied Jobs ({savedAppliedCount})
-          </button>
-          <button type="button" className="secondary" disabled={running || busy.clearHistory} onClick={clearHistory}>
-            Clear Job History
-          </button>
-          {savedErrorCount > 0 && (
-            <div className="known-site-error-actions">
-              <button
-                type="button"
-                className="secondary"
-                disabled={running || busy.retryErrors || retryableErrorCount === 0}
-                onClick={retryErrorJobs}
-              >
-                Retry Error Jobs ({retryableErrorCount})
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={running || busy.clearErrors}
-                onClick={clearErrorJobs}
-              >
-                Clear Error Jobs ({savedErrorCount})
-              </button>
-            </div>
-          )}
         </div>
 
-        <AutofillActivityLog storageKey={KNOWN_SITE_ACTIVITY_KEY} />
-        <ScanStatusPanel status={status} />
+        <details className="compact-fold"><summary>Activity<HelpTooltip label="Activity" text="Read the latest matching decisions and application steps, with links to the original roles." /></summary>
+          <AutofillActivityLog storageKey={KNOWN_SITE_ACTIVITY_KEY} />
+        </details>
+        <details className="compact-fold"><summary>Scan Progress<HelpTooltip label="Scan Progress" text="Saved applications, errors, review items and detailed scan logs are available here." /></summary>
+          <ScanStatusPanel status={status} />
+        </details>
 
-        <details className="advanced">
-          <summary>Advanced Tools</summary>
-          <div className="actions">
+        <details className="compact-fold">
+          <summary>Advanced Tools<HelpTooltip label="Advanced Tools" text="Inspect job pages, analyze application fields, run a diagnostic workflow or manage locally saved history. The current-job workflow can submit an application and asks for confirmation." /></summary>
+          <div className="actions compact-fold-body">
+            <button
+              type="button"
+              className="secondary"
+              disabled={running || busy.clearApplied || savedAppliedCount === 0}
+              onClick={clearAppliedJobs}
+            >
+              Clear Applied Jobs ({savedAppliedCount})
+            </button>
+            <button type="button" className="secondary" disabled={running || busy.clearHistory} onClick={clearHistory}>
+              Clear Job History
+            </button>
+            {savedErrorCount > 0 && (
+              <div className="known-site-error-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={running || busy.retryErrors || retryableErrorCount === 0}
+                  onClick={retryErrorJobs}
+                >
+                  Retry Error Jobs ({retryableErrorCount})
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={running || busy.clearErrors}
+                  onClick={clearErrorJobs}
+                >
+                  Clear Error Jobs ({savedErrorCount})
+                </button>
+              </div>
+            )}
             <button type="button" className="secondary" disabled={busy.extract} onClick={extractCurrentPage}>
               Extract Current Page
             </button>
@@ -692,7 +692,7 @@ export function KnownSitesSection({ profile, save, status, refreshScanStatus, se
 
         <ExtractResultPanel data={extractResult} />
         <ApplicationAnalysisPanel data={applicationAnalysis} />
-      </div>
-    </details>
+      </FunctionSection>
+    </>
   );
 }

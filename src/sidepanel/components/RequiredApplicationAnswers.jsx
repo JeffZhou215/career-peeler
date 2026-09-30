@@ -1,3 +1,5 @@
+import { HelpTooltip } from "./HelpTooltip";
+
 import {
   EEO_PROFILE_FIELDS,
   EEO_PROFILE_OPTIONS,
@@ -51,14 +53,11 @@ export function RequiredApplicationAnswers({ profile, save, idPrefix, sectionRef
       tabIndex="-1"
     >
       <div className="settings-group-heading">
-        <p id={`${idPrefix}required-answers-title`} className="settings-group-title">Required Application Answers</p>
+        <p id={`${idPrefix}required-answers-title`} className="settings-group-title">Required Application Answers<HelpTooltip label="Required Application Answers" text="Used locally only when a site requires an answer. Optional or voluntary questions stay unanswered, and these values are never sent to AI." /></p>
         <span className={`required-answers-status${missingFields.length ? "" : " required-answers-status--complete"}`}>
           {completedCount} Of {EEO_PROFILE_FIELDS.length}
         </span>
       </div>
-      <p className="settings-group-description">
-        Used locally only when a site requires an answer. Optional or voluntary questions stay unanswered and these values are never sent to AI.
-      </p>
       <div className="required-answer-grid">
         {EEO_PROFILE_FIELDS.filter(({ key }) => key !== "eeoRaceEthnicity").map((field) => (
           <SelectAnswer

@@ -34,7 +34,7 @@ function YesNoField({ id, label, help, profile, save }) {
         {help && <HelpTooltip text={help} />}
       </label>
       <select id={id} value={profile[id]} onChange={(event) => save({ [id]: event.target.value })}>
-        <option value="">Not set -- always ask me</option>
+        <option value="">Not Set — Always Ask Me</option>
         <option value="yes">Yes</option>
         <option value="no">No</option>
       </select>
@@ -120,7 +120,7 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
   }
 
   return (
-    <details name="autofillMode" className="mode-section">
+    <details name="careerPeelerFunctions" className="mode-section">
       <summary>
         <h2>
           Other Job Sites
@@ -134,22 +134,22 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
             <HelpTooltip text="Any field left blank is skipped and flagged for you to fill in yourself." />
           </summary>
           <div className="settings-fields">
-            <TextField id="firstName" label="First name" profile={profile} save={save} />
-            <TextField id="lastName" label="Last name" profile={profile} save={save} />
+            <TextField id="firstName" label="First Name" profile={profile} save={save} />
+            <TextField id="lastName" label="Last Name" profile={profile} save={save} />
             <TextField id="email" label="Email" type="email" profile={profile} save={save} />
             <TextField id="phone" label="Phone" type="tel" profile={profile} save={save} />
-            <TextField id="addressLine1" label="Street address" profile={profile} save={save} />
-            <TextField id="addressLine2" label="Address line 2 (apartment/suite/unit, optional)" profile={profile} save={save} />
+            <TextField id="addressLine1" label="Street Address" profile={profile} save={save} />
+            <TextField id="addressLine2" label="Address Line 2 (Apartment/Suite/Unit, Optional)" profile={profile} save={save} />
             <TextField id="addressCity" label="City" profile={profile} save={save} />
-            <TextField id="addressState" label="State / province" profile={profile} save={save} />
-            <TextField id="addressPostalCode" label="Postal code" profile={profile} save={save} />
+            <TextField id="addressState" label="State / Province" profile={profile} save={save} />
+            <TextField id="addressPostalCode" label="Postal Code" profile={profile} save={save} />
             <TextField id="addressCountry" label="Country" profile={profile} save={save} />
             <TextField id="linkedinUrl" label="LinkedIn URL" type="url" profile={profile} save={save} />
             <TextField id="githubUrl" label="GitHub URL" type="url" profile={profile} save={save} />
-            <TextField id="portfolioUrl" label="Portfolio / website URL" type="url" profile={profile} save={save} />
+            <TextField id="portfolioUrl" label="Portfolio / Website URL" type="url" profile={profile} save={save} />
 
             <label className="field-label" htmlFor="genericResumeFile">
-              <span>Resume file</span>
+              <span>Resume File</span>
               <HelpTooltip text="Stored locally in Chrome storage and attached to a resume upload field, if one is found, by handing the page a real file object -- no file path needed. Also used for automatic profile extraction, same as the Apple/TikTok/ByteDance section's copy -- one shared resume across both." />
             </label>
             <input id="genericResumeFile" type="file" accept="application/pdf,.pdf" onChange={handleResumeFileChange} />
@@ -166,12 +166,12 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
 
             <YesNoField
               id="workAuthorized"
-              label="Authorized to work in your country?"
+              label="Authorized To Work In Your Country?"
               help="Left unset by default -- unset answers are always flagged for your review rather than guessed."
               profile={profile}
               save={save}
             />
-            <YesNoField id="requiresSponsorship" label="Requires visa sponsorship?" profile={profile} save={save} />
+            <YesNoField id="requiresSponsorship" label="Requires Visa Sponsorship?" profile={profile} save={save} />
 
             <RequiredApplicationAnswers
               profile={profile}
@@ -181,8 +181,8 @@ export function GenericAutofillSection({ profile, save, setStatusMessage }) {
               emphasizeMissing={profile.scanMode === "auto_apply"}
             />
 
-            <TextField id="desiredSalary" label="Desired salary" profile={profile} save={save} />
-            <TextField id="availableStartDate" label="Earliest start date" profile={profile} save={save} />
+            <TextField id="desiredSalary" label="Desired Salary" profile={profile} save={save} />
+            <TextField id="availableStartDate" label="Earliest Start Date" profile={profile} save={save} />
           </div>
         </details>
 
