@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
@@ -12,6 +12,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
+  const blockersRef = useRef(null);
   const refresh = useCallback(async (requestedTopN = topN) => {
     const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: requestedTopN });
     if (response?.ok) setView(response.data);
@@ -91,6 +92,16 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     score: "Below Fit Threshold", hardSkip: "Excluded By Title, Experience Or Keywords",
     unscored: "Matching Unfinished Or Posting Unavailable", alreadyApplied: "Previously Applied Or Withdrawn",
     applicationReview: "Application Needs Review" };
+  const hasQueueBlockers = view?.diagnostics && Object.keys(diagnosticLabels).some((key) => view.diagnostics[key] > 0);
+  const canQueue = !!view?.candidates?.length;
+
+  function reviewQueueBlockers() {
+    const details = blockersRef.current;
+    if (!details) return;
+    details.open = true;
+    details.querySelector("summary")?.focus({ preventScroll: true });
+    details.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
   const progressLabel = view?.running
     ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Saved Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
@@ -156,10 +167,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     </div>
     <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
     {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No ranked jobs match this search." : "No ranked jobs yet."}</p>}
-    {view?.diagnostics && Object.keys(diagnosticLabels).some((key) => view.diagnostics[key] > 0) &&
-      <details className="compact-fold"><summary>Queue Blockers <span className="function-meta">{view.eligibleCount || 0} Ready</span>
+    {hasQueueBlockers &&
+      <details className="compact-fold" ref={blockersRef}><summary>Queue Blockers <span className="function-meta">{view.eligibleCount || 0} Ready</span>
         <HelpTooltip label="Queue Blockers" text="These counts explain why jobs are not eligible for automatic applications. A job may have several reasons, so the counts overlap. Expand each job for its specific evidence." /></summary>
-        <div className="compact-fold-body">{Object.entries(diagnosticLabels).filter(([key]) => view.diagnostics[key] > 0)
+        <div className="compact-fold-body"><p>Overall fit alone does not qualify a job for the queue. Expand a ranked role to see its specific blockers and resume evidence.</p>
+          {Object.entries(diagnosticLabels).filter(([key]) => view.diagnostics[key] > 0)
           .map(([key, label]) => <div className="compact-stat-row" key={key}><span>{label}</span><strong>{view.diagnostics[key]}</strong></div>)}</div>
       </details>}
     {!!view?.needsReview?.length && <details className="compact-fold"><summary>Applications Needing Review <span className="function-meta">{view.needsReview.length}</span></summary>
@@ -177,8 +189,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         </label>
       </div>
     </details>
+    {!canQueue && hasQueueBlockers && !view?.running && <p className="muted" role="status">No jobs pass all queue checks yet. Changing Top does not change these checks.</p>}
     <div className="compact-actions queue-actions">
-      <button type="button" className="secondary" disabled={busy || view?.running || !view?.candidates?.length} onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>Queue Top {n}</button>
+      {!canQueue && hasQueueBlockers
+        ? <button type="button" className="secondary" disabled={busy || view?.running} onClick={reviewQueueBlockers}>Review Queue Blockers</button>
+        : <button type="button" className="secondary" disabled={busy || view?.running || !canQueue} onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>Queue Top {n}</button>}
       <button type="button" className="primary" disabled={busy || view?.running || !view?.queued?.length || !profile.autoApplyConsent} onClick={() => act("APPLE_CAREERS_APPLY_JOB_QUEUE")}>Apply Queue</button>
       <HelpTooltip label="Apply Queue" text="Requires eligible queued jobs, your application-submission acknowledgement in Saved Queue, a validated API key, a current resume and required application answers. It checks current active submissions before applying and stops at 50." />
     </div>
