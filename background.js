@@ -333,6 +333,9 @@ function rememberError(error) {
 }
 
 function getRetryableErrorIdentity(error) {
+  // Ranked queue failures are reviewed in that queue; its capacity and unknown-
+  // submission guards must not be bypassed by the legacy retry-errors scanner.
+  if (error?.status === "ranked_queue_apply_failed") return null;
   const retryUrl = [error?.url, error?.manualReviewUrl].find((url) => getSiteConfig(url));
   const identity = getDurableJobIdentity({ ...error, url: retryUrl });
   const siteConfig = getSiteConfig(retryUrl);
@@ -2169,8 +2172,18 @@ async function runApplicationWorkflow(tab, options = {}) {
   let standaloneCycleId = null;
   let standaloneCycleResult = { status: "attention", outcome: "Needs Attention" };
   let submissionAttemptCount = 0;
+  let workflowStepInFlight = false;
+  let submissionRejected = false;
+  let lastWorkflowUrl = tab?.url || null;
   let validationRecoveryAttempts = 0;
   let previousValidationRecoveryFingerprint = "";
+  const workflowOutcomeMetadata = () => ({
+    submissionAttempted: submissionAttemptCount > 0,
+    submissionAttemptCount,
+    submissionRejected,
+    submissionOutcomeUnknown: workflowStepInFlight || (submissionAttemptCount > 0 && !submissionRejected),
+    url: lastWorkflowUrl
+  });
 
   const registerQuestionAgentTab = (tabId) => {
     if (!tabId) {
@@ -2185,7 +2198,8 @@ async function runApplicationWorkflow(tab, options = {}) {
   if (!workflowTabId) {
     return {
       ok: false,
-      error: "No job tab was available for the application workflow."
+      error: "No job tab was available for the application workflow.",
+      data: { ...workflowOutcomeMetadata(), submitted: false, errorType: "invalid_workflow_tab" }
     };
   }
 
@@ -2197,7 +2211,8 @@ async function runApplicationWorkflow(tab, options = {}) {
   if (!siteConfig) {
     return {
       ok: false,
-      error: `Expected an Apple, TikTok, or ByteDance careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`
+      error: `Expected an Apple, TikTok, or ByteDance careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`,
+      data: { ...workflowOutcomeMetadata(), submitted: false, errorType: "invalid_workflow_tab" }
     };
   }
 
@@ -2243,6 +2258,7 @@ async function runApplicationWorkflow(tab, options = {}) {
           ok: false,
           error: "Scan stopped.",
           data: {
+            ...workflowOutcomeMetadata(),
             submitted: false,
             errorType: "stopped_by_user",
             attempts,
@@ -2257,6 +2273,9 @@ async function runApplicationWorkflow(tab, options = {}) {
       await delay(PAGE_SETTLE_DELAY_MS);
 
       const previousTabIds = await getOpenTabIds();
+      // A lost reply can hide a Submit click. Keep that case distinct from a
+      // completed step that explicitly reports no submission attempt.
+      workflowStepInFlight = true;
       const response = await sendMessageWithFallback(workflowTabId, {
         type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP",
         submissionAttemptCount,
@@ -2267,13 +2286,21 @@ async function runApplicationWorkflow(tab, options = {}) {
       if (!response?.ok) {
         throw new Error(response?.error || "The application workflow step failed.");
       }
+      lastWorkflowUrl = response.data.url || lastWorkflowUrl;
 
       // ByteDance may replace the application document after validation. Keep only bounded counters
       // and a non-sensitive field-label fingerprint in the service worker so a fresh content script
       // cannot restart the same Submit/agent cycle indefinitely.
-      submissionAttemptCount += (response.data.steps || []).filter(
+      const finalSubmitClicks = (response.data.steps || []).filter(
         (step) => step.step === "Submit application" && step.status === "clicked"
       ).length;
+      submissionAttemptCount += finalSubmitClicks;
+      if (finalSubmitClicks) submissionRejected = false;
+      if ((response.data.steps || []).some((step) =>
+        step.step === "Check for validation errors after submitting" && step.status === "blocked")) {
+        submissionRejected = true;
+      }
+      workflowStepInFlight = false;
 
       if (response.data.validationRecoveryAttempted) {
         validationRecoveryAttempts += 1;
@@ -2401,6 +2428,7 @@ async function runApplicationWorkflow(tab, options = {}) {
         return {
           ok: true,
           data: {
+            ...workflowOutcomeMetadata(),
             submitted: false,
             pausedForReview: true,
             errorType: response.data.errorType || "open_text_review_required",
@@ -2419,6 +2447,7 @@ async function runApplicationWorkflow(tab, options = {}) {
           ok: false,
           error: response.data.summary || "The workflow could not find the next action.",
           data: {
+            ...workflowOutcomeMetadata(),
             submitted: false,
             errorType: response.data.errorType || classifyWorkflowError(response.data.summary, { attempts, steps }),
             summary: response.data.summary,
@@ -2435,6 +2464,7 @@ async function runApplicationWorkflow(tab, options = {}) {
       ok: false,
       error: "The workflow hit the maximum number of steps before submission.",
       data: {
+        ...workflowOutcomeMetadata(),
         submitted: false,
         errorType: "workflow_timeout",
         summary: "The workflow hit the maximum number of steps before submission.",
@@ -2445,7 +2475,18 @@ async function runApplicationWorkflow(tab, options = {}) {
   } catch (error) {
     await markActiveKnownSiteCycleNeedsAttention(activitySteps);
     await cleanupWorkflowTabs();
-    throw error;
+    return {
+      ok: false,
+      error: error?.message || "The application workflow failed.",
+      data: {
+        ...workflowOutcomeMetadata(),
+        submitted: false,
+        errorType: error?.code || classifyWorkflowError(error?.message, { attempts, steps }),
+        summary: error?.message || "The application workflow failed.",
+        attempts,
+        steps
+      }
+    };
   } finally {
     for (const tabId of questionAgentTabIds) {
       questionAgentProfilesByTabId.delete(tabId);

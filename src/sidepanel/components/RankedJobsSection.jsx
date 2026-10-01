@@ -87,7 +87,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const search = query.trim().toLowerCase();
   const matchesSearch = (job) => `${job.jobId} ${job.title}`.toLowerCase().includes(search);
   const visible = jobs.filter(matchesSearch);
-  const shownIds = new Set([...jobs, ...(view?.queued || [])].map((job) => String(job.jobId)));
+  const applicationFailures = view?.applicationFailures || [];
+  const failedIds = new Set(applicationFailures.map((job) => String(job.jobId)));
+  const failedMatches = applicationFailures.filter(matchesSearch);
+  const otherReviewJobs = (view?.needsReview || []).filter((job) => !failedIds.has(String(job.jobId)) && job.queueStatus !== "applying");
+  const shownIds = new Set([...jobs, ...(view?.queued || []), ...applicationFailures].map((job) => String(job.jobId)));
   const otherMatches = (view?.otherMatches || []).filter((job) => !shownIds.has(String(job.jobId)) && matchesSearch(job));
   const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
   const diagnosticLabels = { qualifications: "Minimum Qualifications Missing Or Unverified",
@@ -103,7 +107,10 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const progressLabel = view?.running
     ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Saved Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
-    : view?.error ? "Ranking Paused" : view?.phase ? "Rankings Saved" : "Ready To Rank";
+    : view?.error ? /Application queue/i.test(view.phase || "") ? "Application Queue Paused" : "Ranking Paused"
+      : /Application queue/i.test(view?.phase || "") ? /stopped/i.test(view.phase) ? "Application Queue Stopped" : "Application Queue Finished"
+        : /50-application target/i.test(view?.phase || "") ? "Application Limit Reached"
+          : view?.phase ? "Rankings Saved" : "Ready To Rank";
 
   function jobCard(job) {
     const status = ["needs_review", "uncertain", "applying"].includes(job.queueStatus) ? "Application Needs Review"
@@ -137,11 +144,18 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     help="Rank every page of the current filtered Apple search against your saved resume. Descriptions, scores and the queue are stored locally. Queue Top N saves the highest-ranked scored jobs, including jobs with match concerns. Review the saved queue and acknowledge concerns before Apply Queue submits applications. Previously applied, withdrawn, excluded and unscored jobs are omitted. Applying checks active submissions and stops at the conservative 50-submission target. Apple may exempt some roles from its cap.">
     <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong>
       <span className="compact-role-meta">{view?.reviewedCount || 0} Saved · {view?.queueableCount || 0} Ranked · {view?.eligibleCount || 0} Strong Matches</span>
+      {view?.currentJob && <a className="compact-role-meta" href={view.currentJob.url} target="_blank" rel="noopener noreferrer">
+        {view.running ? "Current Job" : "Last Job"}: {view.currentJob.title} · {view.currentJob.jobId}
+      </a>}
     </span>
       {view?.running ? <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>
         : <button type="button" className="primary" disabled={busy} onClick={() => act("APPLE_CAREERS_START_JOB_RANKING")}>Rank Filtered Search</button>}
     </div>
-    {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}</p>}
+    {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}
+      {!error && view?.errorJob && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
+        Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
+      </a></>}
+    </p>}
     <details className="compact-fold"><summary>Scan Details<HelpTooltip label="Scan Details" text="Inspect the current job, cache use, saved filter history and the last active submission count. Refresh Submission Count reads Apple without repeating OpenAI matching." /></summary>
       <div className="compact-fold-body">
         {view?.phase && <span>{view.phase}</span>}
@@ -169,6 +183,23 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     </div>
     <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
     {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No ranked jobs match this search." : "No ranked jobs yet."}</p>}
+    {!!applicationFailures.length && <details className="compact-fold" open={view?.error ? true : undefined}>
+      <summary>Failed Applications And Manual Review <span className="function-meta">{applicationFailures.length} Jobs</span>
+        <HelpTooltip label="Failed Applications And Manual Review" text="Saved across runs and extension reloads. Each job includes its link, failure reason, last step and time. Jobs that get stuck before submission are skipped so the queue continues. Unknown submission outcomes reserve a slot and pause the queue until you verify Apple Your Roles with Refresh Submission Count. Manually reviewed jobs are not retried automatically." />
+      </summary>
+      <div className="compact-fold-body">
+        {failedMatches.length ? <ul className="queue-failure-list">{failedMatches.map((job) => <li key={job.jobId}>
+          <a className="queue-failure-title" href={job.url} target="_blank" rel="noopener noreferrer">{job.title || "Open Job Page"}</a>
+          <span className="compact-role-meta">Job ID {job.jobId} · {job.status === "submitted" ? "Submitted Later"
+            : job.verifiedAbsentAt ? "Not In Active Submissions" : job.submissionOutcomeUnknown ? "Outcome Unknown" : "Manual Review"}</span>
+          <p>{job.reason}</p>
+          {job.lastStep && <span className="compact-role-meta">Last Step: {job.lastStep}</span>}
+          <span className="compact-role-meta">{job.legacy ? "Saved" : "Failed"} {formatRelativeTime(job.failedAt)}{job.attempts > 1 && <> · {job.attempts} Attempts</>}</span>
+          {job.status !== "submitted" && job.submissionOutcomeUnknown && !job.verifiedAbsentAt &&
+            <p>Refresh Submission Count before retrying; a submission may have gone through.</p>}
+        </li>)}</ul> : <span>No failed applications match this search.</span>}
+      </div>
+    </details>}
     {hasMatchDiagnostics &&
       <details className="compact-fold"><summary>Match Concerns And Exclusions <span className="function-meta">{view.eligibleCount || 0} Strong</span>
         <HelpTooltip label="Match Concerns And Exclusions" text="Qualifications, evidence, confidence and score concerns are advisory for scored jobs you choose to queue. Title/experience/keyword exclusions, unfinished matching, prior applications and uncertain application outcomes remain excluded. Counts overlap; expand a job for specific evidence." /></summary>
@@ -176,8 +207,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
           {Object.entries(diagnosticLabels).filter(([key]) => view.diagnostics[key] > 0)
           .map(([key, label]) => <div className="compact-stat-row" key={key}><span>{label}</span><strong>{view.diagnostics[key]}</strong></div>)}</div>
       </details>}
-    {!!view?.needsReview?.length && <details className="compact-fold"><summary>Applications Needing Review <span className="function-meta">{view.needsReview.length}</span></summary>
-      <ul className="submitted-role-list compact-role-list">{view.needsReview.filter(matchesSearch).map(jobCard)}</ul>
+    {!!otherReviewJobs.length && <details className="compact-fold"><summary>Applications Needing Review <span className="function-meta">{otherReviewJobs.length}</span></summary>
+      <ul className="submitted-role-list compact-role-list">{otherReviewJobs.filter(matchesSearch).map(jobCard)}</ul>
     </details>}
     {!!otherMatches.length && <details className="compact-fold"><summary>Other Excluded Or Unscored Jobs <span className="function-meta">{otherMatches.length}</span></summary>
       <ul className="submitted-role-list compact-role-list">{otherMatches.map(jobCard)}</ul>
