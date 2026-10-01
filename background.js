@@ -652,12 +652,36 @@ async function activateTab(tabId) {
 // created for a scan in the list page's window and make it active inside Chrome. Deliberately do not
 // focus the Chrome window itself: activating a tab is enough to avoid background-tab rendering while
 // allowing the user to remain full-screen in another application.
+async function getTaskWindowId(sourceTab) {
+  const tabId = typeof sourceTab === "number" ? sourceTab : sourceTab?.id;
+  const tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
+  if (!Number.isInteger(tab?.windowId) || tab.windowId < 0) {
+    throw Object.assign(new Error("The careers tab is no longer available. Open Apple Careers and start this action again."),
+      { code: "career_window_unavailable" });
+  }
+  return tab.windowId;
+}
+
+async function createTaskTab(url, windowId, active = true) {
+  if (!Number.isInteger(windowId) || windowId < 0) {
+    throw Object.assign(new Error("The careers window is unavailable. Open Apple Careers and start this action again."),
+      { code: "career_window_unavailable" });
+  }
+  try {
+    // Always specify the original window; focusing another window must not move
+    // automation there. If this window closes, never fall back to another one.
+    return await chrome.tabs.create({ url, active, windowId });
+  } catch (error) {
+    if (/window/i.test(error?.message || "")) {
+      throw Object.assign(new Error("The careers window is no longer available. Open Apple Careers and start this action again."),
+        { code: "career_window_unavailable" });
+    }
+    throw error;
+  }
+}
+
 async function createActiveWorkflowTab(url, windowId = scanState.listWindowId) {
-  const tab = await chrome.tabs.create({
-    url,
-    active: true,
-    ...(windowId ? { windowId } : {})
-  });
+  const tab = await createTaskTab(url, windowId);
   ownedWorkflowTabIds.add(tab.id);
 
   return activateTab(tab.id);
@@ -706,11 +730,11 @@ function tabMatchesApplication(tab, siteConfig, jobId) {
 // Continue/Submit button on what was still the old (or mid-navigation) page. Caught from a live report of
 // exactly that: "the tab did not navigate... causing an error which says there is no apply or submit
 // button."
-async function waitForApplicationTab(previousTabIds, siteConfig, jobId, workflowTabId, timeoutMs = 8000) {
+async function waitForApplicationTab(previousTabIds, siteConfig, jobId, workflowTabId, timeoutMs = 8000, windowId) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    const tabs = await chrome.tabs.query({});
+    const tabs = await chrome.tabs.query(Number.isInteger(windowId) ? { windowId } : {});
     const applicationTab = tabs.find(
       (tab) =>
         (tab.id === workflowTabId || !previousTabIds.has(tab.id)) && tabMatchesApplication(tab, siteConfig, jobId)
@@ -2204,6 +2228,7 @@ async function runApplicationWorkflow(tab, options = {}) {
   }
 
   const liveTab = await chrome.tabs.get(workflowTabId).catch(() => null);
+  const workflowWindowId = options.windowId ?? liveTab?.windowId;
 
   const siteConfig = getSiteConfig(liveTab?.url);
   const jobId = liveTab?.url ? getJobIdFromUrl(liveTab.url) : null;
@@ -2346,7 +2371,7 @@ async function runApplicationWorkflow(tab, options = {}) {
       if (response.data.openUrlInBackgroundTab) {
         // Keep ownership of target=_blank navigation instead of handing it to the page, but activate
         // the managed tab deliberately so the application SPA renders before the next workflow step.
-        const newTab = await createActiveWorkflowTab(response.data.openUrlInBackgroundTab);
+        const newTab = await createActiveWorkflowTab(response.data.openUrlInBackgroundTab, workflowWindowId);
         workflowTabId = newTab.id;
         registerQuestionAgentTab(workflowTabId);
         attempts.push({
@@ -2358,7 +2383,7 @@ async function runApplicationWorkflow(tab, options = {}) {
           visibleActions: []
         });
       } else if (openedApplication) {
-        const applicationTab = await waitForApplicationTab(previousTabIds, siteConfig, jobId, workflowTabId);
+        const applicationTab = await waitForApplicationTab(previousTabIds, siteConfig, jobId, workflowTabId, 8000, workflowWindowId);
         if (applicationTab?.id) {
           const navigatedInPlace = applicationTab.id === workflowTabId;
           workflowTabId = applicationTab.id;
@@ -3188,7 +3213,7 @@ async function runGenericAutofillWorkflow(tab, userProfile) {
   }
 }
 
-async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, shouldStop } = {}) {
+async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, shouldStop, windowId } = {}) {
   const profile = normalizeUserProfile(userProfile || {});
   const resumeProfile = resolveResumeProfileText(profile);
   if (!profile.llmEnabled || !profile.llmApiKey) {
@@ -3203,7 +3228,7 @@ async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, should
     throw new Error("No submitted roles were provided for scoring.");
   }
 
-  const detailsResult = await fetchAppleSubmittedRoleDetails(boundedRoles, { shouldStop });
+  const detailsResult = await fetchAppleSubmittedRoleDetails(boundedRoles, { shouldStop, windowId });
   const detailsByJobId = detailsResult.detailsByJobId;
   const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY);
   const scoreCache = stored[APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY] || {};
@@ -3392,6 +3417,7 @@ async function analyzeAppleSubmittedRolesCurrentPage(tabId, userProfile, analysi
     return response.data;
   };
   try {
+    run.windowId = await getTaskWindowId(tabId);
     const page = await readPage();
     if (page.withdrawalConfirmationOpen) {
       throw new Error("Resolve Apple's open withdrawal confirmation before analyzing this page.");
@@ -3408,6 +3434,7 @@ async function analyzeAppleSubmittedRolesCurrentPage(tabId, userProfile, analysi
     publish(review);
     try {
       const analysis = await scoreAppleSubmittedRoles(page.roles.filter((role) => role.active !== false), userProfile, {
+        windowId: run.windowId,
         shouldStop: () => run.stopRequested,
         onProgress: async (partial) => {
           review = await saveAppleSubmittedRoleReview(page, partial);
@@ -3505,6 +3532,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
   };
 
   try {
+    run.windowId = await getTaskWindowId(tabId);
     page = await sendPageRequest("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
     if (page.withdrawalConfirmationOpen) {
       throw new Error("Resolve Apple's open withdrawal confirmation before scanning submissions.");
@@ -3518,6 +3546,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       if (!warning) {
         try {
           const analysis = await scoreAppleSubmittedRoles(page.roles.filter((role) => role.active !== false), userProfile, {
+            windowId: run.windowId,
             shouldStop: () => run.stopRequested,
             onProgress: async (partial) => {
               review = await saveAppleSubmittedRoleReview(page, partial);
@@ -3569,7 +3598,7 @@ function normalizeAppleSubmittedJobId(jobId) {
   return value.match(/^(\d+)(?:-\d+)?$/)?.[1] || value;
 }
 
-async function fetchAppleSubmittedRoleDetails(roles, { shouldStop } = {}) {
+async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = {}) {
   const detailsByJobId = new Map();
   let detailTab = null;
   const appleRoles = roles.filter((role) =>
@@ -3617,7 +3646,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop } = {}) {
       if (shouldStop?.()) break;
       try {
         if (!detailTab) {
-          detailTab = await chrome.tabs.create({ url: role.url, active: false });
+          detailTab = await createTaskTab(role.url, windowId, false);
           ownedWorkflowTabIds.add(detailTab.id);
         } else {
           await chrome.tabs.update(detailTab.id, { url: role.url, active: false });
@@ -3649,6 +3678,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop } = {}) {
           pendingCacheWrites = 0;
         }
       } catch (_error) {
+        if (_error?.code === "career_window_unavailable") throw _error;
         // One stale or unavailable posting should not prevent ranking the remaining submissions.
         unavailableCount += 1;
       }
@@ -3758,7 +3788,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_SCORE_SUBMITTED_ROLES") {
         sendResponse({
           ok: true,
-          data: await scoreAppleSubmittedRoles(message.roles, message.userProfile)
+          data: await scoreAppleSubmittedRoles(message.roles, message.userProfile, {
+            windowId: await getTaskWindowId(message.tab ?? message.tabId ?? sender.tab)
+          })
         });
       } else if (message.type === "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES") {
         sendResponse({

@@ -54,9 +54,10 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     setBusy(true);
     setError("");
     try {
+      const tab = await getActiveTab();
       const savedProfile = await save();
       const response = await chrome.runtime.sendMessage({ type, userProfile: savedProfile, topN: requestedTopN,
-        reviewAcknowledgement: reviewedQueueToken, tab: await getActiveTab() });
+        reviewAcknowledgement: reviewedQueueToken, tab });
       if (!response?.ok) throw new Error(response?.error || "The job queue could not be updated.");
       await refresh(requestedTopN);
       if (type === "APPLE_CAREERS_QUEUE_TOP_JOBS") setQueueOpen(true);
