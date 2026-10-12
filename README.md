@@ -26,7 +26,7 @@ Workflow tabs stay in the Chrome window where the run started.
 
 Open Your Roles → Submissions → Active, then Scan And Match All. Results appear and are saved page by page, with lowest-fit unprotected roles first. Stopping or an OpenAI quota failure preserves usable saved results.
 
-Sync Submissions updates the active list and count without LLM rescoring. Existing matching scores are retained, and new roles remain unscored until matched. Saved results load immediately when the panel opens.
+Sync Submissions updates the active list and count without LLM rescoring. It opens a temporary background tab in the same Chrome window and closes that tab when finished, including after errors. Your current tab and search filters remain in place. Existing matching scores are retained, and new roles remain unscored until matched. Saved results load immediately when the panel opens.
 
 Search by title or job ID, select specific roles, and confirm the withdrawal sheet. Starred roles, unknown star status, and role **200654506** are protected. Withdrawal re-finds each job after Apple changes pagination or returns to page one. Every successful withdrawal updates the saved list.
 
