@@ -54,7 +54,8 @@ export function AppleSetupSection({ profile, save }) {
     </div></details>
     <details className="ios-group compact-fold"><summary>Matching Rules</summary><div className="compact-fold-body">
       <p>Responsibilities 40% · Minimum Qualifications 35% · Experience Level 15% · Domain 10%</p>
-      <p>Strong Matches Require 80% Overall, Verified Minimum Qualifications, Strong Responsibility And Level Scores, And High Confidence.</p>
+      <p>Strong Matches Require 80% Overall, Verified Substantive Minimum Qualifications, Strong Responsibility And Level Scores, And High Confidence.</p>
+      <p>Routine Coding-Assistant Usage Does Not Affect Scores Or Block Applications. Building Agent Systems Still Requires Technical Evidence.</p>
       <p>Preferred Qualifications Are Bonuses. Scored Jobs With Concerns Can Be Selected For Reviewed Applications.</p>
     </div></details>
   </section>;

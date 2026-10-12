@@ -13,8 +13,10 @@ export function CompactRoleCard({ role, status, selectable = false, selected = f
         <strong className="compact-role-score">{Number.isFinite(role.score) ? `${role.score}%` : "Unscored"}</strong>
       </summary>
       <div className="compact-role-body">
-        <div className="compact-detail-heading">Match Details<HelpTooltip label="Match Details" text="Review the explanation, qualifications and resume evidence before deciding on this role. Scores are an aid to review, not a guarantee of eligibility." /></div>
-        <p>{role.reason || "Matching has not finished for this role."}</p>
+        <details className="compact-fold match-explanation">
+          <summary>Match Details<HelpTooltip label="Match Details" text="Expand for the explanation. Review qualifications and candidate evidence before deciding on this role. Scores are an aid to review, not a guarantee of eligibility." /></summary>
+          <div className="compact-fold-body"><p>{role.reason || "Matching has not finished for this role."}</p></div>
+        </details>
         {children}
         <a className="job-page-link" href={role.url} target="_blank" rel="noopener noreferrer">Open Job Page</a>
       </div>

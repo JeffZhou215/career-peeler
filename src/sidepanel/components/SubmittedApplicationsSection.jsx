@@ -595,7 +595,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       running={analysisRunning}
       headerAction={analysisRunning && <button type="button" className="danger" onClick={stopAnalysis} disabled={stopRequested}>Stop</button>}
       help="Open Apple Your Roles → Submissions → Active. Scan all pages once, then use saved results without repeating matching. Select roles across pages; Apple checks every role before withdrawal. No roles are selected automatically.">
-      {roles.some(role => Number.isFinite(role.score)) && (!savedSnapshot?.matchSignature || savedSnapshot.matchSignature !== fingerprintText(resolveResumeProfileText(profile) + "|" + profile.userYearsOfExperience)) && <p className="muted" role="status">Saved Scores Use An Older Resume Or Experience Setting. Scan And Match All To Update Them.</p>}
+      {roles.some(role => Number.isFinite(role.score)) && (savedSnapshot?.scorePolicyVersion !== 2 || !savedSnapshot?.matchSignature || savedSnapshot.matchSignature !== fingerprintText(resolveResumeProfileText(profile) + "|" + profile.userYearsOfExperience)) && <p className="muted" role="status">Saved Scores Need Updating For The Current Resume Or Matching Rules. Scan And Match All To Update Them.</p>}
       <div className="compact-actions">
         <button type="button" className="primary" onClick={analyzeAllRoles} disabled={busy}>Scan And Match All</button>
         <button type="button" className="secondary" onClick={syncSubmissions} disabled={busy}>Sync Submissions</button>

@@ -12,7 +12,7 @@ Image-only PDFs use the LLM-extracted profile for matching. The PDF, parsed text
 
 ## Jobs
 
-Open an Apple search with your filters, then choose Scan And Rank. Every search page is read, and full descriptions, responsibilities, minimum qualifications, and preferred qualifications are cached. Local matching provides evidence; LLM matching assesses responsibilities, minimum qualifications, level, and domain.
+Open an Apple search with your filters, then choose Scan And Rank. Every search page is read, and full descriptions, responsibilities, minimum qualifications, and preferred qualifications are cached. Local matching provides evidence; LLM matching assesses responsibilities, substantive minimum qualifications, level, and domain. Routine coding-assistant usage is neutral and does not affect scores or block matching; developing production agent systems remains a technical requirement. Match explanations and concern lists are expandable.
 
 - **Review Then Apply:** review ranked jobs, queue Top N or selected jobs, then review and confirm the saved application batch.
 - **Auto Apply Strong Matches:** explicitly allow submission, then scan the complete filtered search before applying its highest-ranked strong matches. Jobs with concerns remain available for review. A stopped or failed scan never starts automatic applications.

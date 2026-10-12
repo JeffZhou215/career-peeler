@@ -4397,8 +4397,11 @@ async function runApplicationWorkflowStep(options = {}) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") {
     const details = message.details || {};
-    const text = [details.title, "Description", details.description, "Minimum Qualifications", details.minimumQualifications,
+    let text = [details.title, "Description", details.description, "Minimum Qualifications", details.minimumQualifications,
       "Preferred Qualifications", details.preferredQualifications].filter(Boolean).join("\n\n");
+    for (const qualification of message.nonScoringWorkflowQualifications || []) {
+      if (typeof qualification === "string" && qualification) text = text.split(qualification).join(" ");
+    }
     sendResponse({ ok: true, data: analyzeLocalMatch(text, [], message.resumeProfileText || "") });
     return false;
   }

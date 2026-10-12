@@ -134,21 +134,21 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       selected={selectedIds.includes(job.jobId)} disabled={busy || view?.running}
       onSelect={() => setSelectedIds(ids => ids.includes(job.jobId) ? ids.filter(id => id !== job.jobId) : [...ids, job.jobId])}>
       {job.localMatch && <details className="compact-fold"><summary>Local Resume Match</summary><div className="compact-fold-body"><span>{job.localMatch.percentage}% Local Overlap</span><p>{job.localMatch.reasons?.join("; ")}</p></div></details>}
-      {!job.eligible && !!job.blockers?.length && <div>
-        <strong>Match Concerns</strong><ul>{job.blockers.map((blocker, index) => <li key={index}>
+      {!job.eligible && !!job.blockers?.length && <details className="compact-fold">
+        <summary>Match Concerns <span className="function-meta">{job.blockers.length}</span></summary><div className="compact-fold-body"><ul>{job.blockers.map((blocker, index) => <li key={index}>
           {blocker === "Fit is below the threshold for automatic applications." ? "Fit is below the strong match threshold." : blocker}
-        </li>)}</ul>
-      </div>}
+        </li>)}</ul></div>
+      </details>}
       {job.breakdown && <details className="compact-fold ranking-evidence"><summary>Fit Evidence
-        <HelpTooltip label="Fit Evidence" text="Scores weigh responsibilities (40%), minimum qualifications (35%), level (15%) and domain (10%). Strong matches have at least 80 overall, strong individual scores, high confidence and verified minimum qualifications. Other scored jobs can also be queued and applied after you acknowledge their match concerns." />
+        <HelpTooltip label="Fit Evidence" text="Scores weigh responsibilities (40%), minimum qualifications (35%), level (15%) and domain (10%). Strong matches have at least 80 overall, strong individual scores, high confidence and verified substantive minimum qualifications. Routine coding-assistant usage is not scored or blocking. Other scored jobs can also be queued and applied after you acknowledge their match concerns." />
       </summary><div className="compact-fold-body">
         <div className="score-breakdown">{Object.entries(job.breakdown).map(([key, value]) => <span key={key}>{key.charAt(0).toUpperCase() + key.slice(1)} <strong>{value}</strong></span>)}</div>
         {(job.evidence || []).map((item, index) => <div key={index}>
-          <p><strong>Role:</strong> {item.job_quote}</p><p><strong>Resume:</strong> {item.resume_quote}</p>
+          <p><strong>Role:</strong> {item.job_quote}</p><p><strong>Candidate Evidence:</strong> {item.resume_quote}</p>
         </div>)}
         {(job.minimumChecks || []).map((item, index) => <div key={`minimum-${index}`}>
-          <strong>Minimum Qualification ({item.status})</strong><p>{item.requirement_quote}</p>
-          {item.resume_quote && <p><strong>Resume:</strong> {item.resume_quote}</p>}
+          <strong>{job.neutralQualifications?.some(qualification => qualification.id === Number(item.id)) ? "Coding Workflow · Not Scored" : `Minimum Qualification (${item.status})`}</strong><p>{item.requirement_quote}</p>
+          {item.resume_quote && <p><strong>Candidate Evidence:</strong> {item.resume_quote}</p>}
         </div>)}
       </div></details>}
       {job.queueStatus === "queued" && <button type="button" className="secondary" disabled={busy || view?.running} onClick={() => remove(job.jobId)}>Remove From Queue</button>}
