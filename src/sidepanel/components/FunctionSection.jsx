@@ -9,7 +9,7 @@ export function FunctionSection({ title, help, meta, running = false, defaultOpe
   }, [running, ref]);
   if (embedded) return <section className="function-section function-embedded">
     <div className="function-heading"><h2 className="function-title">{title}<HelpTooltip label={title} text={help} /></h2>
-      {meta && <span className="function-meta">{meta}</span>}{headerAction}
+      {meta && <span className="function-meta">{meta}</span>}
     </div><div className="function-body">{children}</div>
   </section>;
   return <details ref={ref} name="careerPeelerFunctions" className="function-section" open={defaultOpen || undefined}>
