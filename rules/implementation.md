@@ -16,26 +16,6 @@ has one of these comments, keep it (or update it if the fix changes) - it's ther
 actually happened once. Don't add comments that just restate the code; well-named functions already do
 that.
 
-## `genericAutofill/*.js`'s shared-namespace pattern
-
-No bundler, so these files share state via a single `window.__careerPeelerGA` object (aliased `GA`)
-instead of import/export:
-
-- Each file destructures what it needs off `GA` at the top, and calls `Object.assign(GA, {...})` at the
-  bottom to publish its own exports.
-- **Load order matters and is declared in two places that must stay in sync**: `background.js`'s
-  `GENERIC_AUTOFILL_FILES` array, and `tests/genericAutofill.test.js`'s own copy of that same array
-  (`domHelpers → classify → actions → workdayExperience → snapshot → prompt → loop → agent`).
-- `mainWorldBridge.js` is intentionally not part of that shared-namespace list. `background.js` injects
-  it separately with `world: "MAIN"`; it has its own idempotent guard and no `GA` dependency.
-- When you add a new function meant to be used by another file in this family, **you must add it to the
-  `Object.assign(GA, {...})` call at the bottom of its defining file** - forgetting this produces a
-  silent-until-runtime `"X is not a function"` error in whichever file destructures it, since nothing
-  catches a missing GA export at write time.
-- `content.js` has its own, separately-maintained copy of similar DOM helpers
-  (`genericAutofill/domHelpers.js` is deliberately duplicated, not shared) - the two flows are tuned for
-  different risk levels and are not meant to converge. See `browser-agent.md`.
-
 ## Testing
 
 - No test framework - `tests/*.test.js` are hand-written Node scripts run via `node tests/x.test.js`,
@@ -63,9 +43,4 @@ confirmation) from answer-elicitation, and should not be removed.
 
 ## Resume/profile data
 
-`profile.resumeProfile` is the saved free-text fallback fed to the LLM. The canonical personalized
-path is `profile.candidateProfile`, extracted by sending `profile.resumeFileDataUrl` directly to
-OpenAI as a file content part; there is no local PDF text parser. Resume upload/extraction is PDF-only.
-The same raw PDF bytes are also used by generic autofill's `DataTransfer`-based file-upload path.
-Do not add a local PDF parser or broaden supported resume formats without discussing it first - either
-would be a real new subsystem, not a small change.
+Resume input is PDF-only. The local PDF.js parser preserves full text in profile.resumeText, paired with resumeTextFingerprint. LLM profile extraction receives the original PDF. Both matchers use current raw text when available, otherwise the profile extracted from that PDF. Never use stale extraction from a replaced file. The old resumeProfile field is retained for storage compatibility and is not exposed or used as resume input.

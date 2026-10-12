@@ -189,7 +189,7 @@ export function CandidateProfileSection({ profile, save, extractionStatus, extra
           ) : !canExtract ? (
             <>
               <p className="muted">Resume uploaded successfully.</p>
-              <p className="muted">Automatic profile extraction requires a valid API key.</p>
+              <p className="muted">PDF Profile Extraction Requires A Valid API Key.</p>
               <div className="actions">
                 <button type="button" className="secondary" onClick={focusApiKeyField}>
                   Configure API Key

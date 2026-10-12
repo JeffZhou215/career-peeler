@@ -13,7 +13,7 @@ const orchestrator = require("./orchestrator.js");
 
 const LOGIN_URLS = {
   apple: "https://jobs.apple.com/en-us/search",
-  tiktok: "https://careers.tiktok.com/position"
+
 };
 
 const EXPERIMENTAL_AUTO_APPLY_WARNING =
@@ -27,7 +27,7 @@ function printUsage() {
   console.log(`Career Peeler CLI
 
 Usage:
-  career-peeler login <apple|tiktok>     Open a browser to log in once; the session persists.
+  career-peeler login <apple>     Open a browser to log in once; the session persists.
   career-peeler config [--set k=v ...]   View or update your matching/apply profile.
   career-peeler scan <list-url>          Scan a job list page (and apply, if enabled).
   career-peeler apply <application-url>  EXPERIMENTAL: run the apply workflow on an application page.
@@ -136,7 +136,7 @@ async function commandLogin(positionals, values) {
   const url = LOGIN_URLS[site];
 
   if (!url) {
-    console.error("Usage: career-peeler login <apple|tiktok>");
+    console.error("Usage: career-peeler login <apple>");
     process.exitCode = 1;
     return;
   }
@@ -274,7 +274,7 @@ async function commandApply(positionals, values) {
   const siteConfig = core.getSiteConfig(applicationUrl);
 
   if (!siteConfig) {
-    console.error("That doesn't look like a supported Apple, TikTok, or ByteDance careers URL.");
+    console.error("That doesn't look like a supported Apple Careers URL.");
     process.exitCode = 1;
     return;
   }

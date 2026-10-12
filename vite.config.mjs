@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// background.js/content.js/genericAutofill/*.js/lib/core.js are deliberately left as plain,
+// background.js/content.js/lib/core.js are deliberately left as plain,
 // unbundled scripts -- see vite.config.js's header comment in the plan doc for why. background.js
 // uses importScripts("lib/core.js"), a classic (non-module) service-worker API that throws if Vite/
 // CRXJS-style tooling bundles the worker as type:"module" (which is required for any ESM-processed
@@ -14,7 +14,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_COPY_ENTRIES = [
   "background.js",
   "content.js",
-  "genericAutofill",
   "lib",
   "icons",
   "manifest.json",

@@ -1,58 +1,16 @@
-# Career Peeler architecture
+# Career Peeler Architecture
 
-Chrome MV3 extension (unofficial job-application assistant). Two **separate** automation systems live
-side by side on purpose - do not merge them or route one through the other:
+Apple Careers is the only supported employer. The React/Vite side panel has Jobs, Submissions, and Setup tabs. Keep workflow logic in the background/content layer, and UI controls in src/sidepanel.
 
-1. **Known-site workflow** (`content.js`) - a tuned, multi-step "click Continue, wait, repeat" flow for
-   exactly three sites: Apple (`jobs.apple.com`), TikTok, ByteDance. Site identity, URL patterns, and
-   button-label regexes live in a `SITE_CONFIGS` object. `content.js` also does job-description scoring
-   (`extractJobDetails`, `analyzeLocalMatch`) and list-page scanning/pagination for these sites.
-2. **Generic autofill** (`genericAutofill/*.js`) - a "snapshot the form, classify each field, act" sweep
-   used by the "Autofill this page" button for **any other site**. Unknown sites remain single-page.
-   Workday candidate hosts (`myworkdayjobs.com` / `myworkdaysite.com`) are the sole bounded multi-page
-   exception: `background.js` re-runs a fresh generic sweep before each exact-label Continue/Next/
-   Submit action, with a page cap and no-progress guard. Deterministic mappings run first; unresolved
-   questions can use the shared bounded background question agent, while the local action layer retains
-   all DOM authority and verification - see `browser-agent.md` for the internals.
+- background.js orchestrates Apple workflows and runtime messages.
+- content.js reads Apple pages, matches local resume evidence, fills required questions, and verifies actions.
+- lib/appleRankingWorker.js ranks complete filtered searches and applies saved queues.
+- lib/appleSubmissionSync.js observes confirmed applications and reconciles counts without interrupting workflows.
+- lib/jobRanking.js supplies pure ranking and capacity helpers.
+- lib/core.js supplies pure profile, prompt, and LLM helpers shared with the experimental Apple CLI. Never add Chrome APIs or DOM dependencies here.
 
-`SITE_CONFIGS` is duplicated (not imported) between `content.js` and `lib/core.js` - keep both in sync
-by hand when adding/changing a supported site.
+The service worker and content scripts remain classic, unbundled scripts. Vite bundles only src/sidepanel and the local PDF parser/worker. Keep both SITE_CONFIGS copies and both profile normalization copies in sync.
 
-## Shared logic and multiple runtimes
+The profile stays under appleCareersUserProfile. Preserve Apple history, caches, queue records, and protected job 200654506 during migrations. Full parsed PDF text and the structured profile are tied to the PDF fingerprint. Resume entry is PDF-only; no pasted resume field.
 
-`lib/core.js` holds all pure logic with **zero** `chrome.*` or DOM dependency (site config, YOE
-hard-skips, LLM prompts/calls, job-record shaping) so it loads two different ways with no build step:
-
-- `background.js`: `importScripts("lib/core.js")` - classic MV3 service worker.
-- `cli/orchestrator.js`: `require("../lib/core.js")` - a Node + Playwright port of the same scan/apply
-  orchestration, for running scans headlessly outside the extension (`cli/browser.js`,
-  `cli/store.js`, `cli/index.js`).
-
-The extension is the primary runtime. CLI auto-apply and the direct CLI `apply` command are
-experimental: preserve their shared-core compatibility, but do not assume they have the same runtime
-verification coverage as the extension without explicit Playwright testing.
-
-**Never add a `chrome.*` call or DOM access to `lib/core.js`** - it would break the CLI half. If new
-logic needs the DOM, it belongs in `content.js` or `genericAutofill/`, and background.js/cli should call
-into it via message-passing / page-evaluation respectively.
-
-## Extension shell
-
-- `background.js` - MV3 service worker. Message routing (`chrome.runtime.onMessage`), scan state
-  persisted to `chrome.storage.local`, orchestrates `content.js` and `genericAutofill/` via
-  `chrome.tabs.sendMessage` / `chrome.scripting.executeScript`.
-- `manifest.json` - `content.js` is statically declared for the three known-site hosts only.
-  `genericAutofill/*.js` is **never** declared in `content_scripts` - it's injected on demand, only when
-  the user clicks "Autofill this page". The shared pipeline uses `background.js`'s
-  `GENERIC_AUTOFILL_FILES` array in Chrome's isolated world; `mainWorldBridge.js` is the separate,
-  idempotent page-world endpoint used only for already-resolved Workday controlled-text commits and
-  locally matched dropdown trigger/option clicks.
-- `src/sidepanel/` - React 19 + Vite side panel UI (persistent panel, not a popup). Mid-migration off a
-  single `sidepanel.js` + `styles.css` (both marked for deletion) onto `hooks/`, `lib/`, `components/`.
-  Don't add new code to the old files.
-
-## No bundler for the injected/service-worker layer
-
-`content.js`, `background.js`, `lib/core.js`, and every `genericAutofill/*.js` file are plain scripts
-with no ES module import/export - only `src/sidepanel/` goes through Vite/Rollup. Keep it that way:
-pulling `lib/core.js` into the Vite module graph would break `background.js`'s `importScripts`.
+Automatic applications follow a complete ranking and use strong matches only. Reviewed application queues can include explicitly acknowledged concerns. Verify active submissions before applying; reserve ambiguous outcomes. Withdrawals require selection and confirmation, re-find each role after page changes, and protect starred or unknown-star roles.

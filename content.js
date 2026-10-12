@@ -225,33 +225,7 @@ const SITE_CONFIGS = {
     finalSubmitPattern: /^submit$/i,
     primaryActionId: "apply-step-continue-button",
     titleSuffixPattern: /\s+-\s+(?:Jobs\s+-\s+)?Careers at Apple\.?$/i
-  },
-  tiktok: {
-    id: "tiktok",
-    label: "TikTok/ByteDance Careers",
-    isSupportedUrl: (url) =>
-      [
-        "careers.tiktok.com",
-        "lifeattiktok.com",
-        "jobs.bytedance.com",
-        "careers.bytedance.com",
-        "joinbytedance.com"
-      ].includes(url?.hostname || ""),
-    isJobDetailUrl: (url) => {
-      const pathname = url?.pathname || "";
 
-      return (
-        /^\/(?:[^/]+\/)?position\/\d+(?:\/|$)/i.test(pathname) ||
-        /^\/(?:[^/]+\/)?jobs?\/\d+(?:\/|$)/i.test(pathname) ||
-        (["lifeattiktok.com", "joinbytedance.com"].includes(url?.hostname || "") &&
-          /^\/search\/\d+$/i.test(pathname))
-      );
-    },
-    isApplicationUrl: (url) => /\/resume\/[^/?#]+\/apply(?:\/|$)?/i.test(url?.pathname || ""),
-    applyPattern: /^(apply|apply now|apply for this job|apply to this job|submit application)$/i,
-    continuePattern: /^(continue|next|save and continue|save & continue)$/i,
-    finalSubmitPattern: /^(submit|submit application|send application)$/i,
-    titleSuffixPattern: /\s+-\s+(?:TikTok|ByteDance)\s*(?:Careers|Jobs)?\.?$/i
   }
 };
 
@@ -400,7 +374,6 @@ function cleanTitle(title) {
   const siteConfig = getSiteConfig();
   return normalizeText(title || "")
     .replace(SITE_CONFIGS.apple.titleSuffixPattern, "")
-    .replace(SITE_CONFIGS.tiktok.titleSuffixPattern, "")
     .replace(siteConfig?.titleSuffixPattern || /$^/, "")
     .replace(/\s*[>›»]\s*$/u, "")
     .trim();
@@ -429,12 +402,6 @@ function splitSentences(text) {
     .filter(Boolean);
 }
 
-// A "10+ years" mention isn't always about how much experience the CANDIDATE needs -- postings
-// routinely describe the team/company/platform's own tenure ("10+ years of engineering investment",
-// "8+ years of combined experience across the team") using the exact same years+experience wording a
-// real requirement sentence uses. Left unfiltered, that got misread as a YOE requirement and could
-// hard-skip a strong match on a sentence that was never about the candidate at all -- caught from a
-// live TikTok posting mentioning the team's own experience, not a requirement.
 const NON_CANDIDATE_YEARS_CONTEXT_PATTERN =
   /\b(?:our|the)\s+(?:team|company|platform|organization|product)\b[^.!?]{0,40}\b(?:has|have)\b|\bcombined\s+(?:years|experience)\b|\bacross\s+the\s+team\b|\byears?\s+in\s+business\b|\bsince\s+(?:our|its)\s+founding\b/i;
 
@@ -932,17 +899,6 @@ function isAlreadyAppliedDialogText(text) {
 }
 
 function getAlreadyAppliedDialog() {
-  // .ud__confirm__content and its .ud__confirm__body child are confirmed ByteDance "Application
-  // Failed" dialog shapes -- body "You've already applied for this job. Unable to apply again.",
-  // buttons "View more jobs"/"Cancel" (neither a
-  // Continue/Submit label). Without a selector match here, getAlreadyAppliedSignal() (checked early in
-  // the workflow step, before the Continue/Submit search below) silently returns null and the workflow
-  // falls all the way through to that later search, which then fails with a confusing "No Continue or
-  // Submit action was found" error instead of correctly recognizing this as already-applied. The
-  // existing .uddialogwrap/.uddialogcontent/.udconfirm selectors (no double underscore) don't match
-  // this BEM naming at all -- a different ByteDance dialog family already had this same gap fixed once
-  // for a toast and once for an inline notice (see getAlreadyAppliedToast/getAlreadyAppliedNotice's own
-  // comments); this is that same class of gap, a third time, for a real modal confirm dialog.
   const dialogs = Array.from(
     document.querySelectorAll(
       "[role='dialog'], .uddialogwrap, .uddialogcontent, .udconfirm, .ud__confirm__content, [class*='confirm__content'], .ud__confirm__body, [class*='confirm__body']"
@@ -972,9 +928,6 @@ function getAlreadyAppliedDialog() {
   return null;
 }
 
-// ByteDance's "already applied through another channel" message renders as a self-dismissing
-// toast/notice (atsx-message-*), not a modal dialog, so getAlreadyAppliedDialog()'s dialog-only
-// selectors never match it.
 function getAlreadyAppliedToast() {
   const toasts = Array.from(
     document.querySelectorAll(
@@ -996,10 +949,6 @@ function getAlreadyAppliedToast() {
   return null;
 }
 
-// A separate ByteDance UI variant renders the "already applied" message as an inline notice/alert
-// banner (ud__notice-error, role="alert") baked into the application form itself, rather than as a
-// dialog or a self-dismissing toast -- neither getAlreadyAppliedDialog() nor getAlreadyAppliedToast()
-// matches this shape.
 function getAlreadyAppliedNotice() {
   const notices = Array.from(
     document.querySelectorAll("[role='alert'], .ud__notice-error, [class*='notice-error']")
@@ -1019,45 +968,14 @@ function getAlreadyAppliedNotice() {
   return null;
 }
 
-function getAlreadyAppliedPageTextSignal() {
-  if (getSiteConfig()?.id !== "tiktok") {
-    return null;
-  }
-
-  // ByteDance has multiple independently-versioned popup wrappers. The visible message itself is
-  // stable, so use it as a last-resort signal when none of the known dialog/toast/alert selectors
-  // match. Keep the patterns candidate-directed and job-specific so an unrelated "already applied"
-  // phrase elsewhere on the page cannot terminate an application.
-  const pageText = normalizeText(document.body?.innerText || "").replace(/\s+/g, " ");
-  const messagePatterns = [
-    /\byou(?:['’]ve| have)? already applied (?:for|to) this (?:job|position)\b(?:.{0,160}\b(?:unable|cannot|can't|can’t|not able) (?:to )?apply again\b)?/i,
-    /\balready applied (?:for|to) this (?:job|position)\b.{0,160}\b(?:unable|cannot|can't|can’t|not able) (?:to )?apply again\b/i,
-    /\bapplication failed\b.{0,240}\balready applied\b/i
-  ];
-  const match = messagePatterns.map((pattern) => pageText.match(pattern)).find(Boolean);
-
-  if (!match) {
-    return null;
-  }
-
-  return {
-    element: document.body,
-    text: normalizeText(match[0]).slice(0, 240)
-  };
-}
-
 function getAlreadyAppliedSignal() {
   return (
     getAlreadyAppliedDialog() ||
     getAlreadyAppliedToast() ||
-    getAlreadyAppliedNotice() ||
-    getAlreadyAppliedPageTextSignal()
+    getAlreadyAppliedNotice()
   );
 }
 
-// Checked immediately before the final Submit click. Keep this to semantic ARIA signals plus
-// ByteDance Formily's exact feedback-error class family rather than a broad ".error"/".invalid"
-// guess: fuzzy class matching sees inactive styling containers and blocks legitimate submissions.
 function isKnownFormValidationFeedback(element) {
   const classTokens = String(element?.className || "").split(/\s+/);
   return classTokens.some((token) => /^ud-formily-item-feedback-errors?/.test(token));
@@ -1153,11 +1071,25 @@ function extractJobDetails(options = {}) {
   };
 }
 
+function findApplePostingSection(label, selectors) {
+  const identified = document.querySelector(selectors);
+  if (identified) return identified;
+  const heading = Array.from(document.querySelectorAll("h2, h3")).find(element =>
+    normalizeText(element.textContent).toLowerCase() === label.toLowerCase());
+  let node = heading?.parentElement;
+  for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+    if (node.querySelectorAll("h2, h3").length > 1) break;
+    if (normalizeText(node.innerText || "").length > label.length + 25) return node;
+  }
+  return null;
+}
+
 function extractAppleSubmittedRoleDetails() {
-  const descriptionElement = document.querySelector("#jobdetails-jobdescription");
-  const minimumElement = document.querySelector("#jobdetails-minimumqualifications");
-  const preferredElement = document.querySelector("#jobdetails-preferredqualifications");
-  const description = normalizeText(descriptionElement?.innerText || "");
+  const descriptionElement = findApplePostingSection("Description", "#jobdetails-jobdescription");
+  const minimumElement = findApplePostingSection("Minimum Qualifications", "#jobdetails-minimumqualifications");
+  const preferredElement = findApplePostingSection("Preferred Qualifications", "#jobdetails-preferredqualifications");
+  const responsibilitiesElement = findApplePostingSection("Responsibilities", "#jobdetails-responsibilities, #jobdetails-jobresponsibilities");
+  const description = [normalizeText(descriptionElement?.innerText || ""), normalizeText(responsibilitiesElement?.innerText || "")].filter(Boolean).join("\n\n");
   const minimumQualifications = normalizeText(minimumElement?.innerText || "");
   const preferredQualifications = normalizeText(preferredElement?.innerText || "");
   const title = getJobTitle();
@@ -1219,11 +1151,6 @@ function collectJobLinks() {
   return Array.from(linksByUrl.values());
 }
 
-// Client-rendered list pages (e.g. joinbytedance.com's SPA) can still be lazy-loading job cards
-// when a collection request arrives right after the tab was opened or a scan was just started --
-// there's no navigation/load event to wait on for that, unlike a fresh tab. Poll until the visible
-// job link count stops changing (or a timeout elapses) before treating a collection as final, so
-// the first page of a scan and the current page's true job count aren't read mid-render.
 async function waitForJobListToSettle(options = {}) {
   const timeoutMs = options.timeoutMs ?? 4500;
   const intervalMs = options.intervalMs ?? 200;
@@ -1845,13 +1772,6 @@ function getCurrentResultsPage() {
 function getNextPageControl() {
   const siteConfig = getSiteConfig();
 
-  if (siteConfig?.id === "tiktok" && getTikTokNextPageButton()) {
-    return {
-      action: "click",
-      source: "tiktok_pagination"
-    };
-  }
-
   const candidates = document.querySelectorAll("a[href], button, [role='button']");
 
   for (const candidate of candidates) {
@@ -1886,70 +1806,6 @@ function getNextPageControl() {
   return null;
 }
 
-// Not every ByteDance-family site tags its pagination bar with [data-testid='pagination'] (e.g.
-// joinbytedance.com doesn't). Fall back to finding it structurally: a numbered pagination widget
-// is a set of sibling <button>s where several have plain digit text (page numbers) sharing a
-// common parent -- that parent is the pagination container, whether or not it's tagged.
-function getGenericNumberedPaginationContainer() {
-  const numberButtons = Array.from(document.querySelectorAll("button"))
-    .filter((button) => isElementVisible(button))
-    .filter((button) => /^\d+$/.test(normalizeText(button.textContent || "")));
-
-  const parentCounts = new Map();
-  for (const button of numberButtons) {
-    const parent = button.parentElement;
-    if (!parent) {
-      continue;
-    }
-    parentCounts.set(parent, (parentCounts.get(parent) || 0) + 1);
-  }
-
-  const bestParent = Array.from(parentCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
-
-  return bestParent || null;
-}
-
-function getTikTokPaginationContainer() {
-  const taggedContainer = document.querySelector("[data-testid='pagination']");
-  if (taggedContainer && isElementVisible(taggedContainer)) {
-    return taggedContainer;
-  }
-
-  return getGenericNumberedPaginationContainer();
-}
-
-function getTikTokNextPageButton() {
-  const pagination = getTikTokPaginationContainer();
-  if (!pagination) {
-    return null;
-  }
-
-  const arrowButtons = Array.from(pagination.querySelectorAll("button"))
-    .filter((button) => isElementVisible(button))
-    .filter((button) => button.querySelector("svg"))
-    .filter((button) => {
-      const label = normalizeText(
-        `${button.innerText || ""} ${button.textContent || ""} ${button.getAttribute("aria-label") || ""}`
-      );
-      return !/\d+|\.\.\./.test(label);
-    });
-
-  for (const button of arrowButtons.toReversed()) {
-    const classes = button.getAttribute("class") || "";
-    const isDisabled =
-      button.disabled ||
-      button.getAttribute("aria-disabled") === "true" ||
-      button.getAttribute("disabled") !== null ||
-      /\b(cursor-not-allowed|pointer-events-none)\b/.test(classes);
-
-    if (!isDisabled) {
-      return button;
-    }
-  }
-
-  return null;
-}
-
 function getJobLinkSetKey(links) {
   return links
     .map((link) => link.url)
@@ -1957,13 +1813,6 @@ function getJobLinkSetKey(links) {
     .join("|");
 }
 
-// Sites like TikTok paginate client-side (the "Next" control is a button, not a link -- see
-// getNextPageControl()'s action: "click" path) without changing the URL or firing a navigation
-// event, so there is nothing for waitForTabComplete() to hook into. A fixed delay after the click
-// races the SPA's re-render: if it loses, the next collectJobLinks() call still sees the old page's
-// (already-processed) links, which the scan loop reads as "nothing new on a page I've already
-// visited" and stops the whole scan early, believing the list is exhausted. Poll for the visible
-// job link set to actually change instead of guessing a delay.
 async function waitForJobLinksChange(previousLinks, options = {}) {
   const timeoutMs = options.timeoutMs ?? 12000;
   const intervalMs = options.intervalMs ?? 500;
@@ -2002,17 +1851,6 @@ async function goToNextPage() {
   }
 
   const previousLinks = collectJobLinks();
-
-  if (nextPageControl.source === "tiktok_pagination") {
-    const nextButton = getTikTokNextPageButton();
-    if (nextButton) {
-      nextButton.click();
-      const changed = await waitForJobLinksChange(previousLinks);
-      return changed
-        ? { ok: true, action: "click", source: "tiktok_pagination" }
-        : { ok: false, reason: "The job list did not visibly change after clicking the next-page control." };
-    }
-  }
 
   const candidates = document.querySelectorAll("a[href], button, [role='button']");
   for (const candidate of candidates) {
@@ -2196,42 +2034,6 @@ function isOptionalApplicationQuestion(element, label) {
   return false;
 }
 
-function isTikTokAuthorizationModuleQuestion(element, question) {
-  const text = normalizeText(question || "");
-
-  if (
-    isOptionalApplicationQuestionText(text) ||
-    (!isWorkAuthorizationQuestion(text) && !isVisaSponsorshipQuestion(text))
-  ) {
-    return false;
-  }
-
-  // Some ByteDance application variants render the mandatory Work Authorization module without
-  // required/aria-required/asterisk markers. Keep the exception tied to that named module and the
-  // two deterministic authorization policies; unrelated unmarked questions remain optional/skipped.
-  let ancestor = element;
-  for (let depth = 0; ancestor && depth < 8; depth += 1) {
-    const classTokens = String(ancestor.className || "").split(/\s+/);
-    if (classTokens.some((token) => /^applyFormModuleWrapper__/.test(token))) {
-      const title = normalizeText(
-        ancestor.querySelector?.("[class*='applyFormModuleWrapper-title']")?.innerText || ""
-      );
-      const moduleText = normalizeText(ancestor.innerText || "");
-      return /\bwork authorization\b/i.test(title) || /^work authorization\b/i.test(moduleText);
-    }
-    ancestor = ancestor.parentElement;
-  }
-
-  return false;
-}
-
-function shouldAnswerTikTokAuthorizationField(element, question) {
-  if (isOptionalApplicationQuestionText(question)) {
-    return false;
-  }
-  return isQuestionControlRequired(element, question) || isTikTokAuthorizationModuleQuestion(element, question);
-}
-
 function getAgentFieldContainer(element) {
   return element?.closest?.(
     "[data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='radiogroup'], [role='group'], label"
@@ -2264,7 +2066,6 @@ function shouldAgentAnswerRequiredControl(element, question, options = {}) {
 
   return (
     isQuestionControlRequired(element, text) ||
-    isTikTokAuthorizationModuleQuestion(element, text) ||
     isValidationBlockedControl(element) ||
     (Boolean(options.includeUnmarked) && isApplicationFormControl(element))
   );
@@ -2440,32 +2241,8 @@ function getBackgroundOpenableLink(element) {
   }
 }
 
-function findJobSpecificApplyAction(siteConfig, jobId) {
-  if (siteConfig?.id !== "tiktok") {
-    return findClickableByText(siteConfig?.applyPattern || /^submit resume$/i);
-  }
-
-  const jobApplySelectors = [
-    `a[href*="/resume/${jobId}/apply"]`,
-    `button[data-tracking="job-apply-button"][tracking-value="${jobId}"]`,
-    `button[tracking-value="${jobId}"]`,
-    'button[data-tracking="job-apply-button"]'
-  ];
-
-  for (const selector of jobApplySelectors) {
-    const candidate = document.querySelector(selector);
-
-    if (candidate && isElementVisible(candidate) && !isActionDisabled(candidate)) {
-      return candidate;
-    }
-
-    const nestedButton = candidate?.querySelector?.("button, [role='button']");
-    if (nestedButton && isElementVisible(nestedButton) && !isActionDisabled(nestedButton)) {
-      return nestedButton;
-    }
-  }
-
-  return getClickableCandidates().find((element) => /^apply to this job$/i.test(getActionLabel(element)));
+function findJobSpecificApplyAction(siteConfig) {
+  return findClickableByText(siteConfig?.applyPattern || /^submit resume$/i);
 }
 
 async function waitForJobSpecificApplyAction(siteConfig, jobId, timeoutMs = 6000) {
@@ -2657,11 +2434,6 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
     };
   }
 
-  // Some ByteDance/Formily variants reject Submit without exposing an alert, aria-invalid state, or
-  // feedback-error node. Before treating the click as genuinely ambiguous, inspect only controls the
-  // live DOM explicitly identifies as required (including the narrowly-scoped Work Authorization
-  // module exception). This is not the broadened includeUnmarked recovery: if no concrete required
-  // field is visible, the workflow still stops without another Submit click.
   const explicitRequiredAudit = auditRequiredApplicationFields({ includeUnmarked: false });
   if (explicitRequiredAudit.unanswered.length > 0) {
     const auditSummary = formatRequiredFieldAuditSummary(explicitRequiredAudit);
@@ -2721,8 +2493,6 @@ async function clickFinalSubmit(steps, options = {}) {
   });
 
   if (!element) {
-    // The duplicate-application check is asynchronous. A persistent ByteDance confirm can mount
-    // while waitForClickable() is looking for a Submit button, after the earlier settle check ended.
     const alreadyAppliedSignal = alreadyAppliedDuringSubmitSearch || getAlreadyAppliedSignal();
 
     if (alreadyAppliedSignal) {
@@ -2774,9 +2544,6 @@ async function clickPrimaryAction(siteConfig, steps) {
   const primaryButton = findPrimaryActionButton(siteConfig);
 
   if (!primaryButton) {
-    // TikTok/ByteDance use separate controls, so an intermediate page normally has Continue but no
-    // Submit. Treat this first lookup as a probe and only record a missing Submit if Continue is also
-    // absent; otherwise the activity log would show a false failure on every normal intermediate step.
     const submitResult = await clickFinalSubmit(steps, { recordMissing: false });
 
     if (
@@ -3246,10 +3013,6 @@ function clickAnswerInContainer(container, answerPattern, stepName, steps) {
   return false;
 }
 
-// Some sites (e.g. ByteDance's applyFormModule dropdown) render their option list with a
-// virtualized list library (rc-virtual-list) that can take longer than a fixed delay to mount --
-// especially on first open. Poll for a matching option to actually appear instead of guessing a
-// delay, mirroring the same fix used for TikTok's client-side pagination race.
 async function waitForDropdownOption(scope, matches, options = {}) {
   const timeoutMs = options.timeoutMs ?? 5000;
   const intervalMs = options.intervalMs ?? 200;
@@ -3346,9 +3109,6 @@ async function clickDropdownYesAnswer(container, stepName, steps) {
 function getSelectedDropdownText(container) {
   const selectorPattern = ".ud__select__selector, [role='combobox'], [aria-haspopup='listbox']";
   const inputPattern = "input[role='combobox'], input[readonly]";
-  // closest("..., div") can resolve to a custom-select trigger itself. Reading descendants only then
-  // misses an already-selected value rendered directly on that trigger (the ByteDance phone prefix
-  // shows "+1" this way), making recovery reopen and overwrite a completed profile control.
   const selector = container?.matches?.(selectorPattern)
     ? container
     : container?.querySelector?.(selectorPattern);
@@ -3364,70 +3124,6 @@ function getSelectedDropdownText(container) {
 function hasMeaningfulSelectedDropdownValue(container) {
   const displayedValue = getSelectedDropdownText(container);
   return Boolean(displayedValue) && !/^(?:select|choose)(?: an?)?(?: option| answer)?$/i.test(displayedValue);
-}
-
-async function selectTikTokYesAnswer(field, stepName, steps) {
-  if (isYesAnswerText(getSelectedDropdownText(field))) {
-    steps.push({
-      step: stepName,
-      status: "already selected",
-      label: "Yes"
-    });
-    return true;
-  }
-
-  if (selectNativeYesAnswer(field, stepName, steps)) {
-    return true;
-  }
-
-  const selector = field.querySelector(
-    ".ud__select__selector, [role='combobox'], [aria-haspopup='listbox'], [aria-haspopup='menu']"
-  );
-
-  if (!selector || !isElementVisible(selector) || isActionDisabled(selector)) {
-    steps.push({
-      step: stepName,
-      status: "missing",
-      label: "TikTok dropdown selector was not available"
-    });
-    return false;
-  }
-
-  selector.scrollIntoView({ block: "center" });
-  await delay(150);
-  selector.click();
-
-  const yesOption = await waitForDropdownOption(field, (element) =>
-    isYesAnswerText(element.innerText || element.textContent || "")
-  );
-
-  if (!yesOption) {
-    const visibleOptions = Array.from(document.querySelectorAll(".ud__select__list__item, [role='option']"))
-      .filter((element) => isElementVisible(element))
-      .map((element) => normalizeText(element.innerText || element.textContent || ""))
-      .filter(Boolean)
-      .slice(0, 8);
-    steps.push({
-      step: stepName,
-      status: "missing",
-      label: visibleOptions.length ? `Visible options: ${visibleOptions.join(", ")}` : "No visible dropdown options"
-    });
-    return false;
-  }
-
-  yesOption.scrollIntoView({ block: "nearest" });
-  await delay(100);
-  yesOption.click();
-  await delay(400);
-
-  const selectedText = getSelectedDropdownText(field);
-  const selected = isYesAnswerText(selectedText);
-  steps.push({
-    step: stepName,
-    status: selected ? "selected" : "unverified",
-    label: selected ? "Yes" : `Displayed value: ${selectedText || "empty"}`
-  });
-  return selected;
 }
 
 async function answerYesQuestion(container, stepName, steps) {
@@ -3463,50 +3159,6 @@ async function answerQuestionnaire(steps) {
       requiredCount: 0,
       answeredCount: 0,
       alreadyAppliedSignal: alreadyAppliedBeforeQuestions
-    };
-  }
-
-  const tikTokFields = Array.from(document.querySelectorAll("[data-form-field-i18n-name]"))
-    .filter((element) => isElementVisible(element))
-    .map((element) => ({
-      element,
-      question: normalizeText(element.getAttribute("data-form-field-i18n-name") || element.innerText || "")
-    }))
-    .filter(({ element, question }) =>
-      (isWorkAuthorizationQuestion(question) || isVisaSponsorshipQuestion(question)) &&
-      !isCategoricalWorkAuthorizationStatusQuestion(question) &&
-      shouldAnswerTikTokAuthorizationField(element, question)
-    );
-
-  if (tikTokFields.length) {
-    let answeredCount = 0;
-
-    for (const { element, question } of tikTokFields) {
-      const alreadyAppliedSignal = getAlreadyAppliedSignal();
-
-      if (alreadyAppliedSignal) {
-        return {
-          answeredAny: answeredCount > 0,
-          requiredCount: tikTokFields.length,
-          answeredCount,
-          alreadyAppliedSignal
-        };
-      }
-
-      const stepName = isWorkAuthorizationQuestion(question)
-        ? "Answer work authorization"
-        : "Answer visa sponsorship";
-
-      if (await selectTikTokYesAnswer(element, stepName, steps)) {
-        answeredCount += 1;
-      }
-    }
-
-    return {
-      answeredAny: answeredCount > 0,
-      requiredCount: tikTokFields.length,
-      answeredCount,
-      alreadyAppliedSignal: getAlreadyAppliedSignal()
     };
   }
 
@@ -4299,12 +3951,6 @@ function buildAlreadyAppliedStepResult(signal, priorSteps = []) {
   });
 }
 
-// Mirrors waitForJobListToSettle() for the application form itself: ByteDance's SPA can still be
-// hydrating the form (work-authorization dropdowns, buttons) when this step first runs right after
-// the page loads. Answering/submitting against a form that hasn't finished rendering yet silently
-// finds zero required questions, skips straight to hunting for Submit, and closes the tab when it
-// can't be found or clicked -- intermittent, since it depends on how fast that particular page load
-// happened to render. Poll until the count of interactive form elements stabilizes first.
 async function waitForApplicationFormToSettle(options = {}) {
   const timeoutMs = options.timeoutMs ?? 9000;
   const intervalMs = options.intervalMs ?? 200;
@@ -4369,10 +4015,6 @@ async function runApplicationWorkflowStep(options = {}) {
     });
   }
 
-  // ByteDance can leave the job detail URL unchanged and show its duplicate-application failure in
-  // a modal after Apply is clicked. This guard must run before the detail/application-page split;
-  // otherwise the detail branch sees the still-present Apply control and clicks it again without ever
-  // consulting the modal detectors below.
   const alreadyAppliedOnLoad = getAlreadyAppliedSignal();
 
   if (alreadyAppliedOnLoad) {
@@ -4503,13 +4145,8 @@ async function runApplicationWorkflowStep(options = {}) {
     });
   }
 
-  // TikTok and ByteDance share this site config, but ByteDance can show its duplicate-application
-  // dialog before the questionnaire is mounted. Do not use the questionnaire's presence to decide
-  // whether to keep polling: a stable page-shell button could otherwise end this wait before the
-  // delayed dialog appears, and the workflow would continue into field discovery.
-  const shouldWaitForTikTokApplicationSignals = siteConfig?.id === "tiktok";
   const settleResult = await waitForApplicationFormToSettle({
-    minimumWaitMs: shouldWaitForTikTokApplicationSignals ? 2500 : 0
+    minimumWaitMs: 0
   });
 
   if (settleResult.alreadyAppliedSignal) {
@@ -4588,10 +4225,6 @@ async function runApplicationWorkflowStep(options = {}) {
     !primaryActionResult.pending &&
     !primaryActionResult.pausedForReview
   ) {
-    // A disabled/missing Continue or Submit control is another concrete stuck signal. Some Formily
-    // variants do not expose required/aria-required until validation, so broaden only at this point:
-    // optional/voluntary fields still lose, while blank application text/dropdown controls become
-    // candidates for one bounded recovery pass.
     if (validationRecoveryAttempts >= MAX_VALIDATION_RECOVERY_ATTEMPTS) {
       return buildStepResult({
         clicked: false,
@@ -4762,6 +4395,13 @@ async function runApplicationWorkflowStep(options = {}) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") {
+    const details = message.details || {};
+    const text = [details.title, "Description", details.description, "Minimum Qualifications", details.minimumQualifications,
+      "Preferred Qualifications", details.preferredQualifications].filter(Boolean).join("\n\n");
+    sendResponse({ ok: true, data: analyzeLocalMatch(text, [], message.resumeProfileText || "") });
+    return false;
+  }
   if (message?.type === "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE") {
     try {
       sendResponse({ ok: true, data: collectCurrentAppleSubmittedHistoryPage() });
@@ -4903,3 +4543,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return false;
 });
+
+
+if (document.body && chrome.runtime?.id && getSiteConfig()?.id === "apple") {
+  let observedId = null;
+  let formSuccessReported = false;
+  let observationTimer = null;
+  const observe = () => {
+    observationTimer = null;
+    if (!chrome.runtime?.id) return;
+    const jobId = getJobId();
+    if (isSupportedJobDetailUrl(getCurrentUrl()) && jobId && observedId !== jobId) {
+      const submittedAction = Array.from(document.querySelectorAll("a, button, [role='button']")).find(element =>
+        isElementVisible(element) && /^submitted(?:\s*:|\s*$)/i.test(normalizeText(element.innerText || element.getAttribute("aria-label") || "")));
+      if (submittedAction) {
+        chrome.runtime.sendMessage({ type: "APPLE_CAREERS_OBSERVED_SUBMISSION", jobId, title: getJobTitle() }).then(result => {
+          if (result?.ok && !result.deferred) observedId = jobId;
+        }).catch(() => {});
+      }
+    }
+    if (!formSuccessReported && /^\/app\//i.test(window.location.pathname) &&
+      Array.from(document.querySelectorAll("h1,h2,h3,[role='alert'],[role='dialog']")).some(element =>
+        isElementVisible(element) && /^(?:application|resume) submitted\b|successfully submitted|we(?:'ve| have) received your (?:resume|application)/i.test(normalizeText(element.innerText || "")))) {
+      formSuccessReported = true;
+      chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC", confirmed: true }).catch(() => {});
+    }
+  };
+  const schedule = () => { if (!observationTimer) observationTimer = setTimeout(observe, 1000); };
+  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
+  schedule();
+  if (/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
+    setTimeout(() => chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC" }).catch(() => {}), 1500);
+  }
+}

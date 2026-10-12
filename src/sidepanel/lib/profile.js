@@ -448,9 +448,10 @@ export function candidateProfileToSummaryText(candidateProfile) {
 export function resolveResumeProfileText(profile) {
   const candidateProfileIsCurrent = !profile?.resumeFileDataUrl || isCandidateProfileFreshForResume(profile);
 
+  const rawTextIsCurrent = !profile?.resumeFileDataUrl || profile?.resumeTextFingerprint === fingerprintText(profile.resumeFileDataUrl);
   return (
-    candidateProfileToSummaryText(candidateProfileIsCurrent ? profile?.candidateProfile : null) ||
-    String(profile?.resumeProfile || "").trim()
+    (rawTextIsCurrent ? String(profile?.resumeText || "").trim() : "") ||
+    candidateProfileToSummaryText(candidateProfileIsCurrent ? profile?.candidateProfile : null)
   );
 }
 
@@ -504,6 +505,9 @@ export function createDefaultProfile() {
     llmApiKeyValidationStatus: "not_tested",
     llmApiKeyValidatedFingerprint: "",
     resumeProfile: "",
+    resumeText: "",
+    resumeTextFingerprint: "",
+    afterRanking: "review",
     candidateProfile: normalizeCandidateProfile(undefined),
     candidateProfileResumeFingerprint: "",
     noMatchKeywords: [],
@@ -542,6 +546,9 @@ export function normalizeProfile(rawProfile) {
     llmApiKeyValidationStatus: normalizeApiKeyValidationStatus(profile.llmApiKeyValidationStatus),
     llmApiKeyValidatedFingerprint: String(profile.llmApiKeyValidatedFingerprint || "").trim(),
     resumeProfile: String(profile.resumeProfile || "").trim(),
+    resumeText: String(profile.resumeText || ""),
+    resumeTextFingerprint: String(profile.resumeTextFingerprint || "").trim(),
+    afterRanking: profile.afterRanking === "auto" ? "auto" : "review",
     candidateProfile: normalizeCandidateProfile(profile.candidateProfile),
     candidateProfileResumeFingerprint: String(profile.candidateProfileResumeFingerprint || "").trim(),
     noMatchKeywords: normalizeNoMatchKeywords(profile.noMatchKeywords),

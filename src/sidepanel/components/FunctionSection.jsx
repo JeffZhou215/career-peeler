@@ -1,12 +1,17 @@
 import { useEffect, useRef } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 
-export function FunctionSection({ title, help, meta, running = false, defaultOpen = false, sectionRef, headerAction, children }) {
+export function FunctionSection({ title, help, meta, running = false, defaultOpen = false, sectionRef, headerAction, children, embedded = false }) {
   const localRef = useRef(null);
   const ref = sectionRef || localRef;
   useEffect(() => {
     if (running && ref.current) ref.current.open = true;
   }, [running, ref]);
+  if (embedded) return <section className="function-section function-embedded">
+    <div className="function-heading"><h2 className="function-title">{title}<HelpTooltip label={title} text={help} /></h2>
+      {meta && <span className="function-meta">{meta}</span>}{headerAction}
+    </div><div className="function-body">{children}</div>
+  </section>;
   return <details ref={ref} name="careerPeelerFunctions" className="function-section" open={defaultOpen || undefined}>
     <summary className="function-heading">
       <h2 className="function-title">{title}<HelpTooltip label={title} text={help} /></h2>

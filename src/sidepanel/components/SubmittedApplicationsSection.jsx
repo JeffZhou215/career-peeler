@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
+import { fingerprintText, resolveResumeProfileText } from "../lib/profile";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
 import { withdrawSubmittedRolesSequentially } from "../lib/submittedWithdrawals.mjs";
 
@@ -9,7 +10,8 @@ const SAVED_REVIEWS_KEY = "appleSubmittedRoleReviews";
 const SAVED_SCORES_KEY = "appleSubmittedRoleScoresCache";
 
 function rankSubmittedRoles(roles) {
-  const activeRoles = roles.filter((role) => role.active !== false);
+  const activeRoles = roles.filter((role) => role.active !== false).map(role => ({ ...role,
+    protectedFromBatchWithdrawal: String(role.jobId).split("-")[0] === "200654506" || role.favorite !== false || role.protectedFromBatchWithdrawal !== false }));
   const lowMatches = activeRoles
     .filter((role) => role.protectedFromBatchWithdrawal === false)
     .sort((left, right) => (left.score ?? 101) - (right.score ?? 101));
@@ -19,10 +21,11 @@ function rankSubmittedRoles(roles) {
   return [...lowMatches, ...protectedRoles];
 }
 
-export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
+export function SubmittedApplicationsSection({ profile, setStatusMessage, embedded = false }) {
   const [roles, setRoles] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false); busyRef.current = busy;
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [withdrawProgress, setWithdrawProgress] = useState(null);
   const [error, setError] = useState("");
@@ -97,7 +100,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
   }
 
   function showSnapshot(snapshot) {
-    if (!snapshot?.roles?.length) return;
+    if (!snapshot?.roles) return;
     setRoles(rankSubmittedRoles(snapshot.roles));
     setSelectedIds([]);
     setSavedView("all");
@@ -137,7 +140,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     };
     const pages = { ...(archive.pages || {}), [page.pageIndex]: review };
     try {
-      await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: { version: 1, pages, lastPageIndex: page.pageIndex } });
+      await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: { ...archive, version: 1, pages, lastPageIndex: page.pageIndex } });
     } catch (_error) {
       review.cacheSaveFailed = true;
     }
@@ -154,7 +157,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setSavedPages(archive.pages || {});
       setSavedSnapshot(archive.latestScan || null);
       setSavedCompleteSnapshot(archive.lastCompleteScan || (archive.latestScan?.complete ? archive.latestScan : null));
-      if (archive.latestScan?.roles?.length) {
+      if (archive.latestScan?.roles) {
         showSnapshot(archive.latestScan);
       } else {
         const previousPages = Object.values(archive.pages || {});
@@ -179,10 +182,13 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
         showReview(message.data, message.tabId);
       }
     }
+    const storageListener = (changes, area) => { if (area === "local" && changes[SAVED_REVIEWS_KEY] && !activeAnalysisIdRef.current && !busyRef.current) loadSavedResults().catch(console.error); };
+    chrome.storage.onChanged.addListener(storageListener);
     chrome.runtime.onMessage.addListener(handleProgress);
     return () => {
       cancelled = true;
       chrome.runtime.onMessage.removeListener(handleProgress);
+      chrome.storage.onChanged.removeListener(storageListener);
     };
   }, []);
 
@@ -253,6 +259,20 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setStopRequested(false);
       setBusy(false);
     }
+  }
+
+  async function syncSubmissions() {
+    setBusy(true); setError("");
+    try {
+      const tab = await getActiveTab();
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY", tab });
+      if (!response?.ok) throw new Error(response?.error || "Could not sync submissions.");
+      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+      const archive = stored[SAVED_REVIEWS_KEY];
+      if (archive?.latestScan) { setSavedSnapshot(archive.latestScan); setSavedPages(archive.pages || {}); showSnapshot(archive.latestScan); }
+      setStatusMessage("Active submissions synced. Saved matching scores were reused.");
+    } catch (failure) { setError(failure.message); }
+    finally { setBusy(false); }
   }
 
   async function analyzeRoles() {
@@ -405,6 +425,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
 
   async function withdrawSelected() {
     if (!selectedRoles.length) return;
+    const batchId = crypto.randomUUID();
+    let lockAcquired = false;
     const targets = selectedRoles.map(({ jobId, title }) => ({ jobId, title }));
     const pending = new Map(targets.map((role) => [String(role.jobId), role]));
     const skipped = [];
@@ -415,6 +437,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
     try {
       const ranking = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING" });
       if (ranking?.data?.running) throw new Error("Stop the job ranking or application queue before withdrawing applications.");
+      const lock = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE", active: true, batchId });
+      if (!lock?.ok) throw new Error(lock?.error || "Another workflow is running.");
+      lockAcquired = true;
       const tab = await getActiveTab();
       if (!tab?.id || (reviewContext?.tabId && tab.id !== reviewContext.tabId)) {
         throw new Error("Return to the Apple tab containing your submissions.");
@@ -559,19 +584,21 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
       setError(`Batch stopped after ${confirmedCount} of ${targets.length} were confirmed inactive. ${withdrawError?.message || "The next role could not be verified."}`);
       setStatusMessage(`Batch stopped after ${confirmedCount} of ${targets.length}. Saved roles remain available; Apple will be checked again before any retry.`);
     } finally {
+      if (lockAcquired) await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE", active: false, batchId }).catch(() => {});
       setWithdrawProgress(null);
       setBusy(false);
     }
   }
 
   return (
-    <FunctionSection title="Submitted Application Review" meta={analysisRunning ? "Scanning" : `${roles.length} Saved`}
+    <FunctionSection embedded={embedded} title="Review Your Submissions" meta={analysisRunning ? "Scanning" : `${roles.length} Saved`}
       running={analysisRunning}
       headerAction={analysisRunning && <button type="button" className="danger" onClick={stopAnalysis} disabled={stopRequested}>Stop</button>}
       help="Open Apple Your Roles → Submissions → Active. Scan all pages once, then use saved results without repeating matching. Select roles across pages; Apple checks every role before withdrawal. No roles are selected automatically.">
+      {roles.some(role => Number.isFinite(role.score)) && (!savedSnapshot?.matchSignature || savedSnapshot.matchSignature !== fingerprintText(resolveResumeProfileText(profile) + "|" + profile.userYearsOfExperience)) && <p className="muted" role="status">Saved Scores Use An Older Resume Or Experience Setting. Scan And Match All To Update Them.</p>}
       <div className="compact-actions">
-        <button type="button" className="primary" onClick={analyzeAllRoles} disabled={busy}>Scan All Submissions</button>
-        <button type="button" className="secondary" onClick={analyzeRoles} disabled={busy}>Analyze This Page</button>
+        <button type="button" className="primary" onClick={analyzeAllRoles} disabled={busy}>Scan And Match All</button>
+        <button type="button" className="secondary" onClick={syncSubmissions} disabled={busy}>Sync Submissions</button>
       </div>
       {analysisRunning && <div className="compact-progress" role="status">
         <span><strong>{stopRequested ? "Stopping…" : "Scanning Submissions"}</strong>
@@ -615,7 +642,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage }) {
           <HelpTooltip label="Review Withdrawal" text="Review every selected job title and ID before confirming. Apple withdrawals cannot be undone, and you cannot reapply to those roles." />
         </div>
       </> : !analysisRunning && <p className="muted">No saved submissions yet.</p>}
-      <dialog ref={confirmationRef} className="submitted-history-confirm" aria-labelledby="withdraw-confirm-title"
+      <dialog ref={confirmationRef} className="submitted-history-confirm ios-sheet" aria-labelledby="withdraw-confirm-title"
         onCancel={(event) => { if (busy) event.preventDefault(); else setConfirmationOpen(false); }} onClose={() => setConfirmationOpen(false)}>
         <h3 id="withdraw-confirm-title">Confirm Application Withdrawals</h3>
         <p>This will withdraw {selectedRoles.length} Apple applications. Withdrawals cannot be undone, and you cannot reapply to these roles.</p>

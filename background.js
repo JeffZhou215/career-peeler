@@ -1,4 +1,4 @@
-importScripts("lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js");
+importScripts("lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -648,10 +648,6 @@ async function activateTab(tabId) {
   return chrome.tabs.update(tabId, { active: true });
 }
 
-// ByteDance/TikTok application SPAs can defer rendering while their tab is inactive. Keep every tab
-// created for a scan in the list page's window and make it active inside Chrome. Deliberately do not
-// focus the Chrome window itself: activating a tab is enough to avoid background-tab rendering while
-// allowing the user to remain full-screen in another application.
 async function getTaskWindowId(sourceTab) {
   const tabId = typeof sourceTab === "number" ? sourceTab : sourceTab?.id;
   const tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
@@ -1398,12 +1394,6 @@ async function runScanLoop() {
 
       scanState.stats.skippedStored += skippedStored;
       scanState.stats.skippedUnqualified += skippedUnqualified;
-      // TikTok/ByteDance paginate client-side without changing the URL, so collection.url alone
-      // can't tell two different pages apart -- it would look "already visited" from page 2 onward
-      // regardless of actual page, causing a false stop the moment a page's jobs happen to be fully
-      // already-processed (e.g. from an earlier run). Key on the actual set of links shown instead,
-      // which does change per page even when the URL doesn't (same technique as
-      // waitForJobLinksChange()/getJobLinkSetKey() in content.js).
       const listPageKey = collection.links
         .map((link) => link.url)
         .sort()
@@ -1574,7 +1564,8 @@ function getAutoApplyReadinessError(userProfile) {
     return "LLM-assisted auto-apply requires a valid API key. Configure and test it before starting the scan.";
   }
 
-  if (userProfile.resumeFileDataUrl && !isCandidateProfileFreshForResume(userProfile)) {
+  if (userProfile.resumeFileDataUrl && !isCandidateProfileFreshForResume(userProfile) &&
+    !(userProfile.resumeText?.trim() && userProfile.resumeTextFingerprint === fingerprintText(userProfile.resumeFileDataUrl))) {
     return "LLM-assisted auto-apply requires a CandidateProfile extracted from the currently selected PDF resume.";
   }
 
@@ -1645,7 +1636,7 @@ async function startScan(tab, userProfile) {
   if (!tab?.id || !siteConfig) {
     return {
       ok: false,
-      error: "Open an Apple, TikTok, or ByteDance careers list page before starting a scan."
+      error: "Open an Apple careers list page before starting a scan."
     };
   }
 
@@ -2236,7 +2227,7 @@ async function runApplicationWorkflow(tab, options = {}) {
   if (!siteConfig) {
     return {
       ok: false,
-      error: `Expected an Apple, TikTok, or ByteDance careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`,
+      error: `Expected an Apple careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`,
       data: { ...workflowOutcomeMetadata(), submitted: false, errorType: "invalid_workflow_tab" }
     };
   }
@@ -2313,9 +2304,6 @@ async function runApplicationWorkflow(tab, options = {}) {
       }
       lastWorkflowUrl = response.data.url || lastWorkflowUrl;
 
-      // ByteDance may replace the application document after validation. Keep only bounded counters
-      // and a non-sensitive field-label fingerprint in the service worker so a fresh content script
-      // cannot restart the same Submit/agent cycle indefinitely.
       const finalSubmitClicks = (response.data.steps || []).filter(
         (step) => step.step === "Submit application" && step.status === "clicked"
       ).length;
@@ -2533,31 +2521,6 @@ async function runApplicationWorkflow(tab, options = {}) {
 // object (no bundler/ES modules in this project) -- each file reads what it needs off that object and
 // adds its own exports, so dependencies must load before dependents. agent.js (last) is the only one
 // with an observable side effect on load (registering the message listener below).
-const GENERIC_AUTOFILL_FILES = [
-  "genericAutofill/domHelpers.js",
-  "genericAutofill/classify.js",
-  "genericAutofill/actions.js",
-  "genericAutofill/workdayExperience.js",
-  "genericAutofill/snapshot.js",
-  "genericAutofill/prompt.js",
-  "genericAutofill/loop.js",
-  "genericAutofill/agent.js"
-];
-const GENERIC_AUTOFILL_MAIN_WORLD_FILES = ["genericAutofill/mainWorldBridge.js"];
-const GENERIC_AUTOFILL_ACTIVITY_KEY = "appleCareersGenericAutofillActivity";
-const MAX_WORKDAY_AUTOFILL_PAGES = 12;
-
-function isWorkdayHostname(hostname) {
-  const normalized = String(hostname || "").trim().toLowerCase();
-  return ["myworkdayjobs.com", "myworkdaysite.com"].some(
-    (suffix) => normalized === suffix || normalized.endsWith(`.${suffix}`)
-  );
-}
-
-function isWorkdayUrl(value) {
-  return isWorkdayHostname(parseUrl(value)?.hostname);
-}
-
 function attachDebugger(tabId) {
   return new Promise((resolve, reject) => {
     chrome.debugger.attach({ tabId }, "1.3", () => {
@@ -2613,33 +2576,6 @@ async function sendTrustedMouseClick(tabId, x, y) {
     await sendMouseClickWithAttachedDebugger(tabId, x, y);
   } finally {
     if (attached) await detachDebugger(tabId);
-  }
-}
-
-async function dispatchTrustedWorkdayClick(sender, point = {}) {
-  const tabId = sender?.tab?.id;
-  const frameId = Number(sender?.frameId || 0);
-  const x = Number(point.x);
-  const y = Number(point.y);
-
-  // The content script still owns discovery, answer policy, and verification. This endpoint accepts
-  // only one finite viewport point from this extension's top-frame script on a Workday host; it does
-  // not accept selectors, JavaScript, arbitrary CDP methods, or a caller-supplied tab ID.
-  if (!Number.isInteger(tabId) || frameId !== 0 || !isWorkdayUrl(sender?.tab?.url)) {
-    return { ok: false, error: "Trusted input is restricted to the requesting Workday tab." };
-  }
-  if (![x, y].every((coordinate) => Number.isFinite(coordinate) && coordinate >= 0 && coordinate <= 100000)) {
-    return { ok: false, error: "The Workday option no longer had a valid click point." };
-  }
-
-  try {
-    await sendTrustedMouseClick(tabId, x, y);
-    return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      error: `Trusted Workday click failed: ${error?.message || "Chrome rejected the input request."}`
-    };
   }
 }
 
@@ -2751,465 +2687,6 @@ async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expecte
     return { ok: false, error: `Apple withdrawal click failed: ${error?.message || "Chrome rejected the input request."}` };
   } finally {
     if (attached) await detachDebugger(tabId);
-  }
-}
-
-async function dispatchTrustedWorkdayTextReplacement(sender, value) {
-  const tabId = sender?.tab?.id;
-  const frameId = Number(sender?.frameId || 0);
-  const text = typeof value === "string" ? value : "";
-
-  // The content script has already resolved, focused, and selected one explicitly rejected Workday
-  // text field. This endpoint accepts no selector, key sequence, CDP method, or caller-supplied tab;
-  // it can only clear that focused selection with one fixed Backspace and insert one bounded string.
-  if (!Number.isInteger(tabId) || frameId !== 0 || !isWorkdayUrl(sender?.tab?.url)) {
-    return { ok: false, error: "Trusted text repair is restricted to the requesting Workday tab." };
-  }
-  if (!text || text.length > 4000) {
-    return { ok: false, error: "Trusted Workday text repair requires a non-empty value up to 4000 characters." };
-  }
-
-  let attached = false;
-  try {
-    await attachDebugger(tabId);
-    attached = true;
-    const backspace = {
-      key: "Backspace",
-      code: "Backspace",
-      windowsVirtualKeyCode: 8,
-      nativeVirtualKeyCode: 8
-    };
-    await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", { type: "keyDown", ...backspace });
-    await sendDebuggerCommand(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...backspace });
-    await sendDebuggerCommand(tabId, "Input.insertText", { text });
-    return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      error: `Trusted Workday text repair failed: ${error?.message || "Chrome rejected the input request."}`
-    };
-  } finally {
-    if (attached) {
-      await detachDebugger(tabId);
-    }
-  }
-}
-
-async function sendGenericAutofillMessage(tabId, message) {
-  try {
-    return await chrome.tabs.sendMessage(tabId, message);
-  } catch (_error) {
-    // Keep the Chrome-API-owning pipeline in its isolated world, but install the narrow page-world
-    // endpoint Workday controlled inputs and already-resolved dropdown clicks need before actions.js
-    // requests an interaction.
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      files: GENERIC_AUTOFILL_MAIN_WORLD_FILES
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: GENERIC_AUTOFILL_FILES
-    });
-
-    return chrome.tabs.sendMessage(tabId, message);
-  }
-}
-
-async function appendGenericAutofillActivityStep(cycleId, tool, label, status, observation) {
-  const stored = await chrome.storage.local.get(GENERIC_AUTOFILL_ACTIVITY_KEY);
-  const activity = stored[GENERIC_AUTOFILL_ACTIVITY_KEY];
-  if (!activity?.cycles?.some((cycle) => cycle.id === cycleId)) {
-    return;
-  }
-
-  const steps = [...(activity.steps || [])];
-  const id = steps.reduce((maximum, step) => Math.max(maximum, Number(step.id) || 0), 0) + 1;
-  steps.push({ id, cycleId, tool, label, status, observation });
-  const cycles = activity.cycles.map((cycle) => {
-    if (cycle.id !== cycleId) {
-      return cycle;
-    }
-    const runningCycle = { ...cycle, status: "running", outcome: "Applying" };
-    delete runningCycle.completedAt;
-    return runningCycle;
-  });
-  await chrome.storage.local.set({
-    [GENERIC_AUTOFILL_ACTIVITY_KEY]: { ...activity, running: true, steps, cycles, updatedAt: Date.now() }
-  });
-}
-
-async function finishGenericAutofillActivityCycle(cycleId, status, outcome) {
-  const stored = await chrome.storage.local.get(GENERIC_AUTOFILL_ACTIVITY_KEY);
-  const activity = stored[GENERIC_AUTOFILL_ACTIVITY_KEY];
-  if (!activity?.cycles?.some((cycle) => cycle.id === cycleId)) {
-    return;
-  }
-
-  const cycles = activity.cycles.map((cycle) =>
-    cycle.id === cycleId ? { ...cycle, status, outcome, completedAt: Date.now() } : cycle
-  );
-  await chrome.storage.local.set({
-    [GENERIC_AUTOFILL_ACTIVITY_KEY]: { ...activity, running: false, cycles, updatedAt: Date.now() }
-  });
-}
-
-// hadPendingAnswerFields now means an agent-answer field remained unresolved or unverifiable, not
-// merely that an essay existed. Verified full-auto answers no longer block submission; any flagged or
-// unresolved field still does.
-function shouldAutoSubmitGenericAutofill(flaggedCount, hadPendingAnswerFields, userProfile) {
-  return (
-    flaggedCount === 0 &&
-    !hadPendingAnswerFields &&
-    userProfile.scanMode === "auto_apply" &&
-    Boolean(userProfile.autoApplyConsent) &&
-    hasRequiredApplicationAnswers(userProfile)
-  );
-}
-
-function buildGenericSubmitOutcome(submitAttempted, submitResponse) {
-  const submitClicked = Boolean(submitResponse?.clicked);
-
-  return {
-    submitted: false,
-    submitAttempted: Boolean(submitAttempted),
-    submitClicked,
-    confirmationPending: submitClicked
-  };
-}
-
-function buildNeedsReviewReasonSummary(flaggedFields) {
-  return flaggedFields.length === 1
-    ? flaggedFields[0].reason
-    : `${flaggedFields.length} fields need review: ${flaggedFields.map((field) => field.label).join(", ")}`;
-}
-
-function buildGenericContentProfile(userProfile) {
-  return { ...normalizeUserProfile(userProfile), llmApiKey: "" };
-}
-
-async function getWorkdayProgressAction(tabId, waitForResumeParsing = false) {
-  const attempts = waitForResumeParsing ? 4 : 1;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const response = await sendGenericAutofillMessage(tabId, {
-      type: "APPLE_CAREERS_GET_WORKDAY_PROGRESS_ACTION"
-    }).catch(() => null);
-    if (response?.ok && response.found) {
-      return response;
-    }
-    if (attempt < attempts) {
-      await delay(PAGE_SETTLE_DELAY_MS);
-    }
-  }
-  return null;
-}
-
-async function waitForWorkdayPageSettle(tabId, previousUrl) {
-  await delay(500);
-  const liveTab = await chrome.tabs.get(tabId).catch(() => null);
-  if (liveTab && (liveTab.status !== "complete" || liveTab.url !== previousUrl)) {
-    await waitForTabComplete(tabId).catch(() => {});
-  }
-  await delay(PAGE_SETTLE_DELAY_MS);
-  return chrome.tabs.get(tabId).catch(() => liveTab);
-}
-
-function mergeWorkdayAutofillPage(aggregate, data) {
-  aggregate.filledFields.push(...(data.filledFields || []));
-  aggregate.flaggedFields.push(...(data.flaggedFields || []));
-  aggregate.hadPendingAnswerFields = aggregate.hadPendingAnswerFields || Boolean(data.hadPendingAnswerFields);
-  aggregate.needsResumeUpload = aggregate.needsResumeUpload || Boolean(data.needsResumeUpload);
-  aggregate.resumeUploaded = aggregate.resumeUploaded || Boolean(data.resumeUploaded);
-  aggregate.trace.push(...(data.trace || []));
-  aggregate.pageTitle = aggregate.pageTitle || data.pageTitle;
-  aggregate.hostname = data.hostname || aggregate.hostname;
-  aggregate.pageFingerprint = data.pageFingerprint || "";
-  aggregate.workdayPagesProcessed += 1;
-  return aggregate;
-}
-
-async function persistObservedWorkdayCandidateProfile(observedCandidateProfile) {
-  const observedExperienceCount = observedCandidateProfile?.experience?.length || 0;
-  const observedEducationCount = observedCandidateProfile?.education?.length || 0;
-  if (observedExperienceCount + observedEducationCount === 0) {
-    return { changed: false, experienceCount: 0, educationCount: 0 };
-  }
-
-  const stored = await chrome.storage.local.get(USER_PROFILE_KEY);
-  const rawProfile = stored[USER_PROFILE_KEY] || {};
-  if (rawProfile.resumeFileDataUrl && !isCandidateProfileFreshForResume(rawProfile)) {
-    // A profile extracted from a different PDF is intentionally unavailable everywhere else too.
-    // Do not make a Workday page look like a fresh extraction for the newly-selected resume by
-    // rewriting its fingerprint or by replacing the stale data behind the user's back.
-    return { changed: false, experienceCount: 0, educationCount: 0, staleResumeProfile: true };
-  }
-
-  const normalizedProfile = normalizeUserProfile(rawProfile);
-  const mergedCandidateProfile = mergeObservedWorkdayCandidateProfile(
-    normalizedProfile.candidateProfile,
-    observedCandidateProfile
-  );
-  if (JSON.stringify(mergedCandidateProfile) === JSON.stringify(normalizedProfile.candidateProfile)) {
-    return {
-      changed: false,
-      experienceCount: observedExperienceCount,
-      educationCount: observedEducationCount
-    };
-  }
-
-  const nextProfile = normalizeUserProfile({ ...rawProfile, candidateProfile: mergedCandidateProfile });
-  await chrome.storage.local.set({ [USER_PROFILE_KEY]: nextProfile });
-  return {
-    changed: true,
-    experienceCount: observedExperienceCount,
-    educationCount: observedEducationCount
-  };
-}
-
-async function rememberGenericAutofillReview(data, url) {
-  if (!data.flaggedFields?.length) {
-    return;
-  }
-  rememberNeedsReview({
-    jobId: null,
-    site: "generic",
-    siteLabel: data.hostname,
-    title: data.pageTitle,
-    url,
-    reason: buildNeedsReviewReasonSummary(data.flaggedFields)
-  });
-  await saveScanState();
-}
-
-async function runWorkdayAutofillWorkflow(tab, normalizedProfile, contentProfile) {
-  const cycleId = `workday:${tab.id}:${Date.now()}`;
-  const aggregate = {
-    filledFields: [],
-    flaggedFields: [],
-    hadPendingAnswerFields: false,
-    needsResumeUpload: false,
-    resumeUploaded: false,
-    clickedApplyEntry: false,
-    applyEntryLabel: null,
-    trace: [],
-    pageTitle: tab.title || "Workday Application",
-    hostname: parseUrl(tab.url)?.hostname || "",
-    pageFingerprint: "",
-    workdayPagesProcessed: 0
-  };
-  let lastProgressKey = "";
-  let sameStepRepairRetryUsed = false;
-  let latestUrl = tab.url;
-
-  const buildResult = (submitOutcome = buildGenericSubmitOutcome(false, null)) => ({
-    ok: true,
-    data: {
-      ...aggregate,
-      filledCount: aggregate.filledFields.length,
-      ...submitOutcome,
-      autoApplyReadinessError:
-        normalizedProfile.scanMode === "auto_apply"
-          ? getRequiredApplicationAnswersReadinessError(normalizedProfile)
-          : null
-    }
-  });
-
-  const stopForReview = async (label, reason, observation = reason) => {
-    aggregate.flaggedFields.push({ label, reason });
-    await appendGenericAutofillActivityStep(cycleId, "read_page", label, "error", observation);
-    await finishGenericAutofillActivityCycle(cycleId, "attention", "Needs Attention");
-    await rememberGenericAutofillReview(aggregate, latestUrl);
-    return buildResult();
-  };
-
-  try {
-    for (let pageIndex = 0; pageIndex < MAX_WORKDAY_AUTOFILL_PAGES; pageIndex += 1) {
-      const liveTab = await chrome.tabs.get(tab.id).catch(() => null);
-      latestUrl = liveTab?.url || latestUrl;
-      if (!liveTab || !isWorkdayUrl(latestUrl)) {
-        return stopForReview(
-          "Workday Application",
-          "Workday navigation left the supported application host before completion."
-        );
-      }
-
-      const response = await sendGenericAutofillMessage(tab.id, {
-        type: "APPLE_CAREERS_RUN_GENERIC_AUTOFILL",
-        userProfile: contentProfile,
-        activityContext: { cycleId, keepActivityCycleOpen: true }
-      });
-      if (!response?.ok) {
-        await finishGenericAutofillActivityCycle(cycleId, "attention", "Needs Attention");
-        return { ok: false, error: response?.error || "Workday autofill did not complete." };
-      }
-
-      const data = response.data;
-      mergeWorkdayAutofillPage(aggregate, data);
-      if (data.observedCandidateProfile) {
-        const profileSave = await persistObservedWorkdayCandidateProfile(data.observedCandidateProfile);
-        if (profileSave.changed) {
-          await appendGenericAutofillActivityStep(
-            cycleId,
-            "save",
-            "Candidate Profile",
-            "success",
-            `saved ${profileSave.experienceCount} work experience and ${profileSave.educationCount} education entr${
-              profileSave.experienceCount + profileSave.educationCount === 1 ? "y" : "ies"
-            } locally`
-          );
-        }
-      }
-      if (data.flaggedFields.length > 0 || data.hadPendingAnswerFields) {
-        await finishGenericAutofillActivityCycle(cycleId, "attention", "Needs Attention");
-        await rememberGenericAutofillReview(aggregate, latestUrl);
-        return buildResult();
-      }
-
-      if (!shouldAutoSubmitGenericAutofill(0, false, normalizedProfile)) {
-        await finishGenericAutofillActivityCycle(cycleId, "success", "Complete");
-        return buildResult();
-      }
-
-      const progressAction = await getWorkdayProgressAction(tab.id, data.resumeUploaded);
-      if (!progressAction) {
-        return stopForReview(
-          "Workday Continue/Submit",
-          "No single enabled Workday Continue, Next, Apply, or Submit action was found after autofill.",
-          "no unambiguous enabled forward action was found"
-        );
-      }
-
-      const progressKey = `${data.pageFingerprint}::${progressAction.actionKind}::${progressAction.label}`;
-      if (progressKey === lastProgressKey) {
-        if (data.repairedRejectedWorkdayFieldCount > 0 && !sameStepRepairRetryUsed) {
-          sameStepRepairRetryUsed = true;
-          await appendGenericAutofillActivityStep(
-            cycleId,
-            "verify",
-            "Workday Validation",
-            "success",
-            `repaired ${data.repairedRejectedWorkdayFieldCount} rejected value(s); retrying this step once`
-          );
-        } else {
-          return stopForReview(
-            progressAction.label,
-            `Workday remained on the same form step after clicking "${progressAction.label}"; stopped to avoid a retry loop.`,
-            "the previous forward action did not advance the form"
-          );
-        }
-      } else {
-        sameStepRepairRetryUsed = false;
-      }
-
-      const clickResponse = await sendGenericAutofillMessage(tab.id, {
-        type: "APPLE_CAREERS_CLICK_WORKDAY_PROGRESS_ACTION",
-        expectedLabel: progressAction.label,
-        expectedActionKind: progressAction.actionKind
-      }).catch(() => null);
-      if (!clickResponse?.clicked) {
-        return stopForReview(
-          progressAction.label,
-          `The Workday "${progressAction.label}" action changed or became unavailable before it could be clicked.`,
-          "forward action was not clicked"
-        );
-      }
-
-      if (progressAction.actionKind === "submit") {
-        await appendGenericAutofillActivityStep(
-          cycleId,
-          "submit_application",
-          progressAction.label,
-          "pending",
-          `clicked "${progressAction.label}"; confirmation pending`
-        );
-        await finishGenericAutofillActivityCycle(cycleId, "attention", "Confirmation Pending");
-        return buildResult(buildGenericSubmitOutcome(true, { clicked: true }));
-      }
-
-      await appendGenericAutofillActivityStep(
-        cycleId,
-        "click",
-        progressAction.label,
-        "success",
-        "clicked; waiting for Workday validation and page advancement"
-      );
-      lastProgressKey = progressKey;
-      const settledTab = await waitForWorkdayPageSettle(tab.id, latestUrl);
-      latestUrl = settledTab?.url || latestUrl;
-    }
-
-    return stopForReview(
-      "Workday Application",
-      `Workday did not reach Submit within the ${MAX_WORKDAY_AUTOFILL_PAGES}-page safety cap.`,
-      "stopped at the Workday page limit"
-    );
-  } catch (error) {
-    await finishGenericAutofillActivityCycle(cycleId, "attention", "Needs Attention").catch(() => {});
-    return { ok: false, error: error?.message || "Workday autofill did not complete." };
-  }
-}
-
-// Site-agnostic autofill remains single-page-only for unknown sites. Workday is the sole bounded
-// exception: its exact forward labels are resolved locally and each page receives a fresh complete
-// sweep before the background runtime permits one next action.
-async function runGenericAutofillWorkflow(tab, userProfile) {
-  if (!tab?.id || !/^https?:$/.test(parseUrl(tab.url)?.protocol || "")) {
-    return {
-      ok: false,
-      error: "Open a job application page in this tab before running Autofill."
-    };
-  }
-
-  const normalizedProfile = normalizeUserProfile(userProfile);
-  const contentProfile = buildGenericContentProfile(normalizedProfile);
-  questionAgentProfilesByTabId.set(tab.id, normalizedProfile);
-  questionAgentJobsByTabId.set(tab.id, {
-    title: tab.title || null,
-    siteLabel: parseUrl(tab.url)?.hostname || null,
-    url: tab.url
-  });
-
-  try {
-    if (isWorkdayUrl(tab.url)) {
-      return await runWorkdayAutofillWorkflow(tab, normalizedProfile, contentProfile);
-    }
-
-    const response = await sendGenericAutofillMessage(tab.id, {
-      type: "APPLE_CAREERS_RUN_GENERIC_AUTOFILL",
-      userProfile: contentProfile
-    });
-    if (!response?.ok) {
-      return {
-        ok: false,
-        error: response?.error || "Autofill did not complete."
-      };
-    }
-
-    const { data } = response;
-    let submitOutcome = buildGenericSubmitOutcome(false, null);
-    if (shouldAutoSubmitGenericAutofill(data.flaggedFields.length, data.hadPendingAnswerFields, normalizedProfile)) {
-      const submitResponse = await sendGenericAutofillMessage(tab.id, {
-        type: "APPLE_CAREERS_GENERIC_AUTOFILL_SUBMIT"
-      }).catch(() => null);
-      submitOutcome = buildGenericSubmitOutcome(true, submitResponse);
-    }
-
-    await rememberGenericAutofillReview(data, tab.url);
-
-    return {
-      ok: true,
-      data: {
-        ...data,
-        ...submitOutcome,
-        autoApplyReadinessError:
-          normalizedProfile.scanMode === "auto_apply"
-            ? getRequiredApplicationAnswersReadinessError(normalizedProfile)
-            : null
-      }
-    };
-  } finally {
-    questionAgentProfilesByTabId.delete(tab.id);
-    questionAgentJobsByTabId.delete(tab.id);
   }
 }
 
@@ -3505,6 +2982,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       pagesRead: reviews.size,
       pageCount: page?.pageCount || reviews.size,
       complete,
+      matchSignature: fingerprintText(resolveResumeProfileText(userProfile) + "|" + normalizeUserYearsOfExperience(userProfile?.userYearsOfExperience)),
       scannedAt: Date.now(),
       warning,
       updatedAt: Date.now()
@@ -3616,7 +3094,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
   for (const role of appleRoles) {
     const cached = cache[normalizeAppleSubmittedJobId(role.jobId)] || cache[String(role.jobId)];
     if (
-      cached?.version === 1 &&
+      cached?.version === 2 &&
       now - Number(cached.fetchedAt || 0) < APPLE_SUBMITTED_ROLE_DETAILS_CACHE_TTL_MS &&
       cached.description
     ) {
@@ -3659,7 +3137,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
         }
 
         const cachedDetails = {
-          version: 1,
+          version: 2,
           url: details.url || role.url,
           title: details.title,
           description: String(details.description || "").slice(0, 7000),
@@ -3718,6 +3196,9 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
 }
 
 const RECOGNIZED_MESSAGE_TYPES = new Set([
+  "APPLE_CAREERS_OBSERVED_SUBMISSION",
+  "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC",
+  "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE",
   "APPLE_CAREERS_GET_JOB_RANKING",
   "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
   "APPLE_CAREERS_START_JOB_RANKING",
@@ -3739,10 +3220,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW",
   "APPLE_CAREERS_GENERATE_ANSWER",
   "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
-  "APPLE_CAREERS_TRUSTED_WORKDAY_CLICK",
   "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK",
-  "APPLE_CAREERS_TRUSTED_WORKDAY_TEXT_REPLACEMENT",
-  "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW",
   "APPLE_CAREERS_TEST_API_KEY",
   "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE"
 ]);
@@ -3754,14 +3232,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   scanStateReady.then(async () => {
     try {
-      if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
+      if (message.type === "APPLE_CAREERS_OBSERVED_SUBMISSION") {
+        sendResponse(await observeAppleSubmission(message, sender));
+      } else if (message.type === "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC") {
+        await passivelySyncAppleSubmissions(sender.tab, { confirmed: message.confirmed === true }); sendResponse({ ok: true });
+      } else if (message.type === "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE") {
+        if (sender.tab) throw new Error("Withdrawal batches must be started from the extension panel.");
+        if (message.active && (scanState.running || appleRankingIsRunning() || submittedRoleAnalysisRuns.size)) throw new Error("Stop the current workflow before withdrawing.");
+        if (message.active) {
+          if (!message.batchId) throw new Error("A withdrawal batch ID is required.");
+          appleWithdrawalBatchId = message.batchId;
+          appleWithdrawalBatchUntil = Date.now() + 30 * 60000;
+        } else if (message.batchId === appleWithdrawalBatchId) {
+          appleWithdrawalBatchId = null; appleWithdrawalBatchUntil = 0;
+        }
+        sendResponse({ ok: true });
+      } else if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
         sendResponse({ ok: true, data: await getAppleRankingView(message.userProfile, message.topN) });
       } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {
         sendResponse(await refreshAppleJobQueueCount(message.tab));
       } else if (message.type === "APPLE_CAREERS_START_JOB_RANKING") {
-        sendResponse(await startAppleJobRanking(message.tab, message.userProfile));
+        sendResponse(await startAppleJobRanking(message.tab, message.userProfile, { topN: message.topN, resume: message.resume, autoApply: message.autoApply }));
       } else if (message.type === "APPLE_CAREERS_QUEUE_TOP_JOBS") {
-        sendResponse(await queueTopAppleJobs(message.userProfile, message.topN));
+        sendResponse(await queueTopAppleJobs(message.userProfile, message.topN, message.selectedIds));
       } else if (message.type === "APPLE_CAREERS_REMOVE_QUEUED_JOB") {
         sendResponse(await removeQueuedAppleJob(message.jobId));
       } else if (message.type === "APPLE_CAREERS_APPLY_JOB_QUEUE") {
@@ -3892,14 +3385,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           throw error;
         }
-      } else if (message.type === "APPLE_CAREERS_TRUSTED_WORKDAY_CLICK") {
-        sendResponse(await dispatchTrustedWorkdayClick(sender, message.point));
+
       } else if (message.type === "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK") {
         sendResponse(await dispatchTrustedAppleWithdrawalClick(sender, message.jobId, message.stage, message.expectedPageIndex));
-      } else if (message.type === "APPLE_CAREERS_TRUSTED_WORKDAY_TEXT_REPLACEMENT") {
-        sendResponse(await dispatchTrustedWorkdayTextReplacement(sender, message.value));
-      } else if (message.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL_WORKFLOW") {
-        sendResponse(await runGenericAutofillWorkflow(message.tab, message.userProfile));
+
       } else if (message.type === "APPLE_CAREERS_TEST_API_KEY") {
         // The UI never calls the provider directly -- same "content/UI messages background, background
         // does the fetch" shape as every other LLM call in this codebase (see callOpenAi's call sites).

@@ -18,17 +18,13 @@ export function isPdfResumeFile(file) {
   );
 }
 
-// Shared by GenericAutofillSection.jsx and KnownSitesSection.jsx -- both need the same "upload a
-// resume, extract a CandidateProfile from it" behavior (the known-site auto-apply flow actually
-// consumes the result via startListScan's own gating; generic autofill uses it to ground field
-// mapping/LLM answers), so this lives in one hook instead of two independently-written copies of the
-// same upload/extraction logic.
 export function useResumeExtraction({ profile, save }) {
   const [extractionStatus, setExtractionStatus] = useState("idle");
   const [extractionError, setExtractionError] = useState(null);
   const [resumeFileError, setResumeFileError] = useState(null);
   const profileRef = useRef(profile);
   const extractionRequestIdRef = useRef(0);
+  const parseRequests = useRef(new Map());
   profileRef.current = profile;
 
   // currentProfile is passed explicitly rather than read off the `profile` prop -- immediately after
@@ -36,11 +32,42 @@ export function useResumeExtraction({ profile, save }) {
   // rules/ui.md's useUserProfile note on why callers that need the value right away must use save()'s
   // own return value instead), and handleResumeFileChange calls this right after saving the
   // just-picked file.
+  async function parseSavedResume(currentProfile = profileRef.current) {
+    if (!currentProfile.resumeFileDataUrl) return currentProfile;
+    const fingerprint = fingerprintText(currentProfile.resumeFileDataUrl);
+    if (currentProfile.resumeText?.trim() && currentProfile.resumeTextFingerprint === fingerprint) return currentProfile;
+    if (parseRequests.current.has(fingerprint)) return parseRequests.current.get(fingerprint);
+    const operation = (async () => {
+      setExtractionStatus("parsing");
+      setExtractionError(null);
+      try {
+        const { extractPdfText } = await import("../lib/resumeText");
+        const resumeText = await extractPdfText(currentProfile.resumeFileDataUrl);
+        if (profileRef.current.resumeFileDataUrl !== currentProfile.resumeFileDataUrl) return null;
+        profileRef.current = await save({ resumeText, resumeTextFingerprint: fingerprint });
+        setExtractionStatus("done");
+        return profileRef.current;
+      } catch (error) {
+        setExtractionStatus("error");
+        setExtractionError(error.message || "Could not parse the PDF text.");
+        return null;
+      }
+    })();
+    parseRequests.current.set(fingerprint, operation);
+    try { return await operation; } finally { parseRequests.current.delete(fingerprint); }
+  }
+
   async function extractProfile(currentProfile) {
     if (!currentProfile.resumeFileDataUrl) {
       return;
     }
 
+    const originalProfile = currentProfile;
+    currentProfile = await parseSavedResume(currentProfile);
+    if (!currentProfile) {
+      if (profileRef.current.resumeFileDataUrl !== originalProfile.resumeFileDataUrl) return;
+      currentProfile = profileRef.current;
+    }
     const requestId = (extractionRequestIdRef.current += 1);
     const resumeFileDataUrl = currentProfile.resumeFileDataUrl;
     setExtractionStatus("extracting");
@@ -91,7 +118,7 @@ export function useResumeExtraction({ profile, save }) {
     if (!file) {
       extractionRequestIdRef.current += 1;
       try {
-        profileRef.current = await save({ resumeFileDataUrl: "", resumeFileName: "", resumeFileType: "" });
+        profileRef.current = await save({ resumeFileDataUrl: "", resumeFileName: "", resumeFileType: "", resumeText: "", resumeTextFingerprint: "" });
       } catch (error) {
         setResumeFileError(error?.message || "Could not clear the saved resume from Chrome storage.");
         return;
@@ -129,6 +156,10 @@ export function useResumeExtraction({ profile, save }) {
     setExtractionStatus("idle");
     setExtractionError(null);
 
+    const selectedPdf = savedProfile.resumeFileDataUrl;
+    savedProfile = await parseSavedResume(savedProfile) || profileRef.current;
+    if (savedProfile.resumeFileDataUrl !== selectedPdf) return;
+
     // Only attempt automatically once there's a usable, VALIDATED provider -- a key that's merely
     // present but never tested (or known invalid) must not be silently retried every time a resume is
     // uploaded (see CandidateProfileSection's gating message for what the user sees instead).
@@ -137,5 +168,5 @@ export function useResumeExtraction({ profile, save }) {
     }
   }
 
-  return { extractionStatus, extractionError, resumeFileError, handleResumeFileChange, extractProfile };
+  return { extractionStatus, extractionError, resumeFileError, handleResumeFileChange, extractProfile, parseSavedResume };
 }

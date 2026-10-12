@@ -3,14 +3,7 @@ export function isSupportedCareersUrl(url) {
     const parsedUrl = new URL(url);
     return (
       parsedUrl.origin === "https://jobs.apple.com" ||
-      (parsedUrl.origin === "https://www.apple.com" && /^\/careers(?:\/|$)/i.test(parsedUrl.pathname)) ||
-      [
-        "careers.tiktok.com",
-        "lifeattiktok.com",
-        "jobs.bytedance.com",
-        "careers.bytedance.com",
-        "joinbytedance.com"
-      ].includes(parsedUrl.hostname)
+      (parsedUrl.origin === "https://www.apple.com" && /^\/careers(?:\/|$)/i.test(parsedUrl.pathname))
     );
   } catch (_error) {
     return false;
