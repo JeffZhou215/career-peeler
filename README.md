@@ -22,7 +22,15 @@ Before applying, the extension verifies all active Apple submissions and limits 
 
 Workflow tabs stay in the Chrome window where the run started.
 
-Full cached searches use the `unlimitedStorage` permission to avoid Chrome's default 10 MB local storage cap. Interrupted scans show a warning and retain their saved checkpoint. Storage write failures are reported separately even if the local cache cannot save the error itself.
+Ranked Jobs is one list with views for Top Matches, Excluded Or Unscored, and Saved Scores To Update. Selected jobs enter one Application Queue. Match concerns stay inside each role; application failures and job links stay in Activity.
+
+## Local Job Database
+
+Descriptions, matching scores, rankings, search checkpoints, submission snapshots, the application queue, application history and activity are stored in the extension's IndexedDB database, `CareerPeelerJobs`. Records are stored individually by collection and job ID. Scan progress updates only the changed job and filter checkpoint; cached descriptions are read by job ID.
+
+The first load automatically migrates the existing job data from Chrome local storage in a single database transaction. The original job keys are removed only after the committed migration marker is read back. If migration fails, the source data remains available for a retry after reloading. Saved scores, queue statuses, withdrawal protection and scan checkpoints are retained.
+
+The profile, PDF resume, parsed resume text, API key and small live status records remain in Chrome storage. `unlimitedStorage` covers the local cache and IndexedDB. Interrupted scans show a warning and retain their saved checkpoint. Storage write failures have a separate session status so they can still be reported when the database cannot save more data. Both storage areas stay on the device; uninstalling the extension removes them.
 
 ## Submissions
 

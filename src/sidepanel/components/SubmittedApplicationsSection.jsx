@@ -1,3 +1,4 @@
+import { jobStore } from "../lib/jobStore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
@@ -117,7 +118,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     const response = await sendMessageWithFallback(tab.id, { type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE" });
     if (!response?.ok) throw new Error(response?.error || "Apple's current submissions page could not be read.");
     if (cancelled() || activeAnalysisIdRef.current) return;
-    const stored = await chrome.storage.local.get([SAVED_REVIEWS_KEY, SAVED_SCORES_KEY]);
+    const stored = await jobStore.get([SAVED_REVIEWS_KEY, SAVED_SCORES_KEY]);
     const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
     const page = response.data;
     const oldById = new Map((archive.pages?.[page.pageIndex]?.roles || []).map((role) => [String(role.jobId), role]));
@@ -140,7 +141,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     };
     const pages = { ...(archive.pages || {}), [page.pageIndex]: review };
     try {
-      await chrome.storage.local.set({ [SAVED_REVIEWS_KEY]: { ...archive, version: 1, pages, lastPageIndex: page.pageIndex } });
+      await jobStore.set({ [SAVED_REVIEWS_KEY]: { ...archive, version: 1, pages, lastPageIndex: page.pageIndex } });
     } catch (_error) {
       review.cacheSaveFailed = true;
     }
@@ -151,7 +152,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   useEffect(() => {
     let cancelled = false;
     async function loadSavedResults() {
-      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+      const stored = await jobStore.get(SAVED_REVIEWS_KEY);
       if (cancelled || activeAnalysisIdRef.current) return;
       const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
       setSavedPages(archive.pages || {});
@@ -169,7 +170,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
         }
       }
     }
-    loadSavedResults().catch(() => {});
+    loadSavedResults().catch(error => { if (!cancelled) setError(error?.message || "Saved submissions could not be loaded from the job database."); });
     function handleProgress(message) {
       if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS" ||
         message.analysisId !== activeAnalysisIdRef.current) return;
@@ -182,13 +183,13 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
         showReview(message.data, message.tabId);
       }
     }
-    const storageListener = (changes, area) => { if (area === "local" && changes[SAVED_REVIEWS_KEY] && !activeAnalysisIdRef.current && !busyRef.current) loadSavedResults().catch(console.error); };
-    chrome.storage.onChanged.addListener(storageListener);
+    const storageListener = (changes, area) => { if ((area === "local" || area === "indexeddb") && changes[SAVED_REVIEWS_KEY] && !activeAnalysisIdRef.current && !busyRef.current) loadSavedResults().catch(console.error); };
+    jobStore.onChanged.addListener(storageListener);
     chrome.runtime.onMessage.addListener(handleProgress);
     return () => {
       cancelled = true;
       chrome.runtime.onMessage.removeListener(handleProgress);
-      chrome.storage.onChanged.removeListener(storageListener);
+      jobStore.onChanged.removeListener(storageListener);
     };
   }, []);
 
@@ -241,14 +242,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       });
       if (!response?.ok) throw new Error(response?.error || "Could not scan all Apple submissions.");
       showAllReviews(response.data.reviews || []);
-      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+      const stored = await jobStore.get(SAVED_REVIEWS_KEY);
       setSavedSnapshot(stored[SAVED_REVIEWS_KEY]?.latestScan || null);
       setSavedCompleteSnapshot(stored[SAVED_REVIEWS_KEY]?.lastCompleteScan || null);
       setSavedPages(stored[SAVED_REVIEWS_KEY]?.pages || {});
       setError(response.data.warning || "");
       setStatusMessage(`${response.data.stopped ? "Stopped after" : "Scanned"} ${response.data.pagesRead} of ${response.data.pageCount} pages. Select roles from the saved ranking to queue withdrawals.`);
     } catch (scanError) {
-      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY).catch(() => ({}));
+      const stored = await jobStore.get(SAVED_REVIEWS_KEY).catch(() => ({}));
       setSavedSnapshot(stored[SAVED_REVIEWS_KEY]?.latestScan || null);
       setSavedCompleteSnapshot(stored[SAVED_REVIEWS_KEY]?.lastCompleteScan || null);
       setError(scanError?.message || "The all-submissions scan stopped.");
@@ -267,7 +268,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       const tab = await getActiveTab();
       const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY", tab });
       if (!response?.ok) throw new Error(response?.error || "Could not sync submissions.");
-      const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+      const stored = await jobStore.get(SAVED_REVIEWS_KEY);
       const archive = stored[SAVED_REVIEWS_KEY];
       if (archive?.latestScan) { setSavedSnapshot(archive.latestScan); setSavedPages(archive.pages || {}); showSnapshot(archive.latestScan); }
       setStatusMessage("Active submissions synced. Saved matching scores were reused.");
@@ -366,7 +367,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   }
 
   async function removeSavedRole(jobId, livePage = null) {
-    const stored = await chrome.storage.local.get(SAVED_REVIEWS_KEY);
+    const stored = await jobStore.get(SAVED_REVIEWS_KEY);
     const archive = stored[SAVED_REVIEWS_KEY];
     if (!archive) return;
     const pages = Object.fromEntries(Object.entries(archive.pages || {}).map(([pageIndex, review]) => [
@@ -402,7 +403,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       };
       if (snapshot) snapshot.roles = Array.from(savedById.values());
     }
-    const ranking = (await chrome.storage.local.get("appleJobRanking")).appleJobRanking;
+    const ranking = (await jobStore.get("appleJobRanking")).appleJobRanking;
     if (ranking) {
       const baseId = String(jobId).split("-")[0];
       ranking.withdrawnIds = [...new Set([...(ranking.withdrawnIds || []), baseId])];
@@ -414,7 +415,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       if (ranking.capacitySnapshot) ranking.capacitySnapshot = { ...ranking.capacitySnapshot,
         roles: ranking.capacitySnapshot.roles.filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() };
     }
-    await chrome.storage.local.set({ ...(ranking ? { appleJobRanking: ranking } : {}), [SAVED_REVIEWS_KEY]: { ...archive, pages,
+    await jobStore.set({ ...(ranking ? { appleJobRanking: ranking } : {}), [SAVED_REVIEWS_KEY]: { ...archive, pages,
       ...(snapshot ? { latestScan: snapshot } : {}),
       ...(completeSnapshot ? { lastCompleteScan: completeSnapshot } : {}) } });
     setSavedPages(pages);

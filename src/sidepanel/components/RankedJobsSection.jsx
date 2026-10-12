@@ -1,3 +1,4 @@
+import { jobStore } from "../lib/jobStore";
 import { Sheet } from "./Sheet";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
@@ -13,6 +14,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const [topN, setTopN] = useState(50);
   const [topNDraft, setTopNDraft] = useState("50");
   const [query, setQuery] = useState("");
+  const [listView, setListView] = useState("ranked");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
@@ -20,16 +22,17 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const refresh = useCallback(async (requestedTopN = topN) => {
     const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: requestedTopN });
     if (response?.ok) setView(response.data);
+    else setError(response?.error || "Saved jobs could not be loaded.");
   }, [profile, topN]);
 
   useEffect(() => {
     refresh().catch(console.error);
     const listener = (changes, area) => {
-      if ((area === "local" && ["appleJobRanking", "appleSubmittedRoleReviews", "appleCareersAppliedJobs"]
+      if (((area === "local" || area === "indexeddb") && ["appleJobRanking", "appleSubmittedRoleReviews", "appleCareersAppliedJobs"]
         .some((key) => changes[key])) || (area === "session" && changes.appleJobRankingWriteFailure)) refresh().catch(console.error);
     };
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
+    jobStore.onChanged.addListener(listener);
+    return () => jobStore.onChanged.removeListener(listener);
   }, [refresh]);
 
   useEffect(() => {
@@ -100,26 +103,18 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     .map((job) => [String(job.jobId), job])).values()].filter((job) => job.queueStatus !== "queued").sort((a, b) => b.score - a.score);
   const search = query.trim().toLowerCase();
   const matchesSearch = (job) => `${job.jobId} ${job.title}`.toLowerCase().includes(search);
-  const visible = jobs.filter(matchesSearch);
+  const listJobs = listView === "excluded" ? view?.excludedMatches || []
+    : listView === "stale" ? view?.staleMatches || [] : jobs;
+  const visible = listJobs.filter(matchesSearch);
   const applicationFailures = view?.applicationFailures || [];
-  const failedIds = new Set(applicationFailures.map((job) => String(job.jobId)));
-  const otherReviewJobs = (view?.needsReview || []).filter((job) => !failedIds.has(String(job.jobId)) && job.queueStatus !== "applying");
-  const shownIds = new Set([...jobs, ...(view?.queued || []), ...applicationFailures].map((job) => String(job.jobId)));
-  const otherMatches = (view?.otherMatches || []).filter((job) => !shownIds.has(String(job.jobId)) && matchesSearch(job));
   const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
-  const diagnosticLabels = { qualifications: "Minimum Qualifications Missing Or Unverified",
-    evidence: "Insufficient Responsibility Evidence", confidence: "Confidence Below High",
-    score: "Below Strong Match Threshold", hardSkip: "Excluded By Title, Experience Or Keywords",
-    unscored: "Matching Unfinished Or Posting Unavailable", alreadyApplied: "Previously Applied Or Withdrawn",
-    applicationReview: "Application Needs Review" };
-  const hasMatchDiagnostics = view?.diagnostics && Object.keys(diagnosticLabels).some((key) => view.diagnostics[key] > 0);
-  const canQueue = !!view?.candidates?.length;
+  const canQueue = listView === "ranked" && !!view?.candidates?.length;
 
   const needsQueueReview = !!view?.queueReviewToken;
   const queueReviewAcknowledged = !needsQueueReview || reviewedQueueToken === view.queueReviewToken;
   const interruptedRanking = view?.recovered && latestSearch && !latestSearch.complete && /^Ranking\b/i.test(view.phase || "");
   const progressLabel = view?.running
-    ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Saved Queue"
+    ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Application Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
     : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
       : view?.error ? /Application queue/i.test(view.phase || "") ? "Application Queue Paused" : "Ranking Paused"
@@ -162,7 +157,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   return <FunctionSection embedded={embedded} title="Find Your Best Matches" meta={view?.running ? "Running" : `${view?.queued?.length || 0} Queued`}
     defaultOpen running={view?.running}
     headerAction={view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
-    help="Rank every page of the current filtered Apple search against your saved resume. Descriptions, scores and the queue are stored locally. Queue Top N saves the highest-ranked scored jobs, including jobs with match concerns. Review the saved queue and acknowledge concerns before Apply Queue submits applications. Previously applied, withdrawn, excluded and unscored jobs are omitted. Applying checks active submissions and stops at the conservative 50-submission target. Apple may exempt some roles from its cap.">
+    help="Rank every page of the current filtered Apple search against your saved resume. Queue Top N adds the highest-ranked scored jobs to one Application Queue. Expand a role for its match concerns. Review and acknowledge the chosen batch before applying. Previously applied, withdrawn, excluded and unscored jobs cannot be queued. Applying verifies active submissions and stops at the conservative 50-submission target. Apple may exempt some roles from its cap.">
     <div className="ranking-controls">
       <label className="field-label" htmlFor="after-ranking">After Ranking<HelpTooltip label="After Ranking" text="Both modes finish the entire filtered search first. Auto Apply submits strong matches only after checking capacity. Review Then Apply lets you choose scored jobs and acknowledge their concerns." /></label>
       <select id="after-ranking" disabled={view?.running} value={profile.afterRanking} onChange={(event) => save({ afterRanking: event.target.value })}><option value="review">Review Then Apply</option><option value="auto">Auto Apply Strong Matches</option></select>
@@ -203,30 +198,25 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         </details>}
       </div>
     </details>
-    <div className="compact-list-heading"><strong>Top Ranked Jobs</strong>
-      <HelpTooltip label="Top Ranked Jobs" text="Queue Top N saves the highest-ranked scored jobs across saved filters, in score order. Search only filters this display. Expand a role to review qualifications and match concerns. Concern flags do not prevent queueing; acknowledge them in Saved Queue before applying." />
-      <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" step="1" value={topNDraft} aria-label="Top Matches"
+    <div className="compact-list-heading"><strong>Ranked Jobs</strong>
+      <HelpTooltip label="Ranked Jobs" text="One list holds saved job results. Use View to inspect top matches, excluded jobs or scores that need updating. Queue Top N adds the highest-ranked scored jobs across saved filters to the Application Queue. Expand a role for its evidence and match concerns." />
+      {listView === "ranked" && <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" step="1" value={topNDraft} aria-label="Top Matches"
         onChange={(event) => setTopNDraft(event.target.value)} onBlur={commitTopN}
-        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>
+        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>}
     </div>
+    <label className="field-label" htmlFor="ranked-jobs-view">View</label>
+    <select id="ranked-jobs-view" value={listView} onChange={event => { setListView(event.target.value); setSelectedIds([]); }}>
+      <option value="ranked">Top Matches</option>
+      <option value="excluded">Excluded Or Unscored</option>
+      <option value="stale">Saved Scores To Update ({view?.staleCount || 0})</option>
+    </select>
     <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
-    {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No ranked jobs match this search." : "No ranked jobs yet."}</p>}
-    {hasMatchDiagnostics &&
-      <details className="compact-fold"><summary>Match Concerns And Exclusions <span className="function-meta">{view.eligibleCount || 0} Strong</span>
-        <HelpTooltip label="Match Concerns And Exclusions" text="Qualifications, evidence, confidence and score concerns are advisory for scored jobs you choose to queue. Title/experience/keyword exclusions, unfinished matching, prior applications and uncertain application outcomes remain excluded. Counts overlap; expand a job for specific evidence." /></summary>
-        <div className="compact-fold-body"><p>Scored jobs with match concerns can be queued. Review their qualifications and resume evidence before applying.</p>
-          {Object.entries(diagnosticLabels).filter(([key]) => view.diagnostics[key] > 0)
-          .map(([key, label]) => <div className="compact-stat-row" key={key}><span>{label}</span><strong>{view.diagnostics[key]}</strong></div>)}</div>
-      </details>}
-    {!!otherReviewJobs.length && <details className="compact-fold"><summary>Applications Needing Review <span className="function-meta">{otherReviewJobs.length}</span></summary>
-      <ul className="submitted-role-list compact-role-list">{otherReviewJobs.filter(matchesSearch).map(jobCard)}</ul>
-    </details>}
-    {!!view?.staleMatches?.length && <details className="compact-fold"><summary>Saved Rankings To Update <span className="function-meta">{view.staleCount}</span></summary><div className="compact-fold-body"><p>These Scores Use Previous Resume Evidence Or Matching Settings. Scan And Rank To Update Them Before Queueing.</p><ul className="submitted-role-list compact-role-list">{view.staleMatches.filter(matchesSearch).map(jobCard)}</ul></div></details>}
-    {!!otherMatches.length && <details className="compact-fold"><summary>Other Excluded Or Unscored Jobs <span className="function-meta">{otherMatches.length}</span></summary>
-      <ul className="submitted-role-list compact-role-list">{otherMatches.map(jobCard)}</ul>
-    </details>}
-    <details className="compact-fold" open={queueOpen || undefined} onToggle={(event) => setQueueOpen(event.currentTarget.open)}><summary>Saved Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
-      <HelpTooltip label="Saved Queue" text="Queue Top N adds the highest-ranked scored jobs. Expand queued roles to review evidence or remove them. Acknowledge match concerns if present, then Apply Queue submits saved jobs in score order until the 50-submission target. Extra jobs stay queued." /></summary>
+    {listView === "stale" && !!view?.staleCount && <p className="muted">Scan And Rank to update these scores against your current resume and matching settings.</p>}
+    {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No jobs match this search in the selected view."
+      : listView === "excluded" ? "No excluded or unscored jobs."
+        : listView === "stale" ? "No saved scores need updating." : "No ranked jobs yet."}</p>}
+    <details className="compact-fold" open={queueOpen || undefined} onToggle={(event) => setQueueOpen(event.currentTarget.open)}><summary>Application Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
+      <HelpTooltip label="Application Queue" text="This is the only application queue. Expand chosen roles to review evidence or remove them. Review And Apply confirms this batch, acknowledges any match concerns and submits jobs in score order until the 50-submission target. Extra jobs stay queued." /></summary>
       <div className="compact-fold-body">
         {view?.queued?.length ? <ul className="submitted-role-list compact-role-list">{view.queued.filter(matchesSearch).map(jobCard)}</ul> : <span>No jobs queued.</span>}
       </div>

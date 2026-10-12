@@ -4,9 +4,11 @@ Career Peeler is an unofficial Apple Careers application assistant. It has no de
 
 ## Local Data
 
-Chrome local storage retains the selected PDF, its full parsed text, structured candidate profile, profile settings, required application answers, API key, job descriptions, scores, search checkpoints, submission snapshots, queues, application history, and failure logs. Existing Apple data is preserved during upgrades. Old records from retired integrations are not automatically erased.
+Chrome local storage retains the selected PDF, its full parsed text, structured candidate profile, profile settings, required application answers, API key and small live status records. The extension's local IndexedDB database, `CareerPeelerJobs`, retains job descriptions, scores, search checkpoints, submission snapshots, the application queue, application history, activity and failure logs. Small database error reports use Chrome session storage.
 
-PDF text extraction runs locally using the bundled PDF.js parser. Chrome storage is not separately encrypted by Career Peeler. Anyone with access to your unlocked Chrome profile may access extension data.
+Existing job data is migrated automatically from Chrome local storage. The original job keys are removed only after the database transaction commits and its migration marker is read back. If migration fails, those original records remain intact. Existing queue states and withdrawal protections are preserved. Old records from retired integrations are not automatically erased.
+
+PDF text extraction runs locally using the bundled PDF.js parser. Local extension data is not separately encrypted by Career Peeler. Anyone with access to your unlocked Chrome profile may access extension data.
 
 ## OpenAI Requests
 
@@ -30,7 +32,7 @@ Detected submission success and returning to Your Roles may refresh the local co
 ## Permissions
 
 - `storage`: retain the local data described above.
-- `unlimitedStorage`: retain full job descriptions, rankings and resume data across large searches without Chrome's default 10 MB local storage cap. Data stays in this extension's local storage.
+- `unlimitedStorage`: retain full job descriptions, rankings and resume data across large searches, removing normal Chrome storage quotas and protecting IndexedDB from eviction. Data stays on the device inside this extension's storage.
 - `tabs`: manage Apple workflow tabs in the initiating window.
 - `scripting`: restore the Apple content script when needed after navigation or reload.
 - `sidePanel`: display the persistent interface.
@@ -40,4 +42,4 @@ Host access is limited to `jobs.apple.com`, Apple careers pages, and `api.openai
 
 ## Control
 
-You can replace the saved resume, edit profile settings, stop workflows, remove queued jobs, and inspect failures. Clearing extension storage through Chrome removes local data. Chrome extension removal also removes its local storage. Application and withdrawal data already transmitted to Apple remains subject to Apple's policies; OpenAI requests are subject to OpenAI's policies.
+You can replace the saved resume, edit profile settings, stop workflows, remove queued jobs, and inspect failures. Chrome's developer tools can inspect Chrome storage and the IndexedDB database separately. Chrome extension removal removes both storage areas. Application and withdrawal data already transmitted to Apple remains subject to Apple's policies; OpenAI requests are subject to OpenAI's policies.

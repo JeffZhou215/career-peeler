@@ -1,4 +1,4 @@
-importScripts("lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js");
+importScripts("lib/appleJobStore.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -237,11 +237,11 @@ async function persistPendingLedgers() {
     return;
   }
 
-  await chrome.storage.local.set(updates);
+  await CareerPeelerJobStore.set(updates);
   markLedgerVersionsPersisted(versions);
 }
 
-const scanStateReady = chrome.storage.local
+const scanStateReady = CareerPeelerJobStore
   .get([SCAN_STATUS_KEY, JOB_RECORDS_KEY, APPLIED_JOBS_KEY, ERROR_JOBS_KEY])
   .then(async (stored) => {
     const savedState = stored[SCAN_STATUS_KEY];
@@ -282,7 +282,7 @@ const scanStateReady = chrome.storage.local
 async function saveScanState() {
   syncScanStateLedgerViews();
   const { updates, versions } = getPendingLedgerStorageUpdates();
-  await chrome.storage.local.set({
+  await CareerPeelerJobStore.set({
     // Applied/error details live only in their dedicated ledgers. The in-memory/public scan state is
     // hydrated from those ledgers, avoiding a second growing copy in the frequently-written status.
     [SCAN_STATUS_KEY]: buildPersistedScanState(scanState),
@@ -458,7 +458,7 @@ async function saveJobRecord(job, status) {
     await persistPendingLedgers();
   }
 
-  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
   const records = stored[JOB_RECORDS_KEY] || {};
   const key = job.jobId || job.url;
   const record = compactJobRecord(job, status);
@@ -475,7 +475,7 @@ async function saveJobRecord(job, status) {
   );
 
   try {
-    await chrome.storage.local.set({
+    await CareerPeelerJobStore.set({
       [JOB_RECORDS_KEY]: compactedRecords
     });
   } catch (error) {
@@ -484,7 +484,7 @@ async function saveJobRecord(job, status) {
     }
 
     const prunedRecords = pruneJobRecords(compactedRecords);
-    await chrome.storage.local.set({
+    await CareerPeelerJobStore.set({
       [JOB_RECORDS_KEY]: prunedRecords
     });
   }
@@ -493,7 +493,7 @@ async function saveJobRecord(job, status) {
 }
 
 async function compactStoredJobRecords() {
-  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
   const records = stored[JOB_RECORDS_KEY] || {};
   const compactedRecords = Object.fromEntries(
     Object.entries(records)
@@ -506,7 +506,7 @@ async function compactStoredJobRecords() {
   );
 
   try {
-    await chrome.storage.local.set({
+    await CareerPeelerJobStore.set({
       [JOB_RECORDS_KEY]: compactedRecords
     });
   } catch (error) {
@@ -514,14 +514,14 @@ async function compactStoredJobRecords() {
       throw error;
     }
 
-    await chrome.storage.local.set({
+    await CareerPeelerJobStore.set({
       [JOB_RECORDS_KEY]: pruneJobRecords(compactedRecords)
     });
   }
 }
 
 async function loadStoredJobIdentifiers() {
-  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
   const records = stored[JOB_RECORDS_KEY] || {};
   const urls = new Set();
   const jobIds = new Set();
@@ -1781,7 +1781,7 @@ async function clearAppliedJobs() {
     };
   }
 
-  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
   const records = stored[JOB_RECORDS_KEY] || {};
   const retainedRecords = Object.fromEntries(
     Object.entries(records).filter(([, record]) => !["applied", "submitted"].includes(record?.status))
@@ -1798,7 +1798,7 @@ async function clearAppliedJobs() {
   scanState.stats.submitted = 0;
   scanState.recent = scanState.recent.filter((record) => !["applied", "submitted"].includes(record?.status));
 
-  await chrome.storage.local.set({ [JOB_RECORDS_KEY]: retainedRecords });
+  await CareerPeelerJobStore.set({ [JOB_RECORDS_KEY]: retainedRecords });
   await saveScanState();
 
   return {
@@ -1820,7 +1820,7 @@ async function clearErrorJobs() {
       .map((error) => getDurableJobIdentity(error)?.key)
       .filter(Boolean)
   );
-  const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+  const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
   const records = stored[JOB_RECORDS_KEY] || {};
   const retainedRecords = Object.fromEntries(
     Object.entries(records).filter(([, record]) => {
@@ -1843,7 +1843,7 @@ async function clearErrorJobs() {
     (record) => record?.status !== "error" && !String(record?.status || "").endsWith("_apply_failed")
   );
 
-  await chrome.storage.local.set({ [JOB_RECORDS_KEY]: retainedRecords });
+  await CareerPeelerJobStore.set({ [JOB_RECORDS_KEY]: retainedRecords });
   await saveScanState();
 
   return {
@@ -1875,7 +1875,7 @@ async function clearHistory() {
     userProfile
   };
 
-  await chrome.storage.local.remove([JOB_RECORDS_KEY, JOB_LOGS_KEY, APPLIED_JOBS_KEY, ERROR_JOBS_KEY]);
+  await CareerPeelerJobStore.remove([JOB_RECORDS_KEY, JOB_LOGS_KEY, APPLIED_JOBS_KEY, ERROR_JOBS_KEY]);
   await saveScanState();
 
   return {
@@ -1885,13 +1885,13 @@ async function clearHistory() {
 }
 
 // Same shape and same reuse rationale as genericAutofill/loop.js's activity-log machinery -- written
-// directly to chrome.storage.local (background.js already has direct access, no relay needed), picked
+// directly to CareerPeelerJobStore (background.js already has direct access, no relay needed), picked
 // up by the side panel's generalized useAutofillActivity/AutofillActivityLog (see those files).
 const KNOWN_SITE_ACTIVITY_KEY = "appleCareersKnownSiteActivity";
 
 async function persistKnownSiteActivity(running, activitySteps) {
   const activityState = knownSiteActivityStateBySteps.get(activitySteps);
-  await chrome.storage.local
+  await CareerPeelerJobStore
     .set({
       [KNOWN_SITE_ACTIVITY_KEY]: {
         running,
@@ -2707,8 +2707,8 @@ async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, should
 
   const detailsResult = await fetchAppleSubmittedRoleDetails(boundedRoles, { shouldStop, windowId });
   const detailsByJobId = detailsResult.detailsByJobId;
-  const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY);
-  const scoreCache = stored[APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY] || {};
+  const scoreCache = await CareerPeelerJobStore.getRecords(APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY,
+    boundedRoles.map(role => normalizeAppleSubmittedJobId(role.jobId)));
   const scoreByJobId = new Map();
   const inputsToScore = [];
   let scoresReused = 0;
@@ -2835,7 +2835,7 @@ async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, should
       }
     }
     try {
-      await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY]: scoreCache });
+      await CareerPeelerJobStore.putRecords(APPLE_SUBMITTED_ROLE_SCORE_CACHE_KEY, scoreCache);
     } catch (_error) {
       scoreCacheSaveFailed = true;
     }
@@ -2846,7 +2846,7 @@ async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, should
 }
 
 async function saveAppleSubmittedRoleReview(page, analysis = null) {
-  const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY);
+  const stored = await CareerPeelerJobStore.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY);
   const archive = stored[APPLE_SUBMITTED_ROLE_REVIEWS_KEY] || { version: 1, pages: {} };
   const previous = Object.values(archive.pages || {}).flatMap((savedPage) => savedPage.roles || []);
   const previousById = new Map(previous.map((role) => [String(role.jobId), role]));
@@ -2878,7 +2878,7 @@ async function saveAppleSubmittedRoleReview(page, analysis = null) {
   archive.lastPageIndex = page.pageIndex;
   archive.version = 1;
   try {
-    await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
+    await CareerPeelerJobStore.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
   } catch (_error) {
     review.cacheSaveFailed = true;
   }
@@ -2973,7 +2973,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
           descriptionAvailable, scoreSource, active: true, sourcePageIndex: review.pageIndex });
       }
     }
-    const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY);
+    const stored = await CareerPeelerJobStore.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY);
     const archive = stored[APPLE_SUBMITTED_ROLE_REVIEWS_KEY] || { version: 1, pages: {} };
     if (!complete && archive.latestScan?.complete && !archive.lastCompleteScan) {
       archive.lastCompleteScan = archive.latestScan;
@@ -2993,14 +2993,14 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       archive.pages = Object.fromEntries(reviews);
       archive.lastCompleteScan = archive.latestScan;
     }
-    await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
+    await CareerPeelerJobStore.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
   };
   const publish = async (review) => {
     reviews.set(review.pageIndex, review);
     try {
       await persistSnapshot(false);
     } catch (_error) {
-      storageWarning = "The combined ranking could not be saved to Chrome storage.";
+      storageWarning = "The combined ranking could not be saved to the job database.";
     }
     chrome.runtime.sendMessage({
       type: "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS",
@@ -3053,7 +3053,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
     try {
       await persistSnapshot(complete);
     } catch (_error) {
-      storageWarning = "The combined ranking could not be saved to Chrome storage.";
+      storageWarning = "The combined ranking could not be saved to the job database.";
     }
     return { reviews: Array.from(reviews.values()), pagesRead: reviews.size,
       pageCount: page?.pageCount || reviews.size, stopped, warning: [warning, storageWarning].filter(Boolean).join(" ") || null };
@@ -3084,8 +3084,8 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
   const appleRoles = roles.filter((role) =>
     /^https:\/\/jobs\.apple\.com\/[^/]+\/details\//i.test(String(role.url || "")) && role.jobId
   );
-  const stored = await chrome.storage.local.get(APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY);
-  const cache = stored[APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY] || {};
+  const cache = await CareerPeelerJobStore.getRecords(APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY,
+    appleRoles.flatMap(role => [normalizeAppleSubmittedJobId(role.jobId), String(role.jobId)]));
   const now = Date.now();
   let fetchedCount = 0;
   let cachedCount = 0;
@@ -3112,7 +3112,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
 
   async function persistCache() {
     try {
-      await chrome.storage.local.set({ [APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY]: cache });
+      await CareerPeelerJobStore.putRecords(APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY, cache);
       return true;
     } catch (_error) {
       // Matching can still finish if a browser storage quota or transient storage error blocks caching.
@@ -3306,7 +3306,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let job = null;
 
         if (message.jobId) {
-          const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+          const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
           job = (stored[JOB_RECORDS_KEY] || {})[message.jobId] || null;
         } else if (message.pageTitle || message.siteLabel) {
           job = { title: message.pageTitle || null, siteLabel: message.siteLabel || null };
@@ -3325,7 +3325,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let agentActivityStepId = null;
 
         if (!job && message.jobId) {
-          const stored = await chrome.storage.local.get(JOB_RECORDS_KEY);
+          const stored = await CareerPeelerJobStore.get(JOB_RECORDS_KEY);
           job = (stored[JOB_RECORDS_KEY] || {})[message.jobId] || null;
         }
 
@@ -3411,7 +3411,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         error: error?.message || "The request failed."
       });
     }
-  });
+  }).catch(error => sendResponse({ ok: false, error: error?.message || "Saved jobs could not be loaded." }));
 
   return true;
 });
