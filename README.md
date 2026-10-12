@@ -22,6 +22,8 @@ Before applying, the extension verifies all active Apple submissions and limits 
 
 Workflow tabs stay in the Chrome window where the run started.
 
+Full cached searches use the `unlimitedStorage` permission to avoid Chrome's default 10 MB local storage cap. Interrupted scans show a warning and retain their saved checkpoint. Storage write failures are reported separately even if the local cache cannot save the error itself.
+
 ## Submissions
 
 Open Your Roles → Submissions → Active, then Scan And Match All. Results appear and are saved page by page, with lowest-fit unprotected roles first. Stopping or an OpenAI quota failure preserves usable saved results.

@@ -25,8 +25,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   useEffect(() => {
     refresh().catch(console.error);
     const listener = (changes, area) => {
-      if (area === "local" && ["appleJobRanking", "appleSubmittedRoleReviews", "appleCareersAppliedJobs"]
-        .some((key) => changes[key])) refresh().catch(console.error);
+      if ((area === "local" && ["appleJobRanking", "appleSubmittedRoleReviews", "appleCareersAppliedJobs"]
+        .some((key) => changes[key])) || (area === "session" && changes.appleJobRankingWriteFailure)) refresh().catch(console.error);
     };
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
@@ -117,13 +117,17 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
 
   const needsQueueReview = !!view?.queueReviewToken;
   const queueReviewAcknowledged = !needsQueueReview || reviewedQueueToken === view.queueReviewToken;
+  const interruptedRanking = view?.recovered && latestSearch && !latestSearch.complete && /^Ranking\b/i.test(view.phase || "");
   const progressLabel = view?.running
     ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Saved Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
-    : view?.error ? /Application queue/i.test(view.phase || "") ? "Application Queue Paused" : "Ranking Paused"
+    : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
+      : view?.error ? /Application queue/i.test(view.phase || "") ? "Application Queue Paused" : "Ranking Paused"
       : /Application queue/i.test(view?.phase || "") ? /stopped/i.test(view.phase) ? "Application Queue Stopped" : "Application Queue Finished"
         : /50-application target/i.test(view?.phase || "") ? "Application Limit Reached"
-          : view?.phase ? "Rankings Saved" : "Ready To Rank";
+          : /Ranking stopped/i.test(view?.phase || "") ? "Scan Stopped"
+            : latestSearch?.complete && /rank/i.test(view?.phase || "") ? "Ranking Complete"
+              : view?.phase ? "Rankings Saved" : "Ready To Rank";
 
   function jobCard(job) {
     const status = job.stale ? "Saved Score · Update Required" : ["needs_review", "uncertain", "applying"].includes(job.queueStatus) ? "Application Needs Review"
@@ -170,8 +174,12 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       </div>
     </div>
     <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong><span className="compact-role-meta">{view?.reviewedCount || 0} Saved · {view?.eligibleCount || 0} Strong Matches</span>
+      {latestSearch && <span className="compact-role-meta">{latestSearch.pagesRead || 0} Pages Finished · {latestSearch.complete ? "All Pages Ranked" : "Partial Scan"}</span>}
       {view?.currentJob && <a className="compact-role-meta" href={view.currentJob.url} target="_blank" rel="noopener noreferrer">{view.currentJob.title} · {view.currentJob.jobId}</a>}</span>
     </div>
+    {view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
+      ? `The previous scan was interrupted on page ${(latestSearch.pageIndex || 0) + 1}. Choose Resume Scan to continue using saved scores.`
+      : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
     {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}
       {!error && view?.errorJob && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
         Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
@@ -185,7 +193,6 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         {latestSearch && <span>{latestSearch.jobsRead || 0} Found In Latest Filter
           {Number.isFinite(latestSearch.alreadyApplied) && <> · {latestSearch.alreadyApplied} Previously Applied</>}
           {!!latestSearch.applicationReview && <> · {latestSearch.applicationReview} Applications Needing Review</>}.</span>}
-        {view?.recovered && <p>The previous run was interrupted. Saved scores and queued jobs remain available.</p>}
         {view?.staleCount > 0 && <p>{view.staleCount} saved jobs need matching against your current resume/settings.</p>}
         <button type="button" className="secondary" disabled={busy || view?.running} onClick={() => act("APPLE_CAREERS_REFRESH_QUEUE_CAPACITY")}>Refresh Submission Count</button>
         {!!Object.keys(view?.searches || {}).length && <details className="compact-fold"><summary>Scanned Filters</summary>

@@ -30,6 +30,7 @@ Detected submission success and returning to Your Roles may refresh the local co
 ## Permissions
 
 - `storage`: retain the local data described above.
+- `unlimitedStorage`: retain full job descriptions, rankings and resume data across large searches without Chrome's default 10 MB local storage cap. Data stays in this extension's local storage.
 - `tabs`: manage Apple workflow tabs in the initiating window.
 - `scripting`: restore the Apple content script when needed after navigation or reload.
 - `sidePanel`: display the persistent interface.
