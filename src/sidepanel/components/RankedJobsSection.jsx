@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
+import { SelectionCapacitySummary } from "./SelectionCapacitySummary";
 import { getActiveTab, formatRelativeTime } from "../lib/format";
 
 export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange, embedded = false, onOpenSetup }) {
@@ -120,6 +121,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_PREPARE_APPLICATION_BATCH", userProfile: savedProfile, selectedIds: selectedQueueIds });
       if (!response?.ok) throw new Error(response?.error || "The selected batch could not be prepared.");
       setApplicationBatch(response.data);
+      setView(current => current ? { ...current, capacity: response.data.capacity } : current);
       setApplyOpen(true);
     } catch (failure) {
       setError(failure?.message || "The selected batch could not be prepared.");
@@ -265,13 +267,15 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       if (event.target === event.currentTarget) setQueueOpen(event.currentTarget.open);
     }}><summary>Application Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
       <HelpTooltip label="Application Queue" text="Check roles, then choose Apply Selected to review and confirm the batch. Unselected roles stay queued." /></summary>
-      <div className="compact-fold-body">
+      <div className="compact-fold-body application-queue-body">
         {!!view?.queued?.length && <>
           <div className="compact-actions">
             <button type="button" className="secondary" disabled={busy || view?.running || applyOpen || !visibleQueued.length} onClick={() => setSelectedQueueIds(ids => [...new Set([...ids, ...visibleQueued.map(job => job.jobId)])])}>{search ? "Select All Visible" : "Select All"}</button>
             <button type="button" className="secondary" disabled={busy || view?.running || applyOpen || !selectedQueued.length} onClick={() => setSelectedQueueIds([])}>Clear Selection</button>
           </div>
-          <span className="muted" aria-live="polite">{selectedQueued.length} Selected{search && !!selectedQueued.filter(job => !matchesSearch(job)).length && ` · ${selectedQueued.filter(job => !matchesSearch(job)).length} Hidden By Search`}</span>
+          <div className="queue-selection-summary">
+            <SelectionCapacitySummary selectedCount={selectedQueued.length} capacity={capacity} hiddenCount={selectedQueued.filter(job => !matchesSearch(job)).length} />
+          </div>
         </>}
         {visibleQueued.length ? <ul className="submitted-role-list compact-role-list">{visibleQueued.map(job => jobCard(job, `${roleGroupId}-queue`))}</ul> : <span>{view?.queued?.length ? "No queued jobs match this search." : "No jobs queued."}</span>}
         <div className="compact-actions role-list-actions">
@@ -280,8 +284,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       </div>
     </details>
     <Sheet open={applyOpen} onClose={() => setApplyOpen(false)} title="Review Application Batch" busy={busy}>
-      <p>{applicationBatch?.jobs.length || 0} Selected · {applicationBatch?.capacity.known ? `${applicationBatch.capacity.remaining} Available Slots` : "Capacity Will Be Verified"}</p>
-      <p className="muted">Only These Roles Will Be Applied In Score Order. Unselected Roles And Roles Beyond Available Capacity Stay Queued.</p>
+      <SelectionCapacitySummary selectedCount={applicationBatch?.jobs.length || 0} capacity={capacity || applicationBatch?.capacity} />
+      <p className="muted">Capacity Is Verified Before Applying. Selected Roles Are Processed In Score Order Until Slots Are Filled. Extra Selections Can Be Used If An Application Fails; Unprocessed Roles Stay Queued.</p>
       <ul className="sheet-job-list">{applicationBatch?.jobs.map(job => <li key={job.jobId}><a href={job.url} target="_blank" rel="noopener noreferrer">{job.title}</a><span className="compact-role-meta">{job.jobId} · {job.score}% · {job.eligible ? "Strong Match" : "Match Concerns"}</span>{!job.eligible && <p className="muted">{job.reason}</p>}</li>)}</ul>
       {needsQueueReview && <label className="checkbox-row consent-row"><input type="checkbox" checked={queueReviewAcknowledged} disabled={busy} onChange={(event) => setReviewedQueueToken(event.target.checked ? applicationBatch.reviewToken : null)} /><span>I Reviewed The Match Concerns For These {applicationBatch.reviewCount} Jobs</span></label>}
       <label className="checkbox-row consent-row"><input type="checkbox" checked={profile.autoApplyConsent} disabled={busy} onChange={(event) => save({autoApplyConsent:event.target.checked})} /><span>I Allow These Applications To Be Submitted</span></label>

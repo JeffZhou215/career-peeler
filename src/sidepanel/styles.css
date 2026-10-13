@@ -1493,6 +1493,14 @@ pre {
 .function-body > .muted { color: var(--color-text-secondary); font-size: 12px; }
 .compact-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 8px; }
 .compact-actions.role-list-actions { grid-template-columns: minmax(0, 1fr); }
+.compact-fold-body.application-queue-body { display: block; }
+.application-queue-body > * + * { margin-top: 8px; }
+.queue-selection-summary { position: sticky; top: 0; z-index: 2; padding: 8px 0; background: var(--color-bg); border-bottom: 1px solid var(--color-border); }
+.selection-capacity { display: grid; gap: 4px; font-size: 12px; line-height: 1.4; color: var(--color-text-secondary); }
+.selection-capacity strong { color: var(--color-text); }
+.selection-capacity-filled > span:not(.muted) { color: var(--color-accent); }
+.selection-capacity-excess > span:not(.muted) { color: #996014; }
+@media (prefers-color-scheme: dark) { .selection-capacity-excess > span:not(.muted) { color: #ff9f0a; } }
 .job-list-section .compact-list-heading > .field-label { margin: 0; }
 .ios-app .compact-fold.job-list-section > summary { color: var(--color-text); font-size: 14px; font-weight: 600; }
 .compact-actions > button:not(.help), .compact-progress > button:not(.help) { min-height: 36px; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.35; }
