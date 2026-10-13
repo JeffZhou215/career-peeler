@@ -21,6 +21,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
+  const [rankedOpen, setRankedOpen] = useState(true);
   const [reviewedQueueToken, setReviewedQueueToken] = useState(null);
   const refresh = useCallback(async (requestedTopN = topN) => {
     const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: requestedTopN });
@@ -134,7 +135,6 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const listJobs = listView === "excluded" ? view?.excludedMatches || []
     : listView === "stale" ? view?.staleMatches || [] : jobs;
   const visible = listJobs.filter(matchesSearch);
-  const applicationFailures = view?.applicationFailures || [];
   const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
   const canQueue = listView === "ranked" && !!view?.candidates?.length;
 
@@ -190,7 +190,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   return <FunctionSection embedded={embedded} title="Find Your Best Matches" meta={view?.running ? "Running" : `${view?.queued?.length || 0} Queued`}
     defaultOpen running={view?.running}
     headerAction={view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
-    help="Rank every page of the current filtered Apple search against your saved resume. Queue Top N adds the highest-ranked scored jobs to one Application Queue. Expand a role for its match concerns. Review and acknowledge the chosen batch before applying. Previously applied, withdrawn, excluded and unscored jobs cannot be queued. Applying verifies active submissions and stops at the conservative 50-submission target. Apple may exempt some roles from its cap.">
+    help="Rank the complete filtered search against your resume, then choose roles for Application Queue. Applying checks available slots before submission.">
     <div className="ranking-controls">
       <label className="field-label" htmlFor="after-ranking">After Ranking<HelpTooltip label="After Ranking" text="Both modes finish the entire filtered search first. Auto Apply submits strong matches only after checking capacity. Review Then Apply lets you choose scored jobs and acknowledge their concerns." /></label>
       <select id="after-ranking" disabled={view?.running} value={profile.afterRanking} onChange={(event) => save({ afterRanking: event.target.value })}><option value="review">Review Then Apply</option><option value="auto">Auto Apply Strong Matches</option></select>
@@ -213,7 +213,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
       </a></>}
     </p>}
-    <details className="compact-fold"><summary>Scan Details<HelpTooltip label="Scan Details" text="Inspect the current job, cache use, saved filter history and the last active submission count. Refresh Submission Count reads Apple without repeating OpenAI matching." /></summary>
+    <details className="compact-fold"><summary>Scan Details</summary>
       <div className="compact-fold-body">
         {view?.phase && <span>{view.phase}</span>}
         <span>{view?.scoresReused || 0} Scores Reused</span>
@@ -231,27 +231,35 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         </details>}
       </div>
     </details>
-    <div className="compact-list-heading"><strong>Ranked Jobs</strong>
-      <HelpTooltip label="Ranked Jobs" text="One list holds saved job results. Use View to inspect top matches, excluded jobs or scores that need updating. Queue Top N adds the highest-ranked scored jobs across saved filters to the Application Queue. Expand a role for its evidence and match concerns." />
-      {listView === "ranked" && <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" step="1" value={topNDraft} aria-label="Top Matches"
-        onChange={(event) => setTopNDraft(event.target.value)} onBlur={commitTopN}
-        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>}
-    </div>
-    <label className="field-label" htmlFor="ranked-jobs-view">View</label>
-    <select id="ranked-jobs-view" value={listView} onChange={event => { setListView(event.target.value); setSelectedIds([]); }}>
-      <option value="ranked">Top Matches</option>
-      <option value="excluded">Excluded Or Unscored</option>
-      <option value="stale">Saved Scores To Update ({view?.staleCount || 0})</option>
-    </select>
-    <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
-    {listView === "stale" && !!view?.staleCount && <p className="muted">Scan And Rank to update these scores against your current resume and matching settings.</p>}
-    {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(job => jobCard(job, `${roleGroupId}-ranked`))}</ul> : <p className="muted">{search ? "No jobs match this search in the selected view."
-      : listView === "excluded" ? "No excluded or unscored jobs."
-        : listView === "stale" ? "No saved scores need updating." : "No ranked jobs yet."}</p>}
-    <details className="compact-fold" open={queueOpen} onToggle={(event) => {
+    <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Jobs By Job ID Or Title" />
+    <details className="compact-fold job-list-section" open={rankedOpen} onToggle={(event) => {
+      if (event.target === event.currentTarget) setRankedOpen(event.currentTarget.open);
+    }}><summary>Ranked Jobs <span className="function-meta">{visible.length} Jobs</span></summary>
+      <div className="compact-fold-body">
+        <div className="compact-list-heading">
+          <label className="field-label" htmlFor="ranked-jobs-view">View</label>
+          {listView === "ranked" && <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" step="1" value={topNDraft} aria-label="Top Matches"
+            onChange={(event) => setTopNDraft(event.target.value)} onBlur={commitTopN}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>}
+        </div>
+        <select id="ranked-jobs-view" value={listView} onChange={event => { setListView(event.target.value); setSelectedIds([]); }}>
+          <option value="ranked">Top Matches</option>
+          <option value="excluded">Excluded Or Unscored</option>
+          <option value="stale">Saved Scores To Update ({view?.staleCount || 0})</option>
+        </select>
+        {listView === "stale" && !!view?.staleCount && <p className="muted">Scan And Rank to update these scores against your current resume and matching settings.</p>}
+        {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(job => jobCard(job, `${roleGroupId}-ranked`))}</ul> : <p className="muted">{search ? "No jobs match this search in the selected view."
+          : listView === "excluded" ? "No excluded or unscored jobs."
+            : listView === "stale" ? "No saved scores need updating." : "No ranked jobs yet."}</p>}
+        {listView === "ranked" && <div className="compact-actions role-list-actions">
+          <button type="button" className="secondary" disabled={busy || view?.running || !canQueue} onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>{selectedIds.length ? `Queue Selected (${selectedIds.length})` : `Queue Top ${n}`}</button>
+        </div>}
+      </div>
+    </details>
+    <details className="compact-fold job-list-section" open={queueOpen} onToggle={(event) => {
       if (event.target === event.currentTarget) setQueueOpen(event.currentTarget.open);
     }}><summary>Application Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
-      <HelpTooltip label="Application Queue" text="Check the roles you want to apply for, then choose Apply Selected. Roles start unchecked. Review the selected batch and acknowledge its match concerns before submission. Only selected roles are processed in score order, up to available capacity. Unselected and extra roles stay queued." /></summary>
+      <HelpTooltip label="Application Queue" text="Check roles, then choose Apply Selected to review and confirm the batch. Unselected roles stay queued." /></summary>
       <div className="compact-fold-body">
         {!!view?.queued?.length && <>
           <div className="compact-actions">
@@ -261,14 +269,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
           <span className="muted" aria-live="polite">{selectedQueued.length} Selected{search && !!selectedQueued.filter(job => !matchesSearch(job)).length && ` · ${selectedQueued.filter(job => !matchesSearch(job)).length} Hidden By Search`}</span>
         </>}
         {visibleQueued.length ? <ul className="submitted-role-list compact-role-list">{visibleQueued.map(job => jobCard(job, `${roleGroupId}-queue`))}</ul> : <span>{view?.queued?.length ? "No queued jobs match this search." : "No jobs queued."}</span>}
+        <div className="compact-actions role-list-actions">
+          <button type="button" className="primary" disabled={busy || view?.running || !selectedQueued.length} onClick={reviewSelectedBatch}>Apply Selected ({selectedQueued.length})</button>
+        </div>
       </div>
     </details>
-    <div className="compact-actions queue-actions">
-      <button type="button" className="secondary" disabled={busy || view?.running || !canQueue} onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>{selectedIds.length ? `Queue Selected (${selectedIds.length})` : `Queue Top ${n}`}</button>
-      <button type="button" className="primary" disabled={busy || view?.running || !selectedQueued.length} onClick={reviewSelectedBatch}>Apply Selected ({selectedQueued.length})</button>
-      <HelpTooltip label="Apply Selected" text="Check roles in Application Queue, then review only those roles in the confirmation sheet. Apple capacity is verified again before submission. Other queued roles remain saved." />
-    </div>
-    {applicationFailures.some(job => job.status !== "submitted") && <p className="muted">Application Failures And Job Links Are In Activity.</p>}
     <Sheet open={applyOpen} onClose={() => setApplyOpen(false)} title="Review Application Batch" busy={busy}>
       <p>{applicationBatch?.jobs.length || 0} Selected · {applicationBatch?.capacity.known ? `${applicationBatch.capacity.remaining} Available Slots` : "Capacity Will Be Verified"}</p>
       <p className="muted">Only These Roles Will Be Applied In Score Order. Unselected Roles And Roles Beyond Available Capacity Stay Queued.</p>

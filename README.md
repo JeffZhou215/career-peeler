@@ -31,9 +31,9 @@ In your Apple Careers tab, set the search filters you want. Then open the extens
 ### Choose Roles Yourself
 
 1. Set **After Ranking** to **Review Then Apply**, then click **Scan And Rank**. It ranks the entire filtered search before you apply.
-2. In **Ranked Jobs**, expand a role to inspect its match details and evidence. Check specific roles and click **Queue Selected**, or set **Top** and click **Queue Top N**.
+2. Expand **Ranked Jobs** and inspect roles' match details and evidence. Check specific roles and click **Queue Selected** below the ranked list, or set **Top** and click **Queue Top N** there.
 3. Expand **Application Queue**. Check the roles you want to apply for—each starts unchecked. Use **Select All** or **Clear Selection** as needed.
-4. Click **Apply Selected (N)**. The confirmation sheet lists only those roles. Review any concerns, allow submission, then click **Confirm And Apply (N)**.
+4. Click **Apply Selected (N)** below the application queue. The confirmation sheet lists only those roles. Review any concerns, allow submission, then click **Confirm And Apply (N)**.
 
 Selected roles are processed in score order after checking available slots. Unselected roles and roles beyond available capacity stay queued. Adding a role to the queue does not submit an application.
 

@@ -21,7 +21,7 @@ export function App() {
   if (!loaded) return null;
   const capacity = queueSummary?.capacity;
   return <main className="app ios-app">
-    <div className="ios-chrome"><header><p className="eyebrow">Career Peeler</p><h1>Apple Careers<HelpTooltip label="Apple Careers" text="Jobs ranks your filtered search. Submissions reviews active applications. Setup manages your resume and matching. Actions stay in the Apple Careers Chrome window." /></h1></header>
+    <div className="ios-chrome"><header><p className="eyebrow">Career Peeler</p><h1>Apple Careers</h1></header>
       <div className="capacity-strip" aria-live="polite">
         {capacity?.known ? <><span><strong>{capacity.submitted}</strong> / 50 Submitted</span><span><strong>{capacity.remaining}</strong> Open</span></> : <span>Count Not Verified</span>}
         <span><strong>{queueSummary?.queued?.length || 0}</strong> Queued</span>
