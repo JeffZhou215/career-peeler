@@ -10,6 +10,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const roleGroupId = useId();
   const [view, setView] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
+  const [selectedQueueIds, setSelectedQueueIds] = useState([]);
+  const [applicationBatch, setApplicationBatch] = useState(null);
   const [applyOpen, setApplyOpen] = useState(false);
   const initializedTop = useRef(false);
   const [topN, setTopN] = useState(50);
@@ -42,7 +44,14 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     return () => clearInterval(timer);
   }, [view?.running, refresh]);
 
-  useEffect(() => { setReviewedQueueToken(null); }, [view?.queueReviewToken]);
+  useEffect(() => {
+    if (!view) return;
+    const queuedIds = new Set(view.queued.map(job => job.jobId));
+    setSelectedQueueIds(ids => {
+      const retained = ids.filter(id => queuedIds.has(id));
+      return retained.length === ids.length ? ids : retained;
+    });
+  }, [view]);
   useEffect(() => {
     if (!initializedTop.current && view?.capacity?.known) {
       initializedTop.current = true;
@@ -71,16 +80,18 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       const tab = await getActiveTab();
       const savedProfile = await save();
       const response = await chrome.runtime.sendMessage({ type: type === "APPLE_CAREERS_RESUME_JOB_RANKING" ? "APPLE_CAREERS_START_JOB_RANKING" : type, userProfile: savedProfile, topN: requestedTopN,
-        reviewAcknowledgement: reviewedQueueToken, tab, selectedIds,
+        reviewAcknowledgement: reviewedQueueToken, tab,
+        selectedIds: type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? applicationBatch?.jobs.map(job => String(job.jobId)) : selectedIds,
+        batchToken: type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? applicationBatch?.batchToken : undefined,
         resume: type === "APPLE_CAREERS_RESUME_JOB_RANKING",
         autoApply: savedProfile.afterRanking === "auto" });
       if (!response?.ok) throw new Error(response?.error || "The job queue could not be updated.");
       await refresh(requestedTopN);
       if (type === "APPLE_CAREERS_QUEUE_TOP_JOBS") { setQueueOpen(true); setSelectedIds([]); }
-      if (type === "APPLE_CAREERS_APPLY_JOB_QUEUE") setApplyOpen(false);
+      if (type === "APPLE_CAREERS_APPLY_JOB_QUEUE") { setApplyOpen(false); setSelectedQueueIds([]); }
       setStatusMessage(type === "APPLE_CAREERS_QUEUE_TOP_JOBS" ? `${response.count} top-ranked jobs saved to the application queue.${response.reviewCount ? ` ${response.reviewCount} have match concerns to review before applying.` : ""}`
         : type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY" ? "Active submission count refreshed without LLM matching."
-        : type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? "Checking Apple submission count, then applying the best queued matches."
+        : type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? "Checking Apple submission count, then applying only the selected roles in score order."
           : type === "APPLE_CAREERS_STOP_JOB_RANKING" ? "Stopping after the current action; saved matches remain available."
             : "Ranking all pages of the current filtered Apple search. Results appear as jobs are scored.");
     } catch (failure) {
@@ -92,6 +103,22 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REMOVE_QUEUED_JOB", jobId });
     if (!response?.ok) setError(response?.error || "Could not remove the queued job.");
     await refresh();
+  }
+
+  async function reviewSelectedBatch() {
+    setBusy(true);
+    setError("");
+    setReviewedQueueToken(null);
+    try {
+      const savedProfile = await save();
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_PREPARE_APPLICATION_BATCH", userProfile: savedProfile, selectedIds: selectedQueueIds });
+      if (!response?.ok) throw new Error(response?.error || "The selected batch could not be prepared.");
+      setApplicationBatch(response.data);
+      setApplyOpen(true);
+    } catch (failure) {
+      setError(failure?.message || "The selected batch could not be prepared.");
+      await refresh();
+    } finally { setBusy(false); }
   }
 
   useEffect(() => {
@@ -111,8 +138,10 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
   const canQueue = listView === "ranked" && !!view?.candidates?.length;
 
-  const needsQueueReview = !!view?.queueReviewToken;
-  const queueReviewAcknowledged = !needsQueueReview || reviewedQueueToken === view.queueReviewToken;
+  const visibleQueued = (view?.queued || []).filter(matchesSearch);
+  const selectedQueued = (view?.queued || []).filter(job => selectedQueueIds.includes(job.jobId));
+  const needsQueueReview = !!applicationBatch?.reviewToken;
+  const queueReviewAcknowledged = !needsQueueReview || reviewedQueueToken === applicationBatch.reviewToken;
   const interruptedRanking = view?.recovered && latestSearch && !latestSearch.complete && /^Ranking\b/i.test(view.phase || "");
   const progressLabel = view?.running
     ? /^(Applying|Checking Apple submission)/i.test(view.phase || "") ? "Applying Application Queue"
@@ -126,16 +155,17 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
               : view?.phase ? "Rankings Saved" : "Ready To Rank";
 
   function jobCard(job, disclosureGroup) {
+    const queued = job.queueStatus === "queued";
     const status = job.stale ? "Saved Score · Update Required" : ["needs_review", "uncertain", "applying"].includes(job.queueStatus) ? "Application Needs Review"
       : job.queueStatus === "queued" ? job.eligible ? "Queued" : "Queued · Match Concerns"
         : job.breakdown ? job.eligible ? "Strong Match" : "Match Concerns" : "Excluded Or Unscored";
     return <CompactRoleCard key={job.jobId} role={job} status={status} disclosureGroup={disclosureGroup}
-      selectable={!job.stale && job.queueStatus !== "queued" && Boolean(job.breakdown) && !["needs_review","uncertain","applying"].includes(job.queueStatus)}
-      selected={selectedIds.includes(job.jobId)} disabled={busy || view?.running}
+      selectable={!job.stale && Boolean(job.breakdown) && !["needs_review","uncertain","applying"].includes(job.queueStatus)}
+      selected={(queued ? selectedQueueIds : selectedIds).includes(job.jobId)} disabled={busy || view?.running || applyOpen}
       actions={job.queueStatus === "queued" && <button type="button" className="secondary"
         aria-label={`Remove ${job.title} From Queue`} disabled={busy || view?.running}
         onClick={() => remove(job.jobId)}>Remove From Queue</button>}
-      onSelect={() => setSelectedIds(ids => ids.includes(job.jobId) ? ids.filter(id => id !== job.jobId) : [...ids, job.jobId])}>
+      onSelect={() => (queued ? setSelectedQueueIds : setSelectedIds)(ids => ids.includes(job.jobId) ? ids.filter(id => id !== job.jobId) : [...ids, job.jobId])}>
       {job.localMatch && <details className="compact-fold"><summary>Local Resume Match</summary><div className="compact-fold-body"><span>{job.localMatch.percentage}% Local Overlap</span><p>{job.localMatch.reasons?.join("; ")}</p></div></details>}
       {!job.eligible && !!job.blockers?.length && <details className="compact-fold">
         <summary>Match Concerns <span className="function-meta">{job.blockers.length}</span></summary><div className="compact-fold-body"><ul>{job.blockers.map((blocker, index) => <li key={index}>
@@ -221,23 +251,31 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     <details className="compact-fold" open={queueOpen} onToggle={(event) => {
       if (event.target === event.currentTarget) setQueueOpen(event.currentTarget.open);
     }}><summary>Application Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
-      <HelpTooltip label="Application Queue" text="This is the only application queue. Expand chosen roles to review evidence or remove them. Review And Apply confirms this batch, acknowledges any match concerns and submits jobs in score order until the 50-submission target. Extra jobs stay queued." /></summary>
+      <HelpTooltip label="Application Queue" text="Check the roles you want to apply for, then choose Apply Selected. Roles start unchecked. Review the selected batch and acknowledge its match concerns before submission. Only selected roles are processed in score order, up to available capacity. Unselected and extra roles stay queued." /></summary>
       <div className="compact-fold-body">
-        {view?.queued?.length ? <ul className="submitted-role-list compact-role-list">{view.queued.filter(matchesSearch).map(job => jobCard(job, `${roleGroupId}-queue`))}</ul> : <span>No jobs queued.</span>}
+        {!!view?.queued?.length && <>
+          <div className="compact-actions">
+            <button type="button" className="secondary" disabled={busy || view?.running || applyOpen || !visibleQueued.length} onClick={() => setSelectedQueueIds(ids => [...new Set([...ids, ...visibleQueued.map(job => job.jobId)])])}>{search ? "Select All Visible" : "Select All"}</button>
+            <button type="button" className="secondary" disabled={busy || view?.running || applyOpen || !selectedQueued.length} onClick={() => setSelectedQueueIds([])}>Clear Selection</button>
+          </div>
+          <span className="muted" aria-live="polite">{selectedQueued.length} Selected{search && !!selectedQueued.filter(job => !matchesSearch(job)).length && ` · ${selectedQueued.filter(job => !matchesSearch(job)).length} Hidden By Search`}</span>
+        </>}
+        {visibleQueued.length ? <ul className="submitted-role-list compact-role-list">{visibleQueued.map(job => jobCard(job, `${roleGroupId}-queue`))}</ul> : <span>{view?.queued?.length ? "No queued jobs match this search." : "No jobs queued."}</span>}
       </div>
     </details>
     <div className="compact-actions queue-actions">
       <button type="button" className="secondary" disabled={busy || view?.running || !canQueue} onClick={() => act("APPLE_CAREERS_QUEUE_TOP_JOBS")}>{selectedIds.length ? `Queue Selected (${selectedIds.length})` : `Queue Top ${n}`}</button>
-      <button type="button" className="primary" disabled={busy || view?.running || !view?.queued?.length} onClick={() => setApplyOpen(true)}>Review And Apply</button>
-      <HelpTooltip label="Review And Apply" text="Review the actual saved batch in a confirmation sheet, acknowledge match concerns, then apply. Apple capacity is verified again before submission." />
+      <button type="button" className="primary" disabled={busy || view?.running || !selectedQueued.length} onClick={reviewSelectedBatch}>Apply Selected ({selectedQueued.length})</button>
+      <HelpTooltip label="Apply Selected" text="Check roles in Application Queue, then review only those roles in the confirmation sheet. Apple capacity is verified again before submission. Other queued roles remain saved." />
     </div>
     {applicationFailures.some(job => job.status !== "submitted") && <p className="muted">Application Failures And Job Links Are In Activity.</p>}
     <Sheet open={applyOpen} onClose={() => setApplyOpen(false)} title="Review Application Batch" busy={busy}>
-      <p>{view?.queued?.length || 0} Queued · {capacity?.known ? `${capacity.remaining} Available Slots` : "Capacity Will Be Verified"}</p>
-      <ul className="sheet-job-list">{view?.queued?.map(job => <li key={job.jobId}><a href={job.url} target="_blank" rel="noopener noreferrer">{job.title}</a><span className="compact-role-meta">{job.jobId} · {job.score}% · {job.eligible ? "Strong Match" : "Match Concerns"}</span>{!job.eligible && <p className="muted">{job.reason}</p>}</li>)}</ul>
-      {needsQueueReview && <label className="checkbox-row consent-row"><input type="checkbox" checked={queueReviewAcknowledged} disabled={busy} onChange={(event) => setReviewedQueueToken(event.target.checked ? view.queueReviewToken : null)} /><span>I Reviewed The Match Concerns For These {view.queueReviewCount} Jobs</span></label>}
+      <p>{applicationBatch?.jobs.length || 0} Selected · {applicationBatch?.capacity.known ? `${applicationBatch.capacity.remaining} Available Slots` : "Capacity Will Be Verified"}</p>
+      <p className="muted">Only These Roles Will Be Applied In Score Order. Unselected Roles And Roles Beyond Available Capacity Stay Queued.</p>
+      <ul className="sheet-job-list">{applicationBatch?.jobs.map(job => <li key={job.jobId}><a href={job.url} target="_blank" rel="noopener noreferrer">{job.title}</a><span className="compact-role-meta">{job.jobId} · {job.score}% · {job.eligible ? "Strong Match" : "Match Concerns"}</span>{!job.eligible && <p className="muted">{job.reason}</p>}</li>)}</ul>
+      {needsQueueReview && <label className="checkbox-row consent-row"><input type="checkbox" checked={queueReviewAcknowledged} disabled={busy} onChange={(event) => setReviewedQueueToken(event.target.checked ? applicationBatch.reviewToken : null)} /><span>I Reviewed The Match Concerns For These {applicationBatch.reviewCount} Jobs</span></label>}
       <label className="checkbox-row consent-row"><input type="checkbox" checked={profile.autoApplyConsent} disabled={busy} onChange={(event) => save({autoApplyConsent:event.target.checked})} /><span>I Allow These Applications To Be Submitted</span></label>
-      <div className="compact-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setApplyOpen(false)}>Cancel</button><button type="button" className="primary" disabled={busy || view?.running || !view?.queued?.length || !profile.autoApplyConsent || !queueReviewAcknowledged} onClick={() => act("APPLE_CAREERS_APPLY_JOB_QUEUE")}>Apply Queue</button></div>
+      <div className="compact-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setApplyOpen(false)}>Cancel</button><button type="button" className="primary" disabled={busy || view?.running || !applicationBatch?.jobs.length || !profile.autoApplyConsent || !queueReviewAcknowledged} onClick={() => act("APPLE_CAREERS_APPLY_JOB_QUEUE")}>Confirm And Apply ({applicationBatch?.jobs.length || 0})</button></div>
       {error && <p role="alert" className="submitted-history-error">{error}</p>}<button type="button" className="text-action" disabled={busy} onClick={() => {setApplyOpen(false);onOpenSetup?.();}}>Open Setup</button>
     </Sheet>
   </FunctionSection>;

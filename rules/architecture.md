@@ -18,4 +18,4 @@ Jobs, descriptions, submission scores/pages, application/error ledgers and activ
 
 Jobs uses one ranked list with view filters and one Application Queue. Keep concerns inside role cards and application failures in Activity, rather than introducing more queue-like lists.
 
-Automatic applications follow a complete ranking and use strong matches only. Reviewed application queues can include explicitly acknowledged concerns. Verify active submissions before applying; reserve ambiguous outcomes. Withdrawals require selection and confirmation, re-find each role after page changes, and protect starred or unknown-star roles.
+Automatic applications follow a complete ranking and use strong matches only. Manual application batches require explicit queued-role selection and confirmation; bind review to the selected IDs and assessments, process only those roles, and leave unselected roles queued. Selected batches can include explicitly acknowledged concerns. Verify active submissions before applying; reserve ambiguous outcomes. Withdrawals require selection and confirmation, re-find each role after page changes, and protect starred or unknown-star roles.

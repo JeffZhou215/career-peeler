@@ -3207,6 +3207,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_QUEUE_TOP_JOBS",
   "APPLE_CAREERS_REMOVE_QUEUED_JOB",
   "APPLE_CAREERS_APPLY_JOB_QUEUE",
+  "APPLE_CAREERS_PREPARE_APPLICATION_BATCH",
   "APPLE_CAREERS_STOP_JOB_RANKING",
   "APPLE_CAREERS_START_SCAN",
   "APPLE_CAREERS_RETRY_ERROR_JOBS",
@@ -3259,8 +3260,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await queueTopAppleJobs(message.userProfile, message.topN, message.selectedIds));
       } else if (message.type === "APPLE_CAREERS_REMOVE_QUEUED_JOB") {
         sendResponse(await removeQueuedAppleJob(message.jobId));
+      } else if (message.type === "APPLE_CAREERS_PREPARE_APPLICATION_BATCH") {
+        if (sender.tab) throw new Error("Application batches must be reviewed from the extension panel.");
+        sendResponse(await prepareAppleApplicationBatch(message.userProfile, message.selectedIds));
       } else if (message.type === "APPLE_CAREERS_APPLY_JOB_QUEUE") {
-        sendResponse(await startAppleJobQueue(message.tab, message.userProfile, message.reviewAcknowledgement));
+        if (sender.tab) throw new Error("Application batches must be started from the extension panel.");
+        sendResponse(await startAppleJobQueue(message.tab, message.userProfile, message.reviewAcknowledgement, message.selectedIds, message.batchToken));
       } else if (message.type === "APPLE_CAREERS_STOP_JOB_RANKING") {
         sendResponse(await stopAppleJobRanking());
       } else if (message.type === "APPLE_CAREERS_START_SCAN") {
