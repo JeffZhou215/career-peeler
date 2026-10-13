@@ -855,6 +855,12 @@ function classifyRole(matches, matchScore, title, userYearsOfExperience = DEFAUL
   };
 }
 
+function isSubmissionConfirmationText(text) {
+  const label = normalizeText(text || "");
+  return /^(?:submitted|application submitted|resume submitted)(?:\s*:|$)/i.test(label) ||
+    /\b(?:your information has been submitted for|(?:your )?(?:application|resume) (?:has been |was |successfully )?submitted|successfully submitted your (?:application|resume)|we (?:have|'ve) received your (?:resume|application))\b/i.test(label);
+}
+
 function getSubmittedSignal() {
   const candidates = document.querySelectorAll("button, [role='button'], a, [aria-label], span, div");
 
@@ -868,18 +874,15 @@ function getSubmittedSignal() {
       continue;
     }
 
-    const label = normalizeText(`${candidate.innerText || ""} ${candidate.getAttribute("aria-label") || ""}`);
-    const lower = label.toLowerCase();
+    const label = normalizeText(candidate.innerText || candidate.getAttribute("aria-label") || "");
 
-    if (!label || label.length > 120) {
+    if (!label || label.length > 2000 || (label.length > 120 && !/\byour information has been submitted for\b/i.test(label))) {
       continue;
     }
 
-    if (
-      /^(submitted|application submitted|resume submitted)$/.test(lower) ||
-      /\b(application|resume)?\s*submitted\b/.test(lower) ||
-      /\bwe (?:have|'ve) received your (?:resume|application)\b/.test(lower)
-    ) {
+    // The profile's "Your Roles (0 favorited or submitted)" navigation label is
+    // not evidence that the current application succeeded.
+    if (isSubmissionConfirmationText(label)) {
       return {
         text: label,
         tagName: candidate.tagName.toLowerCase()
@@ -4178,6 +4181,8 @@ async function runApplicationWorkflowStep(options = {}) {
       errorType: "application_not_ready", steps,
       summary: "Apple's application form did not finish loading its Continue/Submit controls. Open the application to review it manually." });
   }
+  steps.push({ step: "Read application step", status: "detected",
+    label: normalizeText(document.querySelector("h1")?.innerText || "Application") });
 
   // On the final Review & Submit step, every question is shown as read-only review text (it was
   // already answered on the earlier Questions step) rather than an editable control, so there is
@@ -4591,11 +4596,14 @@ if (document.body && chrome.runtime?.id && getSiteConfig()?.id === "apple") {
         }).catch(() => {});
       }
     }
-    if (!formSuccessReported && /^\/app\//i.test(window.location.pathname) &&
-      Array.from(document.querySelectorAll("h1,h2,h3,[role='alert'],[role='dialog']")).some(element =>
-        isElementVisible(element) && /^(?:application|resume) submitted\b|successfully submitted|we(?:'ve| have) received your (?:resume|application)/i.test(normalizeText(element.innerText || "")))) {
+    if (!formSuccessReported && /^\/app\//i.test(window.location.pathname) && getSubmittedSignal()) {
       formSuccessReported = true;
-      chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC", confirmed: true }).catch(() => {});
+      chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC", confirmed: true }).then(result => {
+        if (result?.deferred) {
+          formSuccessReported = false;
+          if (!observationTimer) observationTimer = setTimeout(observe, 3000);
+        }
+      }).catch(() => {});
     }
   };
   const schedule = () => { if (!observationTimer) observationTimer = setTimeout(observe, 1000); };

@@ -68,6 +68,8 @@ Use **Find Job ID Or Title** to locate a role. Check the applications you want t
 - **Failed application:** expand **Activity** for the job link, reason, and last step. Known failures before submission are skipped; an unknown submission outcome pauses the batch for review.
 - **Changed submissions:** use **Sync Submissions** to refresh without matching again. Detected manual applications also update the count, which is checked again before applying.
 
+After a manual application is verified, its earlier failure is labeled **Submitted Later** and kept under **Previous Failure**. New application activity is grouped by job and includes each Continue step. Older unassigned activity can contain steps from several roles.
+
 Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.
 
 **Application Queue Finished** means the selected batch was processed, which can include failed applications. The last batch summary shows submitted, already submitted, and review counts. Unselected roles stay queued even if slots remain open.

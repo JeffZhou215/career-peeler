@@ -83,6 +83,7 @@ function ActivityStep({ step }) {
 }
 
 function ActivityCycle({ cycle }) {
+  const unassigned = cycle.title === "Previous Activity" && !cycle.jobId;
   const linkUrl = getActivityLinkUrl(cycle.url);
   const stepCount = cycle.steps.length;
   const stepLabel = `${stepCount} ${stepCount === 1 ? "Step" : "Steps"}`;
@@ -105,7 +106,7 @@ function ActivityCycle({ cycle }) {
                 {cycle.title || "Current Job"}
               </a>
             ) : (
-              <span className="activity-cycle-title">{cycle.title || "Activity"}</span>
+              <span className="activity-cycle-title">{unassigned ? "Previous Activity (Unassigned)" : cycle.title || "Activity"}</span>
             )}
             <span className="activity-cycle-meta">
               {cycle.outcome || (cycle.status === "running" ? "Running" : "Complete")} · {stepLabel}
@@ -113,6 +114,7 @@ function ActivityCycle({ cycle }) {
           </span>
         </summary>
         <ol className="activity-cycle-steps">
+          {unassigned && <li className="activity-cycle-empty">These Older Steps Have No Job Labels And May Cover Multiple Applications.</li>}
           {cycle.steps.map((step) => (
             <ActivityStep key={step.id} step={step} />
           ))}

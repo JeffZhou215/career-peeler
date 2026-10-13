@@ -2001,6 +2001,14 @@ async function markActiveKnownSiteCycleNeedsAttention(activitySteps, outcome = "
 // existing steps/attempts arrays in the final report), rather than flooding this new live log with
 // granularity nobody asked to watch step by step.
 function translateKnownSiteStep(entry, context = {}) {
+  if (entry.step === "Read application step") {
+    return { tool: "read_page", label: "Application Step", status: "success", observation: entry.label };
+  }
+  if (entry.step === "Continue application step") {
+    const clicked = entry.status === "clicked";
+    return { tool: "click", label: entry.label || "Continue", status: clicked ? "success" : "error",
+      observation: clicked ? "advanced to the next application step" : "Continue action was not found" };
+  }
   if (entry.step === "Open application flow") {
     const opened = entry.status !== "missing";
     return {
@@ -3238,7 +3246,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "APPLE_CAREERS_OBSERVED_SUBMISSION") {
         sendResponse(await observeAppleSubmission(message, sender));
       } else if (message.type === "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC") {
-        await passivelySyncAppleSubmissions(sender.tab, { confirmed: message.confirmed === true }); sendResponse({ ok: true });
+        sendResponse(await passivelySyncAppleSubmissions(sender.tab, { confirmed: message.confirmed === true }) || { ok: true });
       } else if (message.type === "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE") {
         if (sender.tab) throw new Error("Withdrawal batches must be started from the extension panel.");
         if (message.active && (scanState.running || appleRankingIsRunning() || submittedRoleAnalysisRuns.size)) throw new Error("Stop the current workflow before withdrawing.");
