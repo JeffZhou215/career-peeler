@@ -1522,6 +1522,8 @@ pre {
 .compact-role-body { display: grid; gap: 8px; padding: 0 2px 12px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; }
 .compact-role-body p { margin: 0; overflow-wrap: anywhere; }
 .compact-role-body ul { margin: 5px 0 0; }
+.compact-role-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 0 10px; border-bottom: 1px solid var(--color-border); }
+.compact-role-actions > a, .compact-role-actions > button { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 6px 9px; border-radius: 6px; font-size: 12px; line-height: 1.35; }
 .compact-detail-heading { color: var(--color-text); font-weight: 600; }
 .job-page-link { justify-self: start; padding: 6px 9px; border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text-secondary); font-size: 12px; }
 .compact-fold { border-bottom: 1px solid var(--color-border); }

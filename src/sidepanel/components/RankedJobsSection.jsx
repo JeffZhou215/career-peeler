@@ -131,6 +131,9 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     return <CompactRoleCard key={job.jobId} role={job} status={status}
       selectable={!job.stale && job.queueStatus !== "queued" && Boolean(job.breakdown) && !["needs_review","uncertain","applying"].includes(job.queueStatus)}
       selected={selectedIds.includes(job.jobId)} disabled={busy || view?.running}
+      actions={job.queueStatus === "queued" && <button type="button" className="secondary"
+        aria-label={`Remove ${job.title} From Queue`} disabled={busy || view?.running}
+        onClick={() => remove(job.jobId)}>Remove From Queue</button>}
       onSelect={() => setSelectedIds(ids => ids.includes(job.jobId) ? ids.filter(id => id !== job.jobId) : [...ids, job.jobId])}>
       {job.localMatch && <details className="compact-fold"><summary>Local Resume Match</summary><div className="compact-fold-body"><span>{job.localMatch.percentage}% Local Overlap</span><p>{job.localMatch.reasons?.join("; ")}</p></div></details>}
       {!job.eligible && !!job.blockers?.length && <details className="compact-fold">
@@ -150,7 +153,6 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
           {item.resume_quote && <p><strong>Candidate Evidence:</strong> {item.resume_quote}</p>}
         </div>)}
       </div></details>}
-      {job.queueStatus === "queued" && <button type="button" className="secondary" disabled={busy || view?.running} onClick={() => remove(job.jobId)}>Remove From Queue</button>}
     </CompactRoleCard>;
   }
 
