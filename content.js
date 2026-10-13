@@ -219,7 +219,7 @@ const SITE_CONFIGS = {
       url?.origin === "https://jobs.apple.com" ||
       (url?.origin === "https://www.apple.com" && /^\/careers(?:\/|$)/i.test(url.pathname)),
     isJobDetailUrl: (url) => url?.origin === "https://jobs.apple.com" && /\/details\//i.test(url.pathname),
-    isApplicationUrl: () => false,
+    isApplicationUrl: (url) => url?.origin === "https://jobs.apple.com" && /^\/app\/[^/]+\/apply\/[^/]+\/?$/i.test(url.pathname),
     applyPattern: /^submit resume$/i,
     continuePattern: /^continue$/i,
     finalSubmitPattern: /^submit$/i,
@@ -342,6 +342,7 @@ function getJobIdFromUrl(url) {
   try {
     const parsedUrl = new URL(url);
     const pathPatterns = [
+      /\/app\/[^/]+\/apply\/([^/?#]+)/i,
       /\/details\/([^/?#]+)/i,
       /\/position\/([^/?#]+)/i,
       /\/resume\/([^/?#]+)/i,
@@ -3375,9 +3376,20 @@ function getRequiredFieldAuditGroup(element, kind) {
     return kind === "custom_dropdown" ? getAgentFieldContainer(element) : element;
   }
 
+  const nativeRadios = getRequiredNativeRadioPeers(element);
+  if (nativeRadios.length) return nativeRadios[0];
+
   return element?.closest?.(
     "[data-form-field-i18n-name], [data-form-field-id], .ud-formily-item, fieldset, [role='radiogroup'], [role='group']"
   ) || element;
+}
+
+function getRequiredNativeRadioPeers(element) {
+  if (String(element?.type || "").toLowerCase() !== "radio" || !element.name) return [];
+  // Apple may put each option in its own label without a fieldset. Native name
+  // and form ownership identify the question even when no group wrapper exists.
+  return Array.from(document.querySelectorAll("input[type='radio']"))
+    .filter(option => option.name === element.name && option.form === element.form);
 }
 
 function isRequiredFieldAuditControlAnswered(element, kind, group) {
@@ -3390,11 +3402,14 @@ function isRequiredFieldAuditControlAnswered(element, kind, group) {
   }
 
   if (kind === "option_group") {
+    const peers = getRequiredNativeRadioPeers(element);
+    if (peers.length) return peers.some(isAnswerOptionSelected);
     const options = Array.from(
       group?.querySelectorAll?.(
         "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']"
       ) || [element]
     );
+    if (!group || group === element || group.matches?.("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']")) options.unshift(group || element);
     return options.some(isAnswerOptionSelected);
   }
 
@@ -3960,6 +3975,8 @@ async function waitForApplicationFormToSettle(options = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastCount = -1;
   let stableCount = 0;
+  const siteConfig = getSiteConfig();
+  const applicationPage = Boolean(siteConfig?.isApplicationUrl(getCurrentUrl()));
 
   const countInteractiveElements = () =>
     document.querySelectorAll("[data-form-field-i18n-name], select, input, textarea, button, [role='button']")
@@ -3973,11 +3990,14 @@ async function waitForApplicationFormToSettle(options = {}) {
     }
 
     const currentCount = countInteractiveElements();
+    const applicationControlsPresent = !applicationPage || Boolean(document.getElementById(siteConfig.primaryActionId)) ||
+      Boolean(findClickableByText(siteConfig.continuePattern || /^continue$/i)) ||
+      Boolean(findClickableByText(siteConfig.finalSubmitPattern || /^submit$/i));
 
-    if (currentCount > 0 && currentCount === lastCount) {
+    if (applicationControlsPresent && currentCount > 0 && currentCount === lastCount) {
       stableCount += 1;
       if (stableCount >= stableChecksRequired && Date.now() - startedAt >= minimumWaitMs) {
-        return { alreadyAppliedSignal: null };
+        return { ready: true, alreadyAppliedSignal: null };
       }
     } else {
       stableCount = 0;
@@ -3987,7 +4007,7 @@ async function waitForApplicationFormToSettle(options = {}) {
     await delay(intervalMs);
   }
 
-  return { alreadyAppliedSignal: getAlreadyAppliedSignal() };
+  return { ready: false, alreadyAppliedSignal: getAlreadyAppliedSignal() };
 }
 
 async function runApplicationWorkflowStep(options = {}) {
@@ -4151,6 +4171,12 @@ async function runApplicationWorkflowStep(options = {}) {
 
   if (settleResult.alreadyAppliedSignal) {
     return buildAlreadyAppliedStepResult(settleResult.alreadyAppliedSignal, steps);
+  }
+
+  if (settleResult.ready === false) {
+    return buildStepResult({ clicked: false, done: false, pausedForReview: true,
+      errorType: "application_not_ready", steps,
+      summary: "Apple's application form did not finish loading its Continue/Submit controls. Open the application to review it manually." });
   }
 
   // On the final Review & Submit step, every question is shown as read-only review text (it was

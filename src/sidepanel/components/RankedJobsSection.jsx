@@ -244,6 +244,10 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       </div>
     </div>
     <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong><span className="compact-role-meta">{view?.reviewedCount || 0} Saved · {view?.eligibleCount || 0} Strong Matches</span>
+      {!view?.running && view?.lastBatchSummary && <span className="compact-role-meta">Last Batch: {view.lastBatchSummary.submitted} Submitted · {view.lastBatchSummary.failed} Need Review
+        {!!view.lastBatchSummary.alreadySubmitted && <> · {view.lastBatchSummary.alreadySubmitted} Already Submitted</>}
+        {!!view.lastBatchSummary.remainingQueued && <> · {view.lastBatchSummary.remainingQueued} Selected Roles Still Queued</>}
+      </span>}
       {latestSearch && <span className="compact-role-meta">{latestSearch.pagesRead || 0} Pages Finished · {latestSearch.complete ? "All Pages Ranked" : "Partial Scan"}</span>}
       {view?.currentJob && <a className="compact-role-meta" href={view.currentJob.url} target="_blank" rel="noopener noreferrer">{view.currentJob.title} · {view.currentJob.jobId}</a>}</span>
     </div>
