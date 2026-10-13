@@ -19,3 +19,5 @@ Jobs, descriptions, submission scores/pages, application/error ledgers and activ
 Jobs uses one ranked list with view filters and one Application Queue. Keep concerns inside role cards and application failures in Activity, rather than introducing more queue-like lists.
 
 Automatic applications follow a complete ranking and use strong matches only. Manual application batches require explicit queued-role selection and confirmation; bind review to the selected IDs and assessments, process only those roles, and leave unselected roles queued. Selected batches can include explicitly acknowledged concerns. Verify active submissions before applying; reserve ambiguous outcomes. Withdrawals require selection and confirmation, re-find each role after page changes, and protect starred or unknown-star roles.
+
+Apply This Role is a confirmed one-off application from the open Apple job detail page. Reuse the queue worker and known-site application stages, bind confirmation to that tab, posting and profile, verify capacity and prior submissions, and leave the application open for review. A queue entry or matching threshold is not required for this explicitly reviewed role.

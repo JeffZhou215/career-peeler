@@ -70,6 +70,8 @@ Use **Find Job ID Or Title** to locate a role. Check the applications you want t
 
 After a manual application is verified, its earlier failure is labeled **Submitted Later** and kept under **Previous Failure**. New application activity is grouped by job and includes each Continue step. Older unassigned activity can contain steps from several roles.
 
+To apply one reviewed role, open its Apple job page and choose **Apply This Role** in the Jobs tab. Review the role and confirm submission. The extension checks available slots, then completes the application stages using your saved profile. It does not require a queue entry or a strong match score. If a step fails, the application stays open and Activity records the job link and reason. Applications with an unknown previous outcome are checked against current submissions before retrying.
+
 Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.
 
 **Application Queue Finished** means the selected batch was processed, which can include failed applications. The last batch summary shows submitted, already submitted, and review counts. Unselected roles stay queued even if slots remain open.

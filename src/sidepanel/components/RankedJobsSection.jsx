@@ -5,6 +5,7 @@ import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
 import { SelectionCapacitySummary } from "./SelectionCapacitySummary";
+import { CurrentRoleApplication } from "./CurrentRoleApplication";
 import { getActiveTab, formatRelativeTime } from "../lib/format";
 
 const RANKING_VIEW_KEY = "appleCareersRankingView";
@@ -186,11 +187,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const interruptedRanking = view?.recovered && latestSearch && !latestSearch.complete && /^Ranking\b/i.test(view.phase || "");
   const progressLabel = view?.running
     ? /^Checking Apple submission/i.test(view.phase || "") ? "Checking Submission Capacity"
-      : /^Applying/i.test(view.phase || "") ? "Applying Application Queue"
+      : /^Applying/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Applying This Role" : "Applying Application Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
     : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
-      : view?.error ? /Application queue/i.test(view.phase || "") ? "Application Queue Paused" : "Ranking Paused"
-      : /Application queue/i.test(view?.phase || "") ? /stopped/i.test(view.phase) ? "Application Queue Stopped" : "Application Queue Finished"
+      : view?.error ? /Application queue/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Application Needs Review" : "Application Queue Paused" : "Ranking Paused"
+      : /Application queue/i.test(view?.phase || "") ? view.workflowMode === "current_role" ? /stopped/i.test(view.phase) ? "Application Stopped" : "Application Finished" : /stopped/i.test(view.phase) ? "Application Queue Stopped" : "Application Queue Finished"
         : /50-application target/i.test(view?.phase || "") ? "Application Limit Reached"
           : /Ranking stopped/i.test(view?.phase || "") ? "Scan Stopped"
             : latestSearch?.complete && /rank/i.test(view?.phase || "") ? "Ranking Complete"
@@ -233,6 +234,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     defaultOpen running={view?.running}
     headerAction={view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
     help="Rank the complete filtered search against your resume, then choose roles for Application Queue. Applying checks available slots before submission.">
+    <CurrentRoleApplication save={save} running={busy || view?.running || applyOpen} setStatusMessage={setStatusMessage} onOpenSetup={onOpenSetup}
+      onStarted={() => { setView(current => current ? { ...current, running: true, workflowMode: "current_role", phase: "Checking Apple submission capacity" } : current); refresh().catch(console.error); }} />
     <div className="ranking-controls">
       <label className="field-label" htmlFor="after-ranking">After Ranking<HelpTooltip label="After Ranking" text="Both modes finish the entire filtered search first. Auto Apply submits strong matches only after checking capacity. Review Then Apply lets you choose scored jobs and acknowledge their concerns." /></label>
       <select id="after-ranking" disabled={view?.running} value={profile.afterRanking} onChange={(event) => save({ afterRanking: event.target.value })}><option value="review">Review Then Apply</option><option value="auto">Auto Apply Strong Matches</option></select>
@@ -244,7 +247,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       </div>
     </div>
     <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong><span className="compact-role-meta">{view?.reviewedCount || 0} Saved · {view?.eligibleCount || 0} Strong Matches</span>
-      {!view?.running && view?.lastBatchSummary && <span className="compact-role-meta">Last Batch: {view.lastBatchSummary.submitted} Submitted · {view.lastBatchSummary.failed} Need Review
+      {!view?.running && view?.lastBatchSummary && <span className="compact-role-meta">{view.workflowMode === "current_role" ? "Last Application" : "Last Batch"}: {view.lastBatchSummary.submitted} Submitted · {view.lastBatchSummary.failed} Need Review
         {!!view.lastBatchSummary.alreadySubmitted && <> · {view.lastBatchSummary.alreadySubmitted} Already Submitted</>}
         {!!view.lastBatchSummary.remainingQueued && <> · {view.lastBatchSummary.remainingQueued} Selected Roles Still Queued</>}
       </span>}
