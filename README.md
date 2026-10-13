@@ -41,6 +41,8 @@ Selected roles are processed in score order after checking available slots. Unse
 
 A live selection counter shows how many slots remain to be covered. It tells you when enough roles are selected and when the selection exceeds available slots. Extra selections are allowed as backups if an application fails. The capacity notice stays visible while you scroll the application queue and is repeated in the confirmation sheet.
 
+**Preparing Batch** loads your selected roles' saved scores. After confirmation, **Checking Submission Capacity** verifies active applications in a temporary tab before applying. This check can take several seconds while Apple loads each submissions page.
+
 ### Apply Strong Matches Automatically
 
 Set **After Ranking** to **Auto Apply Strong Matches**, check **I Allow Strong Match Applications After Ranking**, then click **Scan And Rank**. Applications begin only after the full search finishes successfully. Roles with match concerns remain available for manual review.
@@ -72,4 +74,4 @@ Small **?** buttons explain controls. Expand a role to see its details; opening 
 
 Resume and job data are saved on your device. AI features send the PDF or relevant resume and job information to OpenAI using your key. See [Privacy](PRIVACY.md) and [Storage Details](docs/storage.md).
 
-After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`. The experimental Apple CLI shares the core logic; the extension is the primary workflow.
+After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`.

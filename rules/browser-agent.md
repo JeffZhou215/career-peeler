@@ -137,7 +137,7 @@ tenant's parent-category path.
 ## Known-site workflow (`content.js`) is a different risk tier
 
 The three tuned sites get a multi-step "click Continue, wait, repeat" loop with retry/attempt caps
-(`runApplicationWorkflow` in both `background.js` and its `cli/orchestrator.js` port). This is
+(`runApplicationWorkflow` in `background.js`). This is
 deliberately **not** shared with arbitrary generic sites - chaining multi-step navigation across a
 never-seen site is materially riskier than doing it on the three well-understood ones. Workday is the
 one explicit generic-layer exception: only candidate-facing Workday hosts may repeat the generic sweep

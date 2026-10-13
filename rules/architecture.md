@@ -8,7 +8,7 @@ Apple Careers is the only supported employer. The React/Vite side panel has Jobs
 - lib/appleSubmissionSync.js observes confirmed applications and reconciles counts without interrupting workflows.
 - lib/appleJobStore.js supplies the shared IndexedDB job store, automatic transactional migration and cross-context change notifications. Use it for job data in both background and side panel; content scripts must not access IndexedDB directly because their database origin would belong to Apple.
 - lib/jobRanking.js supplies pure ranking and capacity helpers.
-- lib/core.js supplies pure profile, prompt, and LLM helpers shared with the experimental Apple CLI. Never add Chrome APIs or DOM dependencies here.
+- lib/core.js supplies pure profile, prompt, and LLM helpers for the extension. Never add Chrome APIs or DOM dependencies here.
 
 The service worker and content scripts remain classic, unbundled scripts. Vite bundles only src/sidepanel and the local PDF parser/worker. Keep both SITE_CONFIGS copies and both profile normalization copies in sync.
 

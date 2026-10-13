@@ -11,6 +11,7 @@ export function useUserProfile() {
   const [loaded, setLoaded] = useState(false);
   const profileRef = useRef(profile);
   const saveQueueRef = useRef(Promise.resolve());
+  const profileDirtyRef = useRef(false);
   profileRef.current = profile;
 
   useEffect(() => {
@@ -56,10 +57,15 @@ export function useUserProfile() {
     // completing while resume extraction finishes). Serialize them so each merge sees the previous
     // update and storage writes cannot complete out of order and erase unrelated fields.
     const operation = saveQueueRef.current.catch(() => undefined).then(async () => {
+      // Action callers only need pending edits flushed; rewriting the PDF triggers
+      // unrelated storage listeners and large ranking refreshes before every action.
+      if (!Object.keys(updates).length && !profileDirtyRef.current) return profileRef.current;
       const next = normalizeProfile({ ...profileRef.current, ...updates });
       profileRef.current = next;
       setProfile(next);
+      profileDirtyRef.current = true;
       await chrome.storage.local.set({ [USER_PROFILE_KEY]: next });
+      profileDirtyRef.current = false;
       return next;
     });
 

@@ -20,7 +20,7 @@ that.
 
 - No test framework - `tests/*.test.js` are hand-written Node scripts run via `node tests/x.test.js`,
   wired together in `package.json`'s `test` script. Run `npm test` (all suites) and `npm run check`
-  (`node --check` syntax validation on every server/content/CLI file, plus `vite build`) before calling
+  (`node --check` syntax validation on background, content and shared library files, plus `vite build`) before calling
   a change done.
 - `tests/content.test.js` / `tests/genericAutofill.test.js` execute the **real source files** inside a
   hand-rolled `vm.createContext` sandbox (mirrors `chrome.scripting.executeScript`'s injection

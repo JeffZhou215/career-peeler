@@ -1327,7 +1327,7 @@ async function advanceAppleSubmittedHistoryPage() {
   return { advanced: true, page: await waitForAppleSubmittedHistoryPage(page.pageIndex + 1, page.roles[0]?.jobId) };
 }
 
-async function collectAllAppleSubmittedHistoryPages() {
+async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true } = {}) {
   const startingPage = collectCurrentAppleSubmittedHistoryPage();
   if (startingPage.withdrawalConfirmationOpen) {
     throw new Error("Resolve Apple's withdrawal confirmation before refreshing submissions.");
@@ -1340,7 +1340,7 @@ async function collectAllAppleSubmittedHistoryPages() {
       if (page.pageIndex !== page.pageCount || pages.length !== page.pageCount) {
         throw new Error("Apple's submissions pagination changed before every page could be refreshed.");
       }
-      await goToAppleSubmittedHistoryPage(1);
+      if (restoreFirstPage) await goToAppleSubmittedHistoryPage(1);
       return { pages, pageCount: page.pageCount };
     }
     const next = await advanceAppleSubmittedHistoryPage();
@@ -4422,7 +4422,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
-    collectAllAppleSubmittedHistoryPages()
+    collectAllAppleSubmittedHistoryPages({ restoreFirstPage: message.restoreFirstPage !== false })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not refresh all Apple submissions." }));
     return true;

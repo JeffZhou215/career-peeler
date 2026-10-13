@@ -6,7 +6,6 @@ Automated release checks:
 
 ```bash
 npm test
-npm run test:cli
 npm run check
 ```
 
@@ -261,4 +260,4 @@ npm run check
   - Steps: Review every fixed required application-answer policy with each invited tester before enabling auto-apply.
   - Expected: Auto-apply is not used by a tester whose real answers differ. General distribution remains blocked until these answers are configurable.
 - [ ] **C-09: Final automated checks**
-  - Expected: `npm test`, `npm run test:cli`, and `npm run check` all pass against the exact source used to build the ZIP.
+  - Expected: `npm test` and `npm run check` all pass against the exact source used to build the ZIP.
