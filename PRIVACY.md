@@ -25,7 +25,7 @@ Saved gender, race/ethnicity, veteran, and disability answers are resolved local
 
 Confirmed application actions can fill required answers and click Continue and Submit. Reviewed queue application requires acknowledgement, and automatic mode requires explicit permission before the full filtered scan starts. The active submission count is checked before applying. Known failures before submission are skipped; unconfirmed submission outcomes pause the queue.
 
-Confirmed withdrawal batches click Apple's Withdraw and Proceed actions sequentially. Withdrawals are irreversible and prevent reapplication. Starred roles and job 200654506 are protected.
+Confirmed withdrawal batches click Apple's Withdraw and Proceed actions sequentially. Withdrawals are irreversible and prevent reapplication. Roles marked as protected cannot be selected for batch withdrawal.
 
 Detected submission success and returning to Your Roles may refresh the local count without another click. Passive reconciliation reads submissions in a background tab and does not run during ranking, applying, or withdrawing.
 

@@ -1,64 +1,71 @@
-# Career Peeler — Apple Careers
+# Career Peeler
 
-An unofficial Apple Careers extension with an iOS-inspired side panel: **Jobs**, **Submissions**, and **Setup**.
+An unofficial Chrome extension for Apple Careers. Upload your resume, rank filtered jobs, choose which ones to apply for, and review your existing submissions.
 
-## Setup
+![UI guide showing the Setup, Jobs, and Submissions tabs](docs/images/ui-guide.png)
 
-1. Upload a text-based PDF resume in Setup. Full text is parsed on your device and saved in Chrome local storage. An existing saved PDF is parsed automatically after upgrading.
-2. Enable LLM Matching, enter your OpenAI API key, and choose Test API Key. The model remains configurable.
-3. Review your experience setting and required application answers. The LLM extracts your candidate profile directly from the PDF; full parsed text is also used as matching evidence when available.
+*Illustration of the extension's controls. Roles and counts are examples.*
 
-Image-only PDFs use the LLM-extracted profile for matching. The PDF, parsed text, and extracted profile stay in the existing profile record; uploading a different PDF invalidates stale text and profile evidence.
+## Install
 
-## Jobs
-
-Open an Apple search with your filters, then choose Scan And Rank. Every search page is read, and full descriptions, responsibilities, minimum qualifications, and preferred qualifications are cached. Local matching provides evidence; LLM matching assesses responsibilities, substantive minimum qualifications, level, and domain. Routine coding-assistant usage is neutral and does not affect scores or block matching; developing production agent systems remains a technical requirement. Match explanations and concern lists are expandable.
-
-- **Review Then Apply:** review ranked jobs and queue Top N or selected jobs. In Application Queue, check the roles you want to apply for, choose Apply Selected, then review and confirm that batch. All roles start unchecked.
-- **Auto Apply Strong Matches:** explicitly allow submission, then scan the complete filtered search before applying its highest-ranked strong matches. Jobs with concerns remain available for review. A stopped or failed scan never starts automatic applications.
-- **Resume Scan:** continue a partial filter scan from its saved page, reusing valid scores. Keep the same filter open; changing the resume or matching settings starts a fresh scan.
-
-Before applying, the extension verifies all active Apple submissions and limits submissions to 50 active applications. Additional jobs stay queued. Apple may exempt some roles from its own cap, so this is a conservative target. Previously applied or withdrawn jobs are excluded. Unknown submission outcomes reserve a slot and pause the queue; known failures before submission are logged and skipped. Activity stores failed job links, reasons, last steps, and times.
-
-Workflow tabs stay in the Chrome window where the run started.
-
-Ranked Jobs is one list with views for Top Matches, Excluded Or Unscored, and Saved Scores To Update. Selected jobs enter one Application Queue. Match concerns stay inside each role; application failures and job links stay in Activity.
-
-Application Queue has Select All and Clear Selection controls. With a search active, Select All Visible adds only the matching roles; a count identifies selected roles hidden by the search. The confirmation sheet lists only selected roles and acknowledges only their concerns. The worker validates the selected IDs and assessment before applying, processes them in score order, and leaves other roles queued. Selected roles beyond available capacity also stay queued. Changing the batch, resume or assessment requires another review.
-
-Each role list expands one role at a time. Opening another role closes the previous role and its inner details. Ranked Jobs and Application Queue have independent disclosure groups; nested Match Details, Local Resume Match, Match Concerns and Fit Evidence expand within their own role. Chrome 120 or newer is required for the native accordion behavior.
-
-## Local Job Database
-
-Descriptions, matching scores, rankings, search checkpoints, submission snapshots, the application queue, application history and activity are stored in the extension's IndexedDB database, `CareerPeelerJobs`. Records are stored individually by collection and job ID. Scan progress updates only the changed job and filter checkpoint; cached descriptions are read by job ID.
-
-The first load automatically migrates the existing job data from Chrome local storage in a single database transaction. The original job keys are removed only after the committed migration marker is read back. If migration fails, the source data remains available for a retry after reloading. Saved scores, queue statuses, withdrawal protection and scan checkpoints are retained.
-
-The profile, PDF resume, parsed resume text, API key and small live status records remain in Chrome storage. `unlimitedStorage` covers the local cache and IndexedDB. Interrupted scans show a warning and retain their saved checkpoint. Storage write failures have a separate session status so they can still be reported when the database cannot save more data. Both storage areas stay on the device; uninstalling the extension removes them.
-
-## Submissions
-
-Open Your Roles → Submissions → Active, then Scan And Match All. Results appear and are saved page by page, with lowest-fit unprotected roles first. Stopping or an OpenAI quota failure preserves usable saved results.
-
-Sync Submissions updates the active list and count without LLM rescoring. It opens a temporary background tab in the same Chrome window and closes that tab when finished, including after errors. Your current tab and search filters remain in place. Existing matching scores are retained, and new roles remain unscored until matched. Saved results load immediately when the panel opens.
-
-Search by title or job ID, select specific roles, and confirm the withdrawal sheet. Starred roles, unknown star status, and role **200654506** are protected. Withdrawal re-finds each job after Apple changes pagination or returns to page one. Every successful withdrawal updates the saved list.
-
-Detected manual submissions update the application ledger. Returning to Your Roles triggers a background reconciliation when no workflow is running. The last verified count is available from its help button; counts are verified again before queue application.
-
-## Build And Load
+Requires Chrome 120 or newer and your own OpenAI API key.
 
 ```sh
 npm install
 npm run build
 ```
 
-Load `dist/` through Chrome → Extensions → Developer Mode → Load Unpacked. Reload the extension after rebuilding. Saved Apple data is retained by the same Chrome extension installation.
+In Chrome, open **Extensions → Developer Mode → Load Unpacked** and select `dist/`. Click the Career Peeler extension icon to open its side panel. Sign in to [Apple Careers](https://jobs.apple.com/).
 
-Only the React side panel is bundled. `background.js`, `content.js`, and `lib/` remain classic scripts copied into `dist/`. The local PDF parser and worker are bundled with the extension; no remote scripts are loaded.
+## Start With Setup
 
-## Scope And Privacy
+1. Open **Setup → Your Resume → Upload Resume** and choose a PDF.
+2. Under **AI Matching**, enable **LLM Matching**, enter your OpenAI API key, choose a model, and click **Test API Key**.
+3. Click **Extract Profile From Resume** if the profile is not ready. Review the extracted profile and **Parsed Resume Text**.
+4. Expand **Application Profile** and check your experience, required application answers, work authorization, and sponsorship settings.
 
-Apple Careers is the sole supported employer. TikTok, ByteDance, generic autofill, and Workday automation are removed. Host access is restricted to Apple Careers and the OpenAI API. See [PRIVACY.md](PRIVACY.md).
+## Find And Apply For Jobs
 
-The Apple CLI remains experimental and shares the pure core logic. The browser extension is the primary workflow.
+In your Apple Careers tab, set the search filters you want. Then open the extension's **Jobs** tab.
+
+### Choose Roles Yourself
+
+1. Set **After Ranking** to **Review Then Apply**, then click **Scan And Rank**. It ranks the entire filtered search before you apply.
+2. In **Ranked Jobs**, expand a role to inspect its match details and evidence. Check specific roles and click **Queue Selected**, or set **Top** and click **Queue Top N**.
+3. Expand **Application Queue**. Check the roles you want to apply for—each starts unchecked. Use **Select All** or **Clear Selection** as needed.
+4. Click **Apply Selected (N)**. The confirmation sheet lists only those roles. Review any concerns, allow submission, then click **Confirm And Apply (N)**.
+
+Selected roles are processed in score order after checking available slots. Unselected roles and roles beyond available capacity stay queued. Adding a role to the queue does not submit an application.
+
+### Apply Strong Matches Automatically
+
+Set **After Ranking** to **Auto Apply Strong Matches**, check **I Allow Strong Match Applications After Ranking**, then click **Scan And Rank**. Applications begin only after the full search finishes successfully. Roles with match concerns remain available for manual review.
+
+The header shows **Submitted**, **Open**, and **Queued** counts. The extension uses a conservative target of 50 active submissions and verifies the count before applying.
+
+## Review Existing Submissions
+
+Open **Submissions** in the extension.
+
+| Button | What It Does |
+| --- | --- |
+| **Sync Submissions** | Updates saved submissions and the count without new AI matching. Uses a temporary background tab, keeping your current search in place. |
+| **Scan And Match All** | Reads all submission pages and scores roles against your resume. Reviewable roles appear with the lowest fit first. |
+
+Use **Find Job ID Or Title** to locate a role. Check the applications you want to withdraw, click **Review Withdrawal**, and review the confirmation sheet before continuing. Roles shown under **Protected Roles** cannot be selected.
+
+**Apple withdrawals cannot be undone, and you cannot reapply for a withdrawn role.**
+
+## When Something Stops
+
+- **Interrupted scan:** use **Resume Scan** with the same search filters. Saved results remain available, and valid cached scores are reused.
+- **Failed application:** expand **Activity** for the job link, reason, and last step. Known failures before submission are skipped; an unknown submission outcome pauses the batch for review.
+- **Changed submissions:** use **Sync Submissions** to refresh without matching again. Detected manual applications also update the count, which is checked again before applying.
+
+Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.
+
+## Data And Development
+
+Resume and job data are saved on your device. AI features send the PDF or relevant resume and job information to OpenAI using your key. See [Privacy](PRIVACY.md) and [Storage Details](docs/storage.md).
+
+After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`. The experimental Apple CLI shares the core logic; the extension is the primary workflow.
