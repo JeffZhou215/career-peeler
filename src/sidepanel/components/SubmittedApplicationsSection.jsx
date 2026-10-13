@@ -1,5 +1,5 @@
 import { jobStore } from "../lib/jobStore";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
@@ -23,6 +23,7 @@ function rankSubmittedRoles(roles) {
 }
 
 export function SubmittedApplicationsSection({ profile, setStatusMessage, embedded = false }) {
+  const roleGroupId = useId();
   const [roles, setRoles] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -357,7 +358,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     const protectedLabel = String(role.jobId).split("-")[0] === "200654506"
       ? "Interview In Progress · Protected"
       : role.favorite === true ? "Starred · Protected" : "Star Status Unknown · Protected";
-    return <CompactRoleCard key={role.jobId} role={role}
+    return <CompactRoleCard key={role.jobId} role={role} disclosureGroup={`${roleGroupId}-submissions`}
       status={protectedFromBatch ? protectedLabel : role.submittedDate ? `Submitted ${role.submittedDate}` : "Submitted"}
       selectable={!protectedFromBatch} selected={selectedIds.includes(role.jobId)}
       disabled={busy || confirmationOpen} onSelect={() => toggleRole(role.jobId)}>

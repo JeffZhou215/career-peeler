@@ -1,12 +1,13 @@
 import { jobStore } from "../lib/jobStore";
 import { Sheet } from "./Sheet";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
 import { getActiveTab, formatRelativeTime } from "../lib/format";
 
 export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange, embedded = false, onOpenSetup }) {
+  const roleGroupId = useId();
   const [view, setView] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [applyOpen, setApplyOpen] = useState(false);
@@ -124,11 +125,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
             : latestSearch?.complete && /rank/i.test(view?.phase || "") ? "Ranking Complete"
               : view?.phase ? "Rankings Saved" : "Ready To Rank";
 
-  function jobCard(job) {
+  function jobCard(job, disclosureGroup) {
     const status = job.stale ? "Saved Score · Update Required" : ["needs_review", "uncertain", "applying"].includes(job.queueStatus) ? "Application Needs Review"
       : job.queueStatus === "queued" ? job.eligible ? "Queued" : "Queued · Match Concerns"
         : job.breakdown ? job.eligible ? "Strong Match" : "Match Concerns" : "Excluded Or Unscored";
-    return <CompactRoleCard key={job.jobId} role={job} status={status}
+    return <CompactRoleCard key={job.jobId} role={job} status={status} disclosureGroup={disclosureGroup}
       selectable={!job.stale && job.queueStatus !== "queued" && Boolean(job.breakdown) && !["needs_review","uncertain","applying"].includes(job.queueStatus)}
       selected={selectedIds.includes(job.jobId)} disabled={busy || view?.running}
       actions={job.queueStatus === "queued" && <button type="button" className="secondary"
@@ -145,10 +146,10 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         <HelpTooltip label="Fit Evidence" text="Scores weigh responsibilities (40%), minimum qualifications (35%), level (15%) and domain (10%). Strong matches have at least 80 overall, strong individual scores, high confidence and verified substantive minimum qualifications. Routine coding-assistant usage is not scored or blocking. Other scored jobs can also be queued and applied after you acknowledge their match concerns." />
       </summary><div className="compact-fold-body">
         <div className="score-breakdown">{Object.entries(job.breakdown).map(([key, value]) => <span key={key}>{key.charAt(0).toUpperCase() + key.slice(1)} <strong>{value}</strong></span>)}</div>
-        {(job.evidence || []).map((item, index) => <div key={index}>
+        {(job.evidence || []).map((item, index) => <div className="evidence-item" key={index}>
           <p><strong>Role:</strong> {item.job_quote}</p><p><strong>Candidate Evidence:</strong> {item.resume_quote}</p>
         </div>)}
-        {(job.minimumChecks || []).map((item, index) => <div key={`minimum-${index}`}>
+        {(job.minimumChecks || []).map((item, index) => <div className="evidence-item" key={`minimum-${index}`}>
           <strong>{job.neutralQualifications?.some(qualification => qualification.id === Number(item.id)) ? "Coding Workflow · Not Scored" : `Minimum Qualification (${item.status})`}</strong><p>{item.requirement_quote}</p>
           {item.resume_quote && <p><strong>Candidate Evidence:</strong> {item.resume_quote}</p>}
         </div>)}
@@ -214,13 +215,15 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     </select>
     <input className="compact-search" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find Job ID Or Title" aria-label="Find Ranked Jobs By Job ID Or Title" />
     {listView === "stale" && !!view?.staleCount && <p className="muted">Scan And Rank to update these scores against your current resume and matching settings.</p>}
-    {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(jobCard)}</ul> : <p className="muted">{search ? "No jobs match this search in the selected view."
+    {visible.length ? <ul className="submitted-role-list compact-role-list">{visible.map(job => jobCard(job, `${roleGroupId}-ranked`))}</ul> : <p className="muted">{search ? "No jobs match this search in the selected view."
       : listView === "excluded" ? "No excluded or unscored jobs."
         : listView === "stale" ? "No saved scores need updating." : "No ranked jobs yet."}</p>}
-    <details className="compact-fold" open={queueOpen || undefined} onToggle={(event) => setQueueOpen(event.currentTarget.open)}><summary>Application Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
+    <details className="compact-fold" open={queueOpen} onToggle={(event) => {
+      if (event.target === event.currentTarget) setQueueOpen(event.currentTarget.open);
+    }}><summary>Application Queue <span className="function-meta">{view?.queued?.length || 0} Jobs</span>
       <HelpTooltip label="Application Queue" text="This is the only application queue. Expand chosen roles to review evidence or remove them. Review And Apply confirms this batch, acknowledges any match concerns and submits jobs in score order until the 50-submission target. Extra jobs stay queued." /></summary>
       <div className="compact-fold-body">
-        {view?.queued?.length ? <ul className="submitted-role-list compact-role-list">{view.queued.filter(matchesSearch).map(jobCard)}</ul> : <span>No jobs queued.</span>}
+        {view?.queued?.length ? <ul className="submitted-role-list compact-role-list">{view.queued.filter(matchesSearch).map(job => jobCard(job, `${roleGroupId}-queue`))}</ul> : <span>No jobs queued.</span>}
       </div>
     </details>
     <div className="compact-actions queue-actions">

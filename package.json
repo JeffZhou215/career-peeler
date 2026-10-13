@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node tests/content.test.js && node tests/background.test.js && node tests/core.test.js && node tests/submittedWithdrawals.test.mjs && node --test tests/jobRanking.test.js",
+    "test": "node tests/content.test.js && node tests/background.test.js && node tests/core.test.js && node tests/submittedWithdrawals.test.mjs && node --test tests/jobRanking.test.js && node --test tests/roleCard.test.mjs",
     "test:cli": "node tests/cli/scan-flow.test.js",
     "check": "node --check content.js && node --check background.js && node --check lib/core.js && node --check lib/jobRanking.js && node --check lib/appleJobStore.js && node --check lib/appleRankingWorker.js && node --check lib/appleSubmissionSync.js && node --check cli/store.js && node --check cli/browser.js && node --check cli/orchestrator.js && node --check cli/index.js && vite build"
   },

@@ -1,8 +1,14 @@
 import { HelpTooltip } from "./HelpTooltip";
 
-export function CompactRoleCard({ role, status, selectable = false, selected = false, disabled = false, onSelect, actions, children }) {
+export function CompactRoleCard({ role, status, disclosureGroup, selectable = false, selected = false, disabled = false, onSelect, actions, children }) {
+  function handleToggle(event) {
+    if (event.target !== event.currentTarget || event.currentTarget.open) return;
+    // Closing a role also resets its inner sections, including when the browser
+    // closes it automatically after another role in the named group opens.
+    for (const section of event.currentTarget.querySelectorAll("details[open]")) section.open = false;
+  }
   return <li className="compact-role">
-    <details>
+    <details name={disclosureGroup} className="compact-role-disclosure" onToggle={handleToggle}>
       <summary className="compact-role-heading">
         {selectable && <input type="checkbox" checked={selected} disabled={disabled}
           aria-label={`Select ${role.title}, Job ID ${role.jobId}`}

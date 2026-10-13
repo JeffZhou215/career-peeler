@@ -24,6 +24,8 @@ Workflow tabs stay in the Chrome window where the run started.
 
 Ranked Jobs is one list with views for Top Matches, Excluded Or Unscored, and Saved Scores To Update. Selected jobs enter one Application Queue. Match concerns stay inside each role; application failures and job links stay in Activity.
 
+Each role list expands one role at a time. Opening another role closes the previous role and its inner details. Ranked Jobs and Application Queue have independent disclosure groups; nested Match Details, Local Resume Match, Match Concerns and Fit Evidence expand within their own role. Chrome 120 or newer is required for the native accordion behavior.
+
 ## Local Job Database
 
 Descriptions, matching scores, rankings, search checkpoints, submission snapshots, the application queue, application history and activity are stored in the extension's IndexedDB database, `CareerPeelerJobs`. Records are stored individually by collection and job ID. Scan progress updates only the changed job and filter checkpoint; cached descriptions are read by job ID.
