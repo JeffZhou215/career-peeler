@@ -52,6 +52,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       const retained = ids.filter(id => queuedIds.has(id));
       return retained.length === ids.length ? ids : retained;
     });
+    const rankedIds = new Set(view.candidates.filter(job => job.queueStatus !== "queued").map(job => job.jobId));
+    setSelectedIds(ids => {
+      const retained = ids.filter(id => rankedIds.has(id));
+      return retained.length === ids.length ? ids : retained;
+    });
   }, [view]);
   useEffect(() => {
     if (!initializedTop.current && view?.capacity?.known) {
@@ -64,8 +69,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     // Keep the displayed draft as text so clearing or replacing digits is possible.
     // Normalize only on commit; an empty/invalid draft restores the last chosen value.
     const parsed = Number(topNDraft);
-    const minimum = Math.max(1, view?.capacity?.remaining || 0);
-    const requestedTopN = Math.min(1000, Math.max(minimum,
+    const requestedTopN = Math.min(1000, Math.max(1,
       Math.floor(topNDraft.trim() && Number.isFinite(parsed) ? parsed : topN)));
     setTopN(requestedTopN);
     setTopNDraft(String(requestedTopN));
@@ -83,6 +87,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       const response = await chrome.runtime.sendMessage({ type: type === "APPLE_CAREERS_RESUME_JOB_RANKING" ? "APPLE_CAREERS_START_JOB_RANKING" : type, userProfile: savedProfile, topN: requestedTopN,
         reviewAcknowledgement: reviewedQueueToken, tab,
         selectedIds: type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? applicationBatch?.jobs.map(job => String(job.jobId)) : selectedIds,
+        candidateIds: type === "APPLE_CAREERS_QUEUE_TOP_JOBS" ? visible.map(job => String(job.jobId)) : undefined,
         batchToken: type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? applicationBatch?.batchToken : undefined,
         resume: type === "APPLE_CAREERS_RESUME_JOB_RANKING",
         autoApply: savedProfile.afterRanking === "auto" });
@@ -127,7 +132,6 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   }, [view, onSummaryChange]);
 
   const capacity = view?.capacity;
-  const n = Math.max(topN || 50, capacity?.remaining || 0);
   const jobs = [...new Map([...(view?.ranked || []), ...(view?.candidates || [])]
     .map((job) => [String(job.jobId), job])).values()].filter((job) => job.queueStatus !== "queued").sort((a, b) => b.score - a.score);
   const search = query.trim().toLowerCase();
@@ -135,8 +139,9 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const listJobs = listView === "excluded" ? view?.excludedMatches || []
     : listView === "stale" ? view?.staleMatches || [] : jobs;
   const visible = listJobs.filter(matchesSearch);
+  const n = Math.min(visible.length, topN, capacity?.known ? capacity.remaining : topN);
   const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
-  const canQueue = listView === "ranked" && !!view?.candidates?.length;
+  const canQueue = listView === "ranked" && (selectedIds.length > 0 || n > 0);
 
   const visibleQueued = (view?.queued || []).filter(matchesSearch);
   const selectedQueued = (view?.queued || []).filter(job => selectedQueueIds.includes(job.jobId));
@@ -238,7 +243,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       <div className="compact-fold-body">
         <div className="compact-list-heading">
           <label className="field-label" htmlFor="ranked-jobs-view">View</label>
-          {listView === "ranked" && <label className="top-matches-control">Top <input type="number" min={Math.max(1, capacity?.remaining || 0)} max="1000" step="1" value={topNDraft} aria-label="Top Matches"
+        {listView === "ranked" && <label className="top-matches-control">Top <input type="number" min="1" max="1000" step="1" value={topNDraft} aria-label="Top Matches"
             onChange={(event) => setTopNDraft(event.target.value)} onBlur={commitTopN}
             onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>}
         </div>

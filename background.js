@@ -3257,7 +3257,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_START_JOB_RANKING") {
         sendResponse(await startAppleJobRanking(message.tab, message.userProfile, { topN: message.topN, resume: message.resume, autoApply: message.autoApply }));
       } else if (message.type === "APPLE_CAREERS_QUEUE_TOP_JOBS") {
-        sendResponse(await queueTopAppleJobs(message.userProfile, message.topN, message.selectedIds));
+        sendResponse(await queueTopAppleJobs(message.userProfile, message.topN, message.selectedIds, message.candidateIds));
       } else if (message.type === "APPLE_CAREERS_REMOVE_QUEUED_JOB") {
         sendResponse(await removeQueuedAppleJob(message.jobId));
       } else if (message.type === "APPLE_CAREERS_PREPARE_APPLICATION_BATCH") {
