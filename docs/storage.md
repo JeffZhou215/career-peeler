@@ -7,6 +7,7 @@ Career Peeler stores data inside its Chrome extension installation.
 | PDF resume, parsed text, extracted profile, settings, required application answers, API key | Chrome local storage, in `appleCareersUserProfile` |
 | Job descriptions, scores, filter checkpoints, submission snapshots, queue, application history, activity and failure logs | IndexedDB, in `CareerPeelerJobs` |
 | Small database error reports | Chrome session storage |
+| Ranked Jobs Top setting, search text and View filter | Chrome local storage, in `appleCareersRankingView` |
 
 Readable PDF text is extracted locally with the bundled PDF.js parser. OpenAI extracts the structured profile from the PDF. Matching uses current resume text when available and the extracted profile otherwise. Replacing the PDF invalidates stale resume evidence.
 

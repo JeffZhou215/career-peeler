@@ -70,6 +70,8 @@ Use **Find Job ID Or Title** to locate a role. Check the applications you want t
 
 Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.
 
+Reloading restores saved rankings, your Top setting, search text, and View filter. It does not start a scan or add jobs to Application Queue. Ranked Jobs draws from saved scores across scanned filters; lower-ranked saved roles can become visible as higher-ranked roles are applied or withdrawn.
+
 ## Data And Development
 
 Resume and job data are saved on your device. AI features send the PDF or relevant resume and job information to OpenAI using your key. See [Privacy](PRIVACY.md) and [Storage Details](docs/storage.md).

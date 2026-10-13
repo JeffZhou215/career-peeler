@@ -7,6 +7,8 @@ import { CompactRoleCard } from "./CompactRoleCard";
 import { SelectionCapacitySummary } from "./SelectionCapacitySummary";
 import { getActiveTab, formatRelativeTime } from "../lib/format";
 
+const RANKING_VIEW_KEY = "appleCareersRankingView";
+
 export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange, embedded = false, onOpenSetup }) {
   const roleGroupId = useId();
   const [view, setView] = useState(null);
@@ -19,17 +21,48 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const [topNDraft, setTopNDraft] = useState("50");
   const [query, setQuery] = useState("");
   const [listView, setListView] = useState("ranked");
+  const [viewPreferencesLoaded, setViewPreferencesLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
   const [error, setError] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
   const [rankedOpen, setRankedOpen] = useState(true);
   const [reviewedQueueToken, setReviewedQueueToken] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    chrome.storage.local.get(RANKING_VIEW_KEY).then(stored => {
+      if (cancelled) return;
+      const saved = stored[RANKING_VIEW_KEY] || {};
+      if (Number.isInteger(saved.topN) && saved.topN >= 1 && saved.topN <= 1000) {
+        initializedTop.current = true;
+        setTopN(saved.topN); setTopNDraft(String(saved.topN));
+      }
+      if (typeof saved.query === "string") setQuery(saved.query);
+      if (["ranked", "excluded", "stale"].includes(saved.listView)) setListView(saved.listView);
+    }).catch(console.error).finally(() => { if (!cancelled) setViewPreferencesLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!viewPreferencesLoaded) return;
+    chrome.storage.local.set({ [RANKING_VIEW_KEY]: { topN: initializedTop.current ? topN : null, query, listView } }).catch(console.error);
+  }, [viewPreferencesLoaded, topN, query, listView]);
+
   const refresh = useCallback(async (requestedTopN = topN) => {
-    const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: requestedTopN });
-    if (response?.ok) setView(response.data);
+    // Restore the view before fetching; a default Top 50 request can expose
+    // lower-ranked cached roles for a moment after every panel reload.
+    if (!viewPreferencesLoaded) return;
+    const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: initializedTop.current ? requestedTopN : null });
+    if (response?.ok) {
+      if (!initializedTop.current && response.data.capacity?.known) {
+        initializedTop.current = true;
+        setTopN(response.data.topN); setTopNDraft(String(response.data.topN));
+      }
+      setView(response.data);
+    }
     else setError(response?.error || "Saved jobs could not be loaded.");
-  }, [profile, topN]);
+  }, [profile, topN, viewPreferencesLoaded]);
 
   useEffect(() => {
     refresh().catch(console.error);
@@ -60,19 +93,13 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       return retained.length === ids.length ? ids : retained;
     });
   }, [view]);
-  useEffect(() => {
-    if (!initializedTop.current && view?.capacity?.known) {
-      initializedTop.current = true;
-      const value = Math.max(1, view.capacity.remaining || 50); setTopN(value); setTopNDraft(String(value));
-    }
-  }, [view?.capacity?.known]);
-
   function commitTopN() {
     // Keep the displayed draft as text so clearing or replacing digits is possible.
     // Normalize only on commit; an empty/invalid draft restores the last chosen value.
     const parsed = Number(topNDraft);
     const requestedTopN = Math.min(1000, Math.max(1,
       Math.floor(topNDraft.trim() && Number.isFinite(parsed) ? parsed : topN)));
+    initializedTop.current = true;
     setTopN(requestedTopN);
     setTopNDraft(String(requestedTopN));
     return requestedTopN;
