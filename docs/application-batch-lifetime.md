@@ -17,7 +17,7 @@ The log proves a restart occurred; it does **not** record Chrome's reason for te
 - Keep recovery, capacity verification, exact reviewed identities, and unknown-Submit handling intact. A real restart still pauses for reconciliation; no submission or application step is replayed automatically.
 - Fix a separate confirmed-outcome bookkeeping defect: if the application returned a verified success but a later local journal/ranking write failed, the old catch treated `workflowInvoked` as evidence of an unknown result. Preserve **submitted**, reserve capacity, record **submission_bookkeeping_failed** with `submissionOutcomeUnknown: false`, and pause the remaining batch for synchronization.
 
-For the interrupted batch, use **Sync Submissions**, then review and explicitly select the remaining queued roles. Do not retry the submitted role merely because the old batch summary recorded zero confirmed submissions.
+The subsequent [batch-review reconciliation update](batch-review-reconciliation.md) performs the recovery sync automatically when **Apply Selected** opens the review sheet. Explicit **Sync Submissions** remains available. Review and confirm the remaining queued roles after verification; the old batch summary is not permission to replay a submitted role.
 
 ## Verification
 

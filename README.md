@@ -35,6 +35,8 @@ In your Apple Careers tab, set the search filters you want. Then open the extens
 3. Expand **Application Queue**. Check the roles you want to apply for—each starts unchecked. Use **Select All** or **Clear Selection** as needed.
 4. Click **Apply Selected (N)** below the application queue. The confirmation sheet lists only those roles. Review any concerns, allow submission, then click **Confirm And Apply (N)**.
 
+If an earlier application was interrupted, the review sheet automatically checks Apple submissions first. It shows **Checking Previous Applications…**, offers **Retry Check** if verification fails, and requires your confirmation after a successful check. Submitted or unresolved selected roles require reviewing the selection again.
+
 The scan summary counts jobs found and strong matches in **This Scan**. **Scan Details** shows cached jobs across filters separately. If pagination pauses, reopen the same filter and choose **Resume Scan**; completed scores are kept. A changed resume or filter requires **Scan And Rank**. Partial scans do not start automatic applications.
 
 **Queue Top N** shows how many jobs it can add: the smaller of your Top setting, available results, and open slots. For example, one available result with 13 open slots shows **Queue Top 1**. You can set Top below the number of open slots.

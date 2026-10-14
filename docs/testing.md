@@ -21,6 +21,7 @@ npm run check
 | Safety | Saved answers, Submit caps and unknown outcomes, workflow identity, one synthetic four-stage application, IPC privacy |
 | MV3 Recovery | Durable claims/intent, worker recreation, cancellation, exact identity, late page revocation, reconciliation, reserved unknown outcomes and completed bookkeeping |
 | Application Batch Lifetime | Real multi-role selected batch/session, scoped virtual worker activity, long content replies, timer release/Stop, and confirmed submission bookkeeping failures |
+| Batch Review Recovery | Automatic preflight reconciliation, verified/unknown capacity, retained reservations/selection, single ownership, cancellation, in-sheet Retry and renewed explicit confirmation |
 | Inventory | Confirmed empty versus unknown, pagination, stale counts, later applications and final-withdrawal reconciliation |
 | Submission Sync | Read-only automatic navigation/activation checks, persisted status/throttles, deferred pagination/workflows, interrupted checks, legacy requests, explicit Sync/Analyze, tab reuse/restoration and pre-application capacity checks |
 | Ranking | Complete/partial discovery scope, retained caches, filter drift, restart plan validation, exact identities, manual selection, live applicability, slot limits, reserved outcomes and queue edits |

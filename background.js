@@ -3409,7 +3409,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await removeQueuedAppleJob(message.jobId));
       } else if (message.type === "APPLE_CAREERS_PREPARE_APPLICATION_BATCH") {
         if (sender.tab) throw new Error("Application batches must be reviewed from the extension panel.");
-        sendResponse(await prepareAppleApplicationBatch(message.userProfile, message.selectedIds));
+        sendResponse(await prepareAppleApplicationBatch(message.userProfile, message.selectedIds, message.tab, message.reviewRequestId));
       } else if (message.type === "APPLE_CAREERS_PREPARE_CURRENT_ROLE") {
         if (sender.tab) throw new Error("Review this role from the extension panel.");
         sendResponse(await prepareAppleCurrentRole(message.tabId, message.userProfile));
@@ -3420,7 +3420,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (sender.tab) throw new Error("Application batches must be started from the extension panel.");
         sendResponse(await startAppleJobQueue(message.tab, message.userProfile, message.reviewAcknowledgement, message.selectedIds, message.batchToken));
       } else if (message.type === "APPLE_CAREERS_STOP_JOB_RANKING") {
-        sendResponse(await stopAppleJobRanking());
+        sendResponse(await stopAppleJobRanking(message.reviewRequestId));
       } else if (message.type === "APPLE_CAREERS_START_SCAN") {
         sendResponse(await startScan(message.tab, message.userProfile));
       } else if (message.type === "APPLE_CAREERS_RETRY_ERROR_JOBS") {

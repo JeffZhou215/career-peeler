@@ -28,8 +28,9 @@ async function fixture(options = {}) {
   const gate = deferred();
   const stages = new Map();
   let h;
-  const inventoryPage = { pageIndex: 1, pageCount: 1, roles: [], hasNextPage: false,
-    accountVerified: true, withdrawalConfirmationOpen: false, inventoryState: "confirmed_empty" };
+  const inventoryPage = { pageIndex: 1, pageCount: 1, roles: options.inventoryRoles || [], hasNextPage: false,
+    accountVerified: true, withdrawalConfirmationOpen: false,
+    inventoryState: options.inventoryRoles?.length ? "confirmed" : "confirmed_empty" };
   h = createBackgroundHarness([{ ...sourceTab }], {
     getPlatformInfo: options.getPlatformInfo,
     sendMessage: async (tabId, message) => {
@@ -37,7 +38,10 @@ async function fixture(options = {}) {
       if (message.type === "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE") return { ok: true, data: inventoryPage };
       if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
         if (options.blockCapacity) { entered.resolve(); await gate.promise; }
-        if (options.failCapacity) return { ok: false, error: "Synthetic inventory network failure." };
+        if (options.capacityError) throw new Error(options.capacityError);
+        if (options.failCapacity) return { ok: false,
+          error: typeof options.failCapacity === "string" ? options.failCapacity : "Synthetic inventory network failure." };
+        if (options.capacityResult) return options.capacityResult;
         return { ok: true, data: { pages: [inventoryPage], pageCount: 1 } };
       }
       if (message.type === "APPLE_CAREERS_EXTRACT_JOB") return { ok: true, data: {
@@ -77,8 +81,10 @@ async function fixture(options = {}) {
     h.finished = originalRunner(...args);
     return h.finished;
   };
+  h.prepare = (selectedIds = ids.slice(0, 2), reviewRequestId = null) => h.sandbox.dispatch({
+    type: "APPLE_CAREERS_PREPARE_APPLICATION_BATCH", userProfile: profile, selectedIds, tab: sourceTab, reviewRequestId });
   h.start = async (selectedIds = ids.slice(0, 2)) => {
-    const prepared = await h.sandbox.dispatch({ type: "APPLE_CAREERS_PREPARE_APPLICATION_BATCH", userProfile: profile, selectedIds });
+    const prepared = await h.prepare(selectedIds);
     assert.equal(prepared.ok, true, prepared.error);
     assert.deepEqual([...prepared.data.jobs.map(job => job.jobId)], selectedIds);
     const started = await h.sandbox.dispatch({ type: "APPLE_CAREERS_APPLY_JOB_QUEUE", userProfile: profile,
@@ -87,8 +93,30 @@ async function fixture(options = {}) {
     assert.equal(started.ok, true, started.error);
     return prepared;
   };
-  return Object.assign(h, { stages, entered: entered.promise, unblock: gate.resolve });
+  return Object.assign(h, { stages, inventoryPage, entered: entered.promise, unblock: gate.resolve });
 }
+
+async function interruptedSession(h, { jobId = ids[2], state = "in_progress", cancelled = false } = {}) {
+  const job = h.data.appleJobRanking.jobs[ranking.idOf(jobId)];
+  const sessionId = await h.sandbox.claimAppleApplicationSession([job], {
+    sourceTabId: sourceTab.id, sourceWindowId: sourceTab.windowId });
+  const workflowTab = { id: 7, windowId: 1, status: "complete", active: false,
+    url: `https://jobs.apple.com/app/en-us/apply/${jobId}` };
+  h.tabs.push(workflowTab);
+  await h.sandbox.updateAppleApplicationSession(sessionId, journal => {
+    journal.status = cancelled ? "cancelled" : "paused";
+    journal.stopRequested = cancelled;
+    journal.reconciliationRequired = true;
+    journal.currentJobId = jobId;
+    Object.assign(journal.jobs[jobId], { state, tabId: workflowTab.id, workflowSessionId: sessionId,
+      submissionOutcome: state === "uncertain" ? "unknown" : state === "submitted" ? "confirmed" : "not_attempted",
+      submissionAttemptCount: state === "uncertain" || state === "submitted" ? 1 : 0 });
+  });
+  job.queueStatus = state === "uncertain" ? "uncertain" : state === "submitted" ? "submitted" : "needs_review";
+  return sessionId;
+}
+
+const fullInventoryReads = h => h.calls.messages.filter(message => message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
 
 test("real reviewed multi-role batch completes four stages for each exact selected job and retains the unselected job", async () => {
   const h = await fixture();
@@ -206,4 +234,223 @@ test("worker startup and recovery never acquire worker activity or restart a pau
   assert.equal(h.intervals.size, 0);
   assert.deepEqual(h.calls.intervalDelays, []);
   assert.ok(h.calls.messages.every(message => message.type === "APPLE_CAREERS_REVOKE_WORKFLOW"));
+});
+
+test("preparing a reviewed batch reconciles a paused owner against complete inventory without claiming or applying", async () => {
+  const h = await fixture();
+  const sessionId = await interruptedSession(h);
+  const prepared = await h.prepare();
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.equal(prepared.data.reconciliationPerformed, true);
+  assert.deepEqual([...prepared.data.jobs.map(job => job.jobId)], ids.slice(0, 2));
+  assert.equal(fullInventoryReads(h).length, 1);
+  assert.equal(h.data.appleApplicationWorkflow.id, sessionId, "review does not claim a new application owner");
+  assert.equal(h.data.appleApplicationWorkflow.reconciliationRequired, false);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].reconciliation, "absent");
+  assert.equal(prepared.data.capacity.known, true);
+  assert.equal(prepared.data.capacity.submitted, 0);
+  assert.equal(prepared.data.capacity.remaining, 50);
+  assert.equal(h.data.appleJobRanking.capacitySnapshot.inventoryState, "confirmed_empty");
+  assert.equal(h.stages.size, 0);
+  assert.equal(h.calls.checkpoints.length, 0);
+});
+
+test("an absent uncertain job remains reserved while a different reviewed batch is prepared", async () => {
+  const h = await fixture();
+  const sessionId = await interruptedSession(h, { state: "uncertain" });
+  const prepared = await h.prepare();
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.equal(prepared.data.reconciliationPerformed, true);
+  assert.equal(h.data.appleApplicationWorkflow.id, sessionId);
+  const outstanding = h.data.appleApplicationWorkflow.jobs[ids[2]];
+  assert.equal(outstanding.state, "uncertain");
+  assert.equal(outstanding.submissionOutcome, "unknown");
+  assert.equal(outstanding.reconciliation, "absent");
+  assert.equal(h.data.appleJobRanking.reservations[0].jobId, ids[2]);
+  assert.equal(prepared.data.capacity.submitted, 1);
+  assert.equal(prepared.data.capacity.remaining, 49);
+  assert.equal(h.stages.size, 0);
+});
+
+test("authentication, network, and incomplete preflight inventories retain recovery guards and unknown capacity", async () => {
+  const role = { jobId: "200001234-0836", active: true };
+  for (const options of [{ failCapacity: "Please sign in to Apple Careers before synchronizing." },
+    { capacityError: "Synthetic network failure while reading inventory." },
+    { capacityResult: { ok: true, data: { pages: [{ pageIndex: 1, pageCount: 2, roles: [role], hasNextPage: true,
+      accountVerified: true, withdrawalConfirmationOpen: false, inventoryState: "confirmed" }], pageCount: 2 } } },
+    { capacityResult: { ok: true, data: { pages: [], pageCount: 0 } } }]) {
+    const h = await fixture(options);
+    const sessionId = await interruptedSession(h, { state: "uncertain" });
+    h.data.appleJobRanking.capacitySnapshot = { complete: true, inventoryState: "confirmed", roles: [role],
+      scannedAt: 1, updatedAt: 1 };
+    const prepared = await h.prepare();
+    assert.equal(prepared.ok, false);
+    assert.equal(prepared.errorType, "submission_sync_failed");
+    assert.ok(prepared.error);
+    assert.equal(h.data.appleApplicationWorkflow.id, sessionId);
+    assert.equal(h.data.appleApplicationWorkflow.reconciliationRequired, true);
+    assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].state, "uncertain");
+    assert.equal(h.data.appleJobRanking.capacitySnapshot.inventoryState, "unknown");
+    const capacity = await h.sandbox.appleRankingCapacity(h.data.appleJobRanking);
+    assert.equal(capacity.known, false);
+    assert.equal(capacity.submitted, null, "failed reads cannot fabricate zero applications");
+    assert.equal(h.stages.size, 0);
+    assert.equal(h.calls.checkpoints.length, 0);
+  }
+});
+
+test("concurrent batch preparations cannot acquire duplicate reconciliation work", async () => {
+  const h = await fixture({ blockCapacity: true });
+  const sessionId = await interruptedSession(h);
+  const first = h.prepare();
+  await h.entered;
+  const second = await h.prepare();
+  assert.equal(second.ok, false);
+  assert.match(second.error, /current|running|progress|busy|wait/i);
+  assert.equal(fullInventoryReads(h).length, 1);
+  assert.equal(h.data.appleApplicationWorkflow.id, sessionId);
+  h.unblock();
+  const prepared = await first;
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.equal(prepared.data.reconciliationPerformed, true);
+  assert.equal(fullInventoryReads(h).length, 1);
+  const subsequent = await h.prepare();
+  assert.equal(subsequent.ok, true, subsequent.error);
+  assert.equal(subsequent.data.reconciliationPerformed, false);
+  assert.equal(fullInventoryReads(h).length, 1, "completed reconciliation is not repeated by later review requests");
+  assert.equal(h.stages.size, 0);
+});
+
+test("normal reviewed preparation reads cached capacity without automatically synchronizing", async () => {
+  const h = await fixture();
+  h.data.appleJobRanking.capacitySnapshot = { complete: true, inventoryState: "confirmed_empty", roles: [],
+    scannedAt: 1, updatedAt: 1 };
+  const journalBefore = structuredClone(h.data.appleApplicationWorkflow);
+  const prepared = await h.prepare();
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.notEqual(prepared.data.reconciliationPerformed, true);
+  assert.equal(prepared.data.capacity.known, true);
+  assert.equal(prepared.data.capacity.remaining, 50);
+  assert.equal(fullInventoryReads(h).length, 0);
+  assert.deepEqual(h.data.appleApplicationWorkflow, journalBefore, "reviewing cached roles does not claim workflow ownership");
+  assert.equal(h.stages.size, 0);
+});
+
+test("explicit Stop during batch-preparation reconciliation preserves cancellation and never applies", async () => {
+  const h = await fixture({ blockCapacity: true });
+  const sessionId = await interruptedSession(h, { state: "uncertain" });
+  const pending = h.prepare();
+  await h.entered;
+  await h.sandbox.dispatch({ type: "APPLE_CAREERS_STOP_JOB_RANKING" });
+  h.unblock();
+  const prepared = await pending;
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "stopped_by_user");
+  assert.match(prepared.error, /stop|cancel/i);
+  assert.equal(h.data.appleApplicationWorkflow.id, sessionId);
+  assert.equal(h.data.appleApplicationWorkflow.status, "cancelled");
+  assert.equal(h.data.appleApplicationWorkflow.stopRequested, true);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].state, "uncertain");
+  assert.equal(h.stages.size, 0);
+  assert.equal(h.calls.checkpoints.length, 0);
+});
+
+test("verified absence never authorizes selection of the exact job with an unknown Submit outcome", async () => {
+  const h = await fixture();
+  await interruptedSession(h, { jobId: ids[0], state: "uncertain" });
+  const prepared = await h.prepare(ids.slice(0, 2));
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "submission_outcome_unknown");
+  assert.match(prepared.error, /unknown|uncertain|review|queued|selection|selected/i);
+  assert.equal(fullInventoryReads(h).length, 1);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].state, "uncertain");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionOutcome, "unknown");
+  assert.ok(h.data.appleJobRanking.reservations.some(item => item.jobId === ids[0]));
+  assert.equal(h.stages.size, 0);
+});
+
+test("an inventory-confirmed selected submission requires reselecting the batch rather than silently shrinking it", async () => {
+  const h = await fixture({ inventoryRoles: [{ jobId: ids[0], active: true }] });
+  await interruptedSession(h, { jobId: ids[0], state: "uncertain" });
+  const prepared = await h.prepare(ids.slice(0, 2));
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "batch_review_failed");
+  assert.match(prepared.error, /review|select|queued|already|submitted/i);
+  assert.equal(fullInventoryReads(h).length, 1);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].state, "submitted");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "submitted");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "queued");
+  assert.equal(h.stages.size, 0);
+});
+
+test("a reconciled batch still waits for explicit confirmation and performs mandatory capacity verification before applying", async () => {
+  const h = await fixture();
+  const previousOwner = await interruptedSession(h, { state: "uncertain" });
+  const prepared = await h.prepare();
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.equal(prepared.data.reconciliationPerformed, true);
+  assert.equal(h.stages.size, 0, "automatic reconciliation cannot initiate applications");
+  const started = await h.sandbox.dispatch({ type: "APPLE_CAREERS_APPLY_JOB_QUEUE", userProfile: profile,
+    tab: sourceTab, selectedIds: ids.slice(0, 2), batchToken: prepared.data.batchToken,
+    reviewAcknowledgement: prepared.data.reviewToken });
+  assert.equal(started.ok, true, started.error);
+  await h.finished;
+  assert.equal(fullInventoryReads(h).length, 2, "preparing recovery cannot replace the fresh pre-application capacity check");
+  assert.notEqual(h.data.appleApplicationWorkflow.id, previousOwner);
+  assert.deepEqual([...h.stages.entries()], [[ids[0], 4], [ids[1], 4]]);
+  assert.deepEqual(h.calls.checkpoints, ids.slice(0, 2));
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].state, "uncertain");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].submissionOutcome, "unknown");
+  assert.ok(h.data.appleJobRanking.reservations.some(item => item.jobId === ids[2]));
+  assert.equal((await h.sandbox.appleRankingCapacity(h.data.appleJobRanking)).remaining, 47);
+});
+
+test("review cancellation binds its request identity and a stale cancel cannot stop a later application owner", async () => {
+  const h = await fixture({ blockCapacity: true });
+  const previousOwner = await interruptedSession(h);
+  const pending = h.prepare(ids.slice(0, 2), "review-A");
+  await h.entered;
+  const journalBefore = structuredClone(h.data.appleApplicationWorkflow);
+  const unrelated = await h.sandbox.dispatch({ type: "APPLE_CAREERS_STOP_JOB_RANKING", reviewRequestId: "review-B" });
+  assert.equal(unrelated.ok, true);
+  assert.equal(unrelated.ignored, true);
+  assert.deepEqual(h.data.appleApplicationWorkflow, journalBefore, "a mismatched review cannot revoke the current owner");
+  assert.equal(fullInventoryReads(h).length, 1);
+  assert.equal(h.data.appleJobRanking.running, true, "the matching preflight remains pending");
+  assert.equal(h.stages.size, 0);
+  const cancelled = await h.sandbox.dispatch({ type: "APPLE_CAREERS_STOP_JOB_RANKING", reviewRequestId: "review-A" });
+  assert.equal(cancelled.ok, true);
+  assert.notEqual(cancelled.ignored, true);
+  h.unblock();
+  const prepared = await pending;
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "stopped_by_user");
+  assert.equal(h.data.appleApplicationWorkflow.id, previousOwner);
+  assert.equal(h.data.appleApplicationWorkflow.status, "cancelled");
+  assert.equal(h.data.appleApplicationWorkflow.stopRequested, true);
+  assert.equal(h.stages.size, 0);
+
+  const entered = deferred();
+  const gate = deferred();
+  const send = h.sandbox.chrome.tabs.sendMessage;
+  h.sandbox.chrome.tabs.sendMessage = async (tabId, message) => {
+    if (message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP" && message.expectedJobId === ids[0] &&
+      h.stages.get(ids[0]) === 1) { entered.resolve(); await gate.promise; }
+    return send(tabId, message);
+  };
+  await h.start();
+  await entered.promise;
+  const activeOwner = structuredClone(h.data.appleApplicationWorkflow);
+  assert.notEqual(activeOwner.id, previousOwner);
+  assert.equal(activeOwner.status, "running");
+  const stale = await h.sandbox.dispatch({ type: "APPLE_CAREERS_STOP_JOB_RANKING", reviewRequestId: "review-A" });
+  assert.equal(stale.ok, true);
+  assert.equal(stale.ignored, true);
+  assert.equal(h.run.stopRequested, false, "an old review request cannot cancel a new application run");
+  assert.deepEqual(h.data.appleApplicationWorkflow, activeOwner);
+  gate.resolve();
+  await h.finished;
+  assert.deepEqual([...h.stages.entries()], [[ids[0], 4], [ids[1], 4]]);
+  assert.equal(h.data.appleApplicationWorkflow.status, "completed");
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 2);
 });
