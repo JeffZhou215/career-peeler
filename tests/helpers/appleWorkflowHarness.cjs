@@ -54,7 +54,14 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
   const get = async keys => Object.fromEntries((typeof keys === "string" ? [keys] : keys || Object.keys(data))
     .filter(key => Object.hasOwn(data, key)).map(key => [key, structuredClone(data[key])]));
   const store = { get, set: async updates => Object.assign(data, structuredClone(updates)),
-    remove: async keys => { for (const key of [].concat(keys)) delete data[key]; } };
+    remove: async keys => { for (const key of [].concat(keys)) delete data[key]; },
+    patch: async (key, value) => { data[key] = structuredClone(value); },
+    getMetadata: async key => structuredClone(data[key]),
+    getRecords: async (key, ids, field = null) => {
+      const records = field ? data[key]?.[field] : data[key];
+      return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
+    },
+    putRecords: async (key, records) => { data[key] = { ...data[key], ...structuredClone(records) }; } };
   const sandbox = { URL, console, setTimeout, clearTimeout,
     fetch: async () => { throw new Error("Real network requests are forbidden in workflow tests."); },
     chrome: {

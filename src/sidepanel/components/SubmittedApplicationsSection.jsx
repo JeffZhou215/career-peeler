@@ -385,7 +385,17 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
           roles: (archive.lastCompleteScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)),
           updatedAt: Date.now() }
       : null;
-    if (livePage?.roles?.length) {
+    const confirmedEmpty = livePage?.accountVerified === true && livePage.inventoryState === "confirmed_empty" &&
+      livePage.pageIndex === 1 && livePage.pageCount === 1 && livePage.hasNextPage === false &&
+      livePage.withdrawalConfirmationOpen === false && livePage.roles?.length === 0;
+    if (confirmedEmpty) {
+      for (const saved of [snapshot, completeSnapshot]) {
+        if (saved) Object.assign(saved, { roles: [], complete: true, inventoryState: "confirmed_empty",
+          accountVerified: true, pagesRead: 1, pageCount: 1, warning: null, scannedAt: Date.now(), updatedAt: Date.now() });
+      }
+      for (const key of Object.keys(pages)) delete pages[key];
+      pages[1] = { ...livePage, roles: [], updatedAt: Date.now() };
+    } else if (livePage?.roles?.length) {
       const savedById = new Map((snapshot?.roles || []).map((role) => [String(role.jobId), role]));
       const currentRoles = livePage.roles.filter((role) =>
         role.active !== false && String(role.jobId) !== String(jobId)
@@ -415,6 +425,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       }
       if (ranking.capacitySnapshot) ranking.capacitySnapshot = { ...ranking.capacitySnapshot,
         roles: ranking.capacitySnapshot.roles.filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() };
+      if (confirmedEmpty) {
+        ranking.reservations = [];
+        ranking.capacitySnapshot = { ...(ranking.capacitySnapshot || {}), complete: true,
+          inventoryState: "confirmed_empty", accountVerified: true, roles: [], pagesRead: 1, pageCount: 1,
+          warning: null, scannedAt: Date.now(), updatedAt: Date.now() };
+      }
     }
     await jobStore.set({ ...(ranking ? { appleJobRanking: ranking } : {}), [SAVED_REVIEWS_KEY]: { ...archive, pages,
       ...(snapshot ? { latestScan: snapshot } : {}),

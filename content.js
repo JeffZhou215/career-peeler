@@ -1261,7 +1261,7 @@ function getAppleHistoryPageIndex() {
 }
 
 function assertAppleActiveSubmittedRolesPage() {
-  if (getSiteId() !== "apple" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
+  if (getCurrentUrl().origin !== "https://jobs.apple.com" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
     throw new Error("Apple's active submissions page is unavailable. Sign in again, then open Profile → Your Roles → Submissions → Active.");
   }
   if (!/your active submitted roles/i.test(document.body?.innerText || "")) {
@@ -1271,21 +1271,44 @@ function assertAppleActiveSubmittedRolesPage() {
 
 function collectCurrentAppleSubmittedHistoryPage() {
   assertAppleActiveSubmittedRolesPage();
-  const pageIndex = getAppleHistoryPageIndex();
-  if (pageIndex === null) {
-    throw new Error("Apple's current page number is unavailable. Wait for Your Roles to finish loading, then analyze again.");
+  const session = getSessionRequiredSignal();
+  const busy = Array.from(document.querySelectorAll("[aria-busy='true'], [role='progressbar']")).some(isElementVisible);
+  const error = Array.from(document.querySelectorAll("[role='alert']")).filter(isElementVisible)
+    .some(element => /\b(?:error|failed|failure|unavailable|unable|timed out|something went wrong|try again)\b/i.test(element.innerText || element.textContent || ""));
+  if (session || busy || error) {
+    throw new Error(session || "Apple's submissions inventory is still loading or failed to load. Capacity is unknown; try syncing again.");
   }
   const roles = collectSubmittedRoleCards();
-  if (roles.length === 0) {
-    throw new Error("No submitted role cards were found on the current page. Apple may have signed you out; sign in again and analyze roles.");
-  }
-
   const nextButton = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
+  const previousButton = document.querySelector('#profile-roles-pagination button[aria-label="Previous Page"]');
+  const enabled = button => Boolean(button && !button.disabled && button.getAttribute("aria-disabled") !== "true");
+  const totalText = document.querySelector("[data-autom='paginationTotalPages']")?.textContent?.trim();
+  let pageCount = totalText && /^\d+$/.test(totalText) ? Number(totalText) : null;
+  let pageIndex = getAppleHistoryPageIndex();
+  const empty = roles.length === 0;
+  if (empty) {
+    // Absent cards/pagination alone can be a signed-out or unfinished SPA.
+    // Use the existing total-pages metadata, not guessed empty-state copy.
+    // Zero metadata is normalized to one virtual page for existing consumers.
+    const rawIndex = document.querySelector('#profile-roles-pagination input[type="number"]')?.value;
+    if (pageCount !== 0 || getLoadingSignal() || enabled(nextButton) || enabled(previousButton) ||
+      (rawIndex !== undefined && !/^[01]$/.test(String(rawIndex))) || (pageIndex !== null && pageIndex !== 1)) {
+      throw new Error("Apple has not confirmed an authenticated empty submissions list. Capacity is unknown; sign in and sync again.");
+    }
+    pageIndex = 1;
+    pageCount = 1;
+  } else if (!Number.isInteger(pageCount) || pageCount < 1 || pageCount > 100 || pageIndex === null ||
+    pageIndex > pageCount || enabled(nextButton) !== (pageIndex < pageCount) ||
+    roles.some(role => role.active !== true || !/^\d+(?:-\d+)?$/.test(String(role.jobId || "")))) {
+    throw new Error("Apple's submissions cards or pagination are incomplete. Wait for Your Roles to finish loading and sync again.");
+  }
   return {
     roles,
     pageIndex,
-    pageCount: Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) || 1,
-    hasNextPage: Boolean(nextButton && !nextButton.disabled && nextButton.getAttribute("aria-disabled") !== "true"),
+    pageCount,
+    accountVerified: true,
+    inventoryState: empty ? "confirmed_empty" : "confirmed",
+    hasNextPage: enabled(nextButton),
     withdrawalConfirmationOpen: Boolean(findAppleWithdrawalConfirmationModal())
   };
 }
@@ -1295,14 +1318,15 @@ async function waitForAppleSubmittedHistoryPage(pageIndex, previousFirstJobId, t
   let lastSignature = "";
   let stableReads = 0;
   while (Date.now() < deadline) {
-    const currentIndex = getAppleHistoryPageIndex();
-    if (currentIndex === pageIndex) {
-      const roles = collectSubmittedRoleCards();
-      const signature = roles.map((role) => role.jobId).join("|");
-      stableReads = signature && signature === lastSignature ? stableReads + 1 : 1;
+    let page;
+    try { page = collectCurrentAppleSubmittedHistoryPage(); } catch (_) { stableReads = 0; }
+    if (page?.pageIndex === pageIndex) {
+      const roles = page.roles;
+      const signature = `${page.inventoryState}|${roles.map((role) => role.jobId).join("|")}`;
+      stableReads = signature === lastSignature ? stableReads + 1 : 1;
       lastSignature = signature;
-      if (roles.length && roles[0].jobId !== previousFirstJobId && stableReads >= 3) {
-        return collectCurrentAppleSubmittedHistoryPage();
+      if ((page.inventoryState === "confirmed_empty" || roles[0]?.jobId !== previousFirstJobId) && stableReads >= 3) {
+        return page;
       }
     }
     await delay(300);
@@ -1343,15 +1367,20 @@ async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true } 
     throw new Error("Resolve Apple's withdrawal confirmation before refreshing submissions.");
   }
   let page = await goToAppleSubmittedHistoryPage(1);
+  const expectedPageCount = page.pageCount;
   const pages = [];
   while (pages.length < 100) {
+    if (page.pageCount !== expectedPageCount || page.pageIndex !== pages.length + 1) {
+      throw new Error("Apple's submissions pagination changed during synchronization. Capacity is unknown; sync again.");
+    }
     pages.push(page);
     if (!page.hasNextPage) {
       if (page.pageIndex !== page.pageCount || pages.length !== page.pageCount) {
         throw new Error("Apple's submissions pagination changed before every page could be refreshed.");
       }
       if (restoreFirstPage) await goToAppleSubmittedHistoryPage(1);
-      return { pages, pageCount: page.pageCount };
+      const inventory = { pages, pageCount: page.pageCount };
+      return { ...inventory, ...CareerPeelerApplicationSafety.validateSubmittedHistoryInventory(inventory) };
     }
     const next = await advanceAppleSubmittedHistoryPage();
     if (!next.advanced) break;
@@ -1427,20 +1456,22 @@ async function waitForSubmittedRoleWithdrawal(jobId, title, expectedPageIndex, b
   let stableReads = 0;
   let sawSuccess = false;
   while (Date.now() < deadline) {
-    const pageIndex = getAppleHistoryPageIndex();
-    if (pageIndex === null) {
-      await delay(300);
-      continue;
-    }
     const error = getAppleWithdrawalFailureMessage();
     if (error) return { withdrawn: false, error };
     sawSuccess ||= Boolean(getAppleWithdrawalSuccessMessage(title));
-    const ids = collectSubmittedRoleCards().filter((role) => role.active).map((role) => String(role.jobId));
+    let page;
+    try { page = collectCurrentAppleSubmittedHistoryPage(); } catch (_) {
+      stableReads = 0;
+      await delay(300);
+      continue;
+    }
+    const pageIndex = page.pageIndex;
+    const ids = page.roles.filter((role) => role.active).map((role) => String(role.jobId));
     const signature = `${pageIndex}|${ids.join("|")}`;
     stableReads = signature === lastSignature ? stableReads + 1 : 1;
     lastSignature = signature;
     if (pageIndex !== expectedPageIndex) {
-      if (sawSuccess && ids.length > 0 && stableReads >= 3 && !findAppleWithdrawalConfirmationModal()) {
+      if (sawSuccess && (ids.length > 0 || page.inventoryState === "confirmed_empty") && stableReads >= 3 && !findAppleWithdrawalConfirmationModal()) {
         return { withdrawn: true, pageChangedTo: pageIndex };
       }
       await delay(300);

@@ -5,6 +5,7 @@ const vm = require("node:vm");
 const path = require("node:path");
 const ranking = require("../lib/jobRanking.js");
 const core = require("../lib/core.js");
+const safety = require("../lib/appleApplicationSafety.js");
 
 const resume = "Built Python backend APIs and distributed task queues. Developed LLM-powered developer tooling. Bachelor of Computer Science.";
 const details = { title: "Software Engineer, Agentic Developer Platform",
@@ -20,7 +21,9 @@ const good = { responsibilities: 90, qualifications: 90, level: 90, domain: 90, 
     { job_quote: "Python backend APIs", resume_quote: "Python backend APIs" },
     { job_quote: "LLM-powered developer tooling", resume_quote: "LLM-powered developer tooling" }
   ], reason: "Direct backend and agentic tooling experience; required education is supported." };
-const profile = core.normalizeUserProfile({ resumeProfile: resume, userYearsOfExperience: 1.5,
+const resumeFileDataUrl = "data:application/pdf;base64,synthetic-fixture";
+const profile = core.normalizeUserProfile({ resumeText: resume, resumeFileDataUrl,
+  resumeTextFingerprint: core.fingerprintText(resumeFileDataUrl), userYearsOfExperience: 1.5,
   llmEnabled: true, llmApiKey: "sk-test", llmModel: "gpt-4o", llmApiKeyValidationStatus: "valid",
   llmApiKeyValidatedFingerprint: core.fingerprintText("sk-test"), autoApplyConsent: true,
   eeoGender: "male", eeoRaceEthnicity: ["asian"], eeoVeteranStatus: "not_protected_veteran", eeoDisabilityStatus: "no_current_or_past" });
@@ -114,13 +117,26 @@ function workerHarness() {
   const store = {};
   const calls = { scored: 0, applied: [], removed: [], pages: 0 };
   const mocks = { pages: [], activeRoles: [], live: details, workflow: { ok: true, data: { submitted: true } } };
+  const adapter = {
+    get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(store[key])])),
+    set: async updates => Object.assign(store, structuredClone(updates)),
+    remove: async key => { delete store[key]; },
+    patch: async (key, value) => { store[key] = structuredClone(value); },
+    getRecords: async (key, ids, field = null) => {
+      const records = field ? store[key]?.[field] : store[key];
+      return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
+    },
+    putRecords: async (key, values) => { store[key] = { ...store[key], ...structuredClone(values) }; },
+    getMetadata: async key => structuredClone(store[key])
+  };
   const sandbox = {
-    ...core, CareerPeelerRanking: ranking, console: { error() {} }, URL,
+    ...core, CareerPeelerRanking: ranking, CareerPeelerApplicationSafety: safety, CareerPeelerJobStore: adapter,
+    appleWithdrawalBatchUntil: 0, console: { error() {} }, URL,
     Date: class extends Date { static now() { return clock; } },
     APPLE_SUBMITTED_ROLE_REVIEWS_KEY: "reviews", APPLIED_JOBS_KEY: "applied", USER_PROFILE_KEY: "profile",
     APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY: "details", submittedRoleAnalysisRuns: new Map(),
     scanState: core.createIdleState(), currentScanActivitySteps: [],
-    chrome: { storage: { local: {
+    chrome: { storage: { session: adapter, local: {
       get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, structuredClone(store[key])])),
       set: async (updates) => Object.assign(store, structuredClone(updates))
     } }, tabs: {
@@ -131,15 +147,21 @@ function workerHarness() {
     initializeKnownSiteScanActivity: async () => {}, saveScanState: async () => {},
     closeOwnedWorkflowTabs: async () => {}, finishKnownSiteScanRun: async () => {},
     createActiveWorkflowTab: async (url) => ({ id: 99, url }),
+    createTaskTab: async url => ({ id: 42, url }), getTaskWindowId: async () => 1,
+    appliedJobLedger: {}, errorJobLedger: {}, currentScanActivityCycles: [],
+    beginKnownSiteActivityCycle: async () => "test-cycle", finishKnownSiteActivityCycle: async () => {},
     waitForAppleSubmittedRoleDetails: async () => mocks.live,
     getAutoApplyReadinessError: () => null,
     sendMessageWithFallback: async (tabId, message) => {
       if (message.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") return { ok: true, data: mocks.pages[calls.pages++] };
       if (message.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") return { ok: true, action: "click" };
       if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") return {
-        ok: !mocks.signedOut, data: { pageCount: 1, pages: [{ roles: mocks.activeRoles }] }
+        ok: !mocks.signedOut, data: { pageCount: 1, pages: [{ roles: mocks.activeRoles,
+          pageIndex: 1, pageCount: 1, hasNextPage: false, withdrawalConfirmationOpen: false,
+          accountVerified: true, inventoryState: mocks.activeRoles.length ? "confirmed" : "confirmed_empty" }] }
       };
       if (message.type === "APPLE_CAREERS_EXTRACT_JOB") return { ok: true, data: { alreadySubmitted: false } };
+      if (message.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") return { ok: true, data: { score: 90 } };
       throw new Error(`Unexpected message ${message.type}`);
     },
     fetchAppleSubmittedRoleDetails: async (links) => ({ detailsByJobId: new Map(links.map((job) => [job.jobId, details])) }),
@@ -174,7 +196,7 @@ test("filtered scans visit all pages, deduplicate overlaps, and reuse matching s
   await h.api.runAppleJobRanking({ searchUrl: "https://jobs.apple.com/en-us/search?team=software", sourceTabId: 1 }, profile);
   assert.equal(h.calls.scored, 3, "rescanning unchanged jobs must not use additional LLM calls");
   assert.equal(h.store.appleJobRanking.scoresReused, 3);
-  const changed = await h.api.getAppleRankingView({ ...profile, resumeProfile: "Different resume content" }, 50);
+  const changed = await h.api.getAppleRankingView({ ...profile, resumeText: "Different resume content" }, 50);
   assert.equal(changed.candidates.length, 0);
   assert.equal(changed.staleCount, 3);
 });
@@ -259,6 +281,7 @@ test("the queue requires a live count and makes no submission at 50 or after sig
 test("queue edits are serialized before asynchronous storage reads", async () => {
   const h = workerHarness();
   h.store.appleJobRanking = { jobs: { "100": h.queuedJob("100", 95) }, searches: {}, reservations: [] };
+  h.store.appleJobRanking.jobs["100"].queueStatus = "available";
   const results = await Promise.all([h.api.queueTopAppleJobs(profile, 50), h.api.queueTopAppleJobs(profile, 50)]);
   assert.equal(results[0].ok, true);
   assert.equal(results[1].ok, false);

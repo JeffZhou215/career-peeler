@@ -2759,6 +2759,9 @@ async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expecte
 }
 
 async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, shouldStop, windowId } = {}) {
+  if (Array.isArray(roles) && roles.length === 0) return { roles: [], descriptionsFetched: 0,
+    descriptionsReused: 0, descriptionsUnavailable: 0, scoresReused: 0, scoresFetched: 0,
+    cacheSaveFailed: false, error: null, stopped: false };
   const profile = normalizeUserProfile(userProfile || {});
   const resumeProfile = resolveResumeProfileText(profile);
   if (!profile.llmEnabled || !profile.llmApiKey) {
@@ -2931,6 +2934,10 @@ async function saveAppleSubmittedRoleReview(page, analysis = null) {
   const review = {
     pageIndex: page.pageIndex,
     pageCount: page.pageCount,
+    hasNextPage: page.hasNextPage,
+    accountVerified: page.accountVerified,
+    inventoryState: page.inventoryState,
+    withdrawalConfirmationOpen: page.withdrawalConfirmationOpen,
     roles,
     updatedAt: Date.now(),
     warning: analysis?.error || (analysis?.stopped ? "Analysis stopped before every role was scored." : null),
@@ -3029,7 +3036,16 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
   let stopped = false;
   let warning = null;
   let storageWarning = null;
+  const invalidateCapacity = async () => {
+    const ranking = await readAppleRankingState();
+    ranking.capacitySnapshot = { ...ranking.capacitySnapshot, roles: ranking.capacitySnapshot?.roles || [], complete: false,
+      inventoryState: "unknown", updatedAt: Date.now(), warning };
+    await saveAppleRankingState(ranking, { jobs: [], applicationFailures: [] });
+  };
   const persistSnapshot = async (complete) => {
+    const inventory = complete ? CareerPeelerApplicationSafety.validateSubmittedHistoryInventory({
+      pages: Array.from(reviews.values()), pageCount: page.pageCount
+    }) : null;
     const byId = new Map();
     for (const review of reviews.values()) {
       for (const role of review.roles || []) {
@@ -3047,6 +3063,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       archive.lastCompleteScan = archive.latestScan;
     }
     archive.latestScan = {
+      ...(inventory || {}),
       roles: Array.from(byId.values()),
       pagesRead: reviews.size,
       pageCount: page?.pageCount || reviews.size,
@@ -3062,6 +3079,12 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       archive.lastCompleteScan = archive.latestScan;
     }
     await CareerPeelerJobStore.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
+    if (complete) {
+      const ranking = await readAppleRankingState();
+      ranking.capacitySnapshot = archive.latestScan;
+      ranking.reservations = [];
+      await saveAppleRankingState(ranking, { jobs: [], applicationFailures: [] });
+    }
   };
   const publish = async (review) => {
     reviews.set(review.pageIndex, review);
@@ -3087,8 +3110,12 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
     }
     originalPageIndex = page.pageIndex;
     page = await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: 1 });
+    const expectedPageCount = page.pageCount;
     for (let count = 0; count < 100; count += 1) {
       if (run.stopRequested) { stopped = true; break; }
+      if (page.pageIndex !== count + 1 || page.pageCount !== expectedPageCount) {
+        throw new Error("Apple's submissions pagination changed during the scan. Sync again to verify capacity.");
+      }
       let review = await saveAppleSubmittedRoleReview(page);
       await publish(review);
       if (!warning) {
@@ -3117,14 +3144,24 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       if (!advance.advanced) break;
       page = advance.page;
     }
-    const complete = !stopped && reviews.size >= (page?.pageCount || reviews.size);
+    const complete = !stopped && !page.hasNextPage && reviews.size === page.pageCount && page.pageIndex === page.pageCount;
+    if (!complete) {
+      warning = [warning, "Submission inventory is incomplete; capacity is unknown until a full sync succeeds."].filter(Boolean).join(" ");
+      await invalidateCapacity();
+    }
     try {
       await persistSnapshot(complete);
-    } catch (_error) {
+    } catch (error) {
+      if (complete) throw error;
       storageWarning = "The combined ranking could not be saved to the job database.";
     }
     return { reviews: Array.from(reviews.values()), pagesRead: reviews.size,
       pageCount: page?.pageCount || reviews.size, stopped, warning: [warning, storageWarning].filter(Boolean).join(" ") || null };
+  } catch (error) {
+    warning = error?.message || "Apple's submission inventory could not be verified.";
+    await persistSnapshot(false).catch(() => {});
+    await invalidateCapacity();
+    throw error;
   } finally {
     if (originalPageIndex !== null) {
       await sendPageRequest("APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE", { pageIndex: originalPageIndex }).catch(() => {});
