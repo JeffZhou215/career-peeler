@@ -55,7 +55,7 @@ Open **Submissions** in the extension.
 
 | Button | What It Does |
 | --- | --- |
-| **Sync Submissions** | Updates saved submissions and the count without new AI matching. Uses a temporary background tab, keeping your current search in place. |
+| **Sync Submissions** | Updates saved submissions and the count without new AI matching. Reuses a ready submissions tab in the same window and restores its page, or opens and closes a temporary background tab. Your filtered search stays in place. |
 | **Scan And Match All** | Reads all submission pages and scores roles against your resume. Reviewable roles appear with the lowest fit first. |
 
 Use **Find Job ID Or Title** to locate a role. Check the applications you want to withdraw, click **Review Withdrawal**, and review the confirmation sheet before continuing. Roles shown under **Protected Roles** cannot be selected.
@@ -66,7 +66,7 @@ Use **Find Job ID Or Title** to locate a role. Check the applications you want t
 
 - **Interrupted scan:** use **Resume Scan** with the same search filters. Saved results remain available, and valid cached scores are reused.
 - **Failed application:** expand **Activity** for the job link, reason, and last step. Known failures before submission are skipped; an unknown submission outcome pauses the batch for review.
-- **Changed submissions:** use **Sync Submissions** to refresh without matching again. Detected manual applications also update the count, which is checked again before applying.
+- **Changed submissions:** use **Sync Submissions** to refresh without matching again. Opening or activating Your Roles does not start synchronization. A visible Submitted marker on a job page can update that role's saved status; the complete count is verified again before applying.
 
 After a manual application is verified, its earlier failure is labeled **Submitted Later** and kept under **Previous Failure**. New application activity is grouped by job and includes each Continue step. Older unassigned activity can contain steps from several roles.
 

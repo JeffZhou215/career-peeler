@@ -4,25 +4,47 @@ const vm = require("node:vm");
 
 const root = path.resolve(__dirname, "../..");
 const source = name => fs.readFileSync(path.join(root, name), "utf8");
-const event = () => ({ addListener() {}, removeListener() {} });
+const event = () => {
+  const listeners = new Set();
+  return { addListener: listener => listeners.add(listener), removeListener: listener => listeners.delete(listener),
+    emit: (...args) => Promise.all([...listeners].map(listener => listener(...args))) };
+};
 
-function createContentHarness() {
+function createContentHarness(options = {}) {
   const listeners = [];
+  const timers = new Map();
+  const observers = [];
+  const calls = { messages: [] };
   const sandbox = {
     URL, console, setTimeout, clearTimeout, Event: class Event {},
     fetch: async () => { throw new Error("Real network requests are forbidden in workflow tests."); },
-    chrome: { runtime: { onMessage: { addListener: listener => listeners.push(listener) } } },
+    chrome: { runtime: { id: options.observe ? "test-extension" : undefined,
+      onMessage: { addListener: listener => listeners.push(listener) },
+      sendMessage: async message => { calls.messages.push(message); return { ok: true }; } } },
     document: { body: { innerText: "", scrollHeight: 0 }, title: "Apple Application",
       querySelector: () => null, querySelectorAll: () => [], getElementById: () => null },
-    window: { location: new URL("https://jobs.apple.com/app/en-us/apply/200123456-0836"),
+    window: { location: new URL(options.url || "https://jobs.apple.com/app/en-us/apply/200123456-0836"),
       scrollTo() {}, getComputedStyle: () => ({ visibility: "visible", display: "block" }) }
   };
+  if (options.observe) {
+    let timerId = 0;
+    sandbox.setTimeout = callback => { timers.set(++timerId, callback); return timerId; };
+    sandbox.clearTimeout = id => timers.delete(id);
+    sandbox.MutationObserver = class { constructor(callback) { observers.push(callback); } observe() {} };
+  }
   vm.createContext(sandbox);
   vm.runInContext(source("lib/appleApplicationSafety.js"), sandbox);
   vm.runInContext(source("content.js"), sandbox);
   sandbox.delay = async () => {};
   sandbox.waitForCondition = async predicate => Boolean(predicate());
   sandbox.dispatch = (message, sender = {}) => new Promise(resolve => listeners[0](message, sender, resolve));
+  sandbox.observationCalls = calls;
+  sandbox.mutate = () => observers.forEach(callback => callback());
+  sandbox.flushObservationTimers = async () => {
+    const pending = [...timers.values()]; timers.clear();
+    for (const callback of pending) await callback();
+    await Promise.resolve();
+  };
   return sandbox;
 }
 
@@ -53,7 +75,7 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
   url: "https://jobs.apple.com/app/en-us/apply/200123456-0836", title: "Apple Role" }], options = {}) {
   const data = options.data || {};
   const listeners = [];
-  const calls = { checkpoints: [], messages: [], injected: [], removed: [] };
+  const calls = { checkpoints: [], messages: [], injected: [], removed: [], created: [], updated: [] };
   const get = async keys => Object.fromEntries((typeof keys === "string" ? [keys] : keys || Object.keys(data))
     .filter(key => Object.hasOwn(data, key)).map(key => [key, structuredClone(data[key])]));
   const store = { get, set: async updates => Object.assign(data, structuredClone(updates)),
@@ -75,8 +97,13 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
       scripting: { executeScript: async request => { calls.injected.push(request); return []; } },
       tabs: { onActivated: event(), onUpdated: event(),
         get: async id => { const tab = tabs.find(tab => tab.id === id); if (!tab) throw new Error("Tab closed"); return { ...tab }; },
-        query: async () => tabs.map(tab => ({ ...tab })),
-        update: async (id, updates) => { const tab = tabs.find(tab => tab.id === id); Object.assign(tab, updates); return { ...tab }; },
+        query: async query => tabs.filter(tab => query?.windowId === undefined || tab.windowId === query.windowId).map(tab => ({ ...tab })),
+        create: async properties => {
+          calls.created.push(structuredClone(properties));
+          const tab = { id: Math.max(0, ...tabs.map(tab => tab.id)) + 1, status: "complete", ...properties };
+          tabs.push(tab); return { ...tab };
+        },
+        update: async (id, updates) => { calls.updated.push({ id, ...updates }); const tab = tabs.find(tab => tab.id === id); Object.assign(tab, updates); return { ...tab }; },
         remove: async id => calls.removed.push(id),
         sendMessage: async (id, message) => {
           calls.messages.push(message);

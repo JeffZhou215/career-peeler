@@ -116,7 +116,7 @@ test("OpenAI 429 errors preserve the actionable provider message and retry metad
 function workerHarness(options = {}) {
   let clock = 100000;
   const store = options.store || {};
-  const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [] };
+  const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [], capacityReads: [], capacityTabs: [] };
   const mocks = { pages: [], activeRoles: [], live: details, workflow: { ok: true, data: { submitted: true } } };
   const adapter = {
     get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(store[key])])),
@@ -142,6 +142,7 @@ function workerHarness(options = {}) {
       get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, structuredClone(store[key])])),
       set: async (updates) => Object.assign(store, structuredClone(updates))
     } }, tabs: {
+      query: async () => mocks.capacityTabs || [],
       create: async ({ url }) => ({ id: 42, url }),
       remove: async (id) => calls.removed.push(id)
     } },
@@ -155,6 +156,10 @@ function workerHarness(options = {}) {
     waitForAppleSubmittedRoleDetails: async (_tab, jobId) => ({ jobId, url: mocks.currentJobUrl, ...mocks.live }),
     getAutoApplyReadinessError: () => null,
     sendMessageWithFallback: async (tabId, message) => {
+      if (message.type === "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE") return { ok: true, data: {
+        accountVerified: true, withdrawalConfirmationOpen: false, inventoryState: "confirmed",
+        pageIndex: 1, pageCount: 1, roles: [{ jobId: "123", active: true }]
+      } };
       if (message.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
         const page = mocks.pages[calls.pages++];
         if (!page || page.ok === false) return { ok: false };
@@ -162,11 +167,14 @@ function workerHarness(options = {}) {
         return { ok: true, data: { url: mocks.currentSearchUrl, ...page } };
       }
       if (message.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") return { ok: true, action: "click" };
-      if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") return {
-        ok: !mocks.signedOut, data: { pageCount: 1, pages: [{ roles: mocks.activeRoles,
-          pageIndex: 1, pageCount: 1, hasNextPage: false, withdrawalConfirmationOpen: false,
-          accountVerified: true, inventoryState: mocks.activeRoles.length ? "confirmed" : "confirmed_empty" }] }
-      };
+      if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
+        calls.capacityReads.push({ tabId, restoreOriginalPage: message.restoreOriginalPage });
+        return {
+          ok: !mocks.signedOut, data: { pageCount: 1, pages: [{ roles: mocks.activeRoles,
+            pageIndex: 1, pageCount: 1, hasNextPage: false, withdrawalConfirmationOpen: false,
+            accountVerified: true, inventoryState: mocks.activeRoles.length ? "confirmed" : "confirmed_empty" }] }
+        };
+      }
       if (message.type === "APPLE_CAREERS_EXTRACT_JOB") return { ok: true, data: { jobId: message.expectedJobId,
         url: mocks.currentJobUrl, identityVerified: true, canApply: true, alreadySubmitted: false, ...mocks.status } };
       if (message.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") return { ok: true, data: { score: 90 } };
@@ -175,6 +183,8 @@ function workerHarness(options = {}) {
     fetchAppleSubmittedRoleDetails: async (links) => ({ detailsByJobId: new Map(links.map((job) => [job.jobId, details])) }),
     callOpenAi: async () => { calls.scored += 1; if (mocks.error) throw mocks.error; return JSON.stringify(good); },
     runApplicationWorkflow: async (tab, options) => {
+      assert.ok(calls.capacityReads.length, "every application requires a fresh full inventory read");
+      assert.equal(store.appleJobRanking.capacitySnapshot.complete, true);
       const persisted = store.appleJobRanking;
       assert.equal(persisted.jobs[ranking.idOf(options.jobContext.jobId)].queueStatus, "applying");
       assert.ok(persisted.reservations.some((role) => role.jobId === options.jobContext.jobId));
@@ -600,4 +610,24 @@ test("expired authentication in the applicability probe pauses the queue before 
   assert.equal(h.calls.applied.length, 0);
   assert.equal(h.store.appleJobRanking.jobs["101"].queueStatus, "queued");
   assert.match(h.store.appleJobRanking.error, /Sign in/);
+});
+
+test("explicit Auto Apply reuses a ready submissions tab but still verifies full capacity before applying", async () => {
+  const h = workerHarness();
+  h.mocks.capacityTabs = [{ id: 7, windowId: 1, status: "complete", url: "https://jobs.apple.com/app/en-us/profile/roles" }];
+  await scanFixture(h, ["100"], { autoApply: true });
+  assert.deepEqual(h.calls.applied, ["100"]);
+  assert.deepEqual(h.calls.capacityReads, [{ tabId: 7, restoreOriginalPage: true }]);
+  assert.ok(!h.calls.removed.includes(7), "the user's submissions tab stays open");
+});
+
+test("explicit Auto Apply refuses unknown capacity even when a cached count says slots are available", async () => {
+  const h = workerHarness();
+  h.store.appleJobRanking = { jobs: {}, searches: {}, reservations: [],
+    capacitySnapshot: { complete: true, inventoryState: "confirmed_empty", roles: [], updatedAt: 100000 } };
+  h.mocks.signedOut = true;
+  await scanFixture(h, ["100"], { autoApply: true });
+  assert.equal(h.calls.capacityReads.length, 1);
+  assert.deepEqual(h.calls.applied, []);
+  assert.equal(h.store.appleJobRanking.capacitySnapshot.inventoryState, "unknown");
 });

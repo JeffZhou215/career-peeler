@@ -3375,7 +3375,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_OBSERVED_SUBMISSION") {
         sendResponse(await observeAppleSubmission(message, sender));
       } else if (message.type === "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC") {
-        sendResponse(await passivelySyncAppleSubmissions(sender.tab, { confirmed: message.confirmed === true }) || { ok: true });
+        // Already-injected older content scripts may still send this passive
+        // request after an extension update. It must never start a workflow.
+        sendResponse({ ok: true, ignored: true });
       } else if (message.type === "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE") {
         if (sender.tab) throw new Error("Withdrawal batches must be started from the extension panel.");
         if (message.active && (scanState.running || appleRankingIsRunning() || submittedRoleAnalysisRuns.size)) throw new Error("Stop the current workflow before withdrawing.");
@@ -3390,6 +3392,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
         sendResponse({ ok: true, data: await getAppleRankingView(message.userProfile, message.topN) });
       } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {
+        if (sender.tab) throw new Error("Sync Submissions must be started from the extension panel.");
         sendResponse(await refreshAppleJobQueueCount(message.tab));
       } else if (message.type === "APPLE_CAREERS_START_JOB_RANKING") {
         sendResponse(await startAppleJobRanking(message.tab, message.userProfile, { topN: message.topN, resume: message.resume, autoApply: message.autoApply }));

@@ -1361,32 +1361,36 @@ async function advanceAppleSubmittedHistoryPage() {
   return { advanced: true, page: await waitForAppleSubmittedHistoryPage(page.pageIndex + 1, page.roles[0]?.jobId) };
 }
 
-async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true } = {}) {
+async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true, restoreOriginalPage = false } = {}) {
   const startingPage = collectCurrentAppleSubmittedHistoryPage();
   if (startingPage.withdrawalConfirmationOpen) {
     throw new Error("Resolve Apple's withdrawal confirmation before refreshing submissions.");
   }
-  let page = await goToAppleSubmittedHistoryPage(1);
-  const expectedPageCount = page.pageCount;
-  const pages = [];
-  while (pages.length < 100) {
-    if (page.pageCount !== expectedPageCount || page.pageIndex !== pages.length + 1) {
-      throw new Error("Apple's submissions pagination changed during synchronization. Capacity is unknown; sync again.");
-    }
-    pages.push(page);
-    if (!page.hasNextPage) {
-      if (page.pageIndex !== page.pageCount || pages.length !== page.pageCount) {
-        throw new Error("Apple's submissions pagination changed before every page could be refreshed.");
+  try {
+    let page = await goToAppleSubmittedHistoryPage(1);
+    const expectedPageCount = page.pageCount;
+    const pages = [];
+    while (pages.length < 100) {
+      if (page.pageCount !== expectedPageCount || page.pageIndex !== pages.length + 1) {
+        throw new Error("Apple's submissions pagination changed during synchronization. Capacity is unknown; sync again.");
       }
-      if (restoreFirstPage) await goToAppleSubmittedHistoryPage(1);
-      const inventory = { pages, pageCount: page.pageCount };
-      return { ...inventory, ...CareerPeelerApplicationSafety.validateSubmittedHistoryInventory(inventory) };
+      pages.push(page);
+      if (!page.hasNextPage) {
+        if (page.pageIndex !== page.pageCount || pages.length !== page.pageCount) {
+          throw new Error("Apple's submissions pagination changed before every page could be refreshed.");
+        }
+        if (restoreFirstPage && !restoreOriginalPage) await goToAppleSubmittedHistoryPage(1);
+        const inventory = { pages, pageCount: page.pageCount };
+        return { ...inventory, ...CareerPeelerApplicationSafety.validateSubmittedHistoryInventory(inventory) };
+      }
+      const next = await advanceAppleSubmittedHistoryPage();
+      if (!next.advanced) break;
+      page = next.page;
     }
-    const next = await advanceAppleSubmittedHistoryPage();
-    if (!next.advanced) break;
-    page = next.page;
+    throw new Error("Apple's active submissions could not be refreshed across every page.");
+  } finally {
+    if (restoreOriginalPage) await goToAppleSubmittedHistoryPage(startingPage.pageIndex);
   }
-  throw new Error("Apple's active submissions could not be refreshed across every page.");
 }
 
 function findSubmittedRoleCard(jobId) {
@@ -4730,7 +4734,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
-    collectAllAppleSubmittedHistoryPages({ restoreFirstPage: message.restoreFirstPage !== false })
+    collectAllAppleSubmittedHistoryPages({ restoreFirstPage: message.restoreFirstPage !== false, restoreOriginalPage: message.restoreOriginalPage === true })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not refresh all Apple submissions." }));
     return true;
@@ -4874,7 +4878,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 if (document.body && chrome.runtime?.id && getSiteConfig()?.id === "apple") {
   let observedId = null;
-  let formSuccessReported = false;
   let observationTimer = null;
   const observe = () => {
     observationTimer = null;
@@ -4889,20 +4892,8 @@ if (document.body && chrome.runtime?.id && getSiteConfig()?.id === "apple") {
         }).catch(() => {});
       }
     }
-    if (!formSuccessReported && /^\/app\//i.test(window.location.pathname) && getSubmittedSignal()) {
-      formSuccessReported = true;
-      chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC", confirmed: true }).then(result => {
-        if (result?.deferred) {
-          formSuccessReported = false;
-          if (!observationTimer) observationTimer = setTimeout(observe, 3000);
-        }
-      }).catch(() => {});
-    }
   };
   const schedule = () => { if (!observationTimer) observationTimer = setTimeout(observe, 1000); };
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
   schedule();
-  if (/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
-    setTimeout(() => chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC" }).catch(() => {}), 1500);
-  }
 }
