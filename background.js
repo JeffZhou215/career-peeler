@@ -1,4 +1,4 @@
-importScripts("lib/appleJobStore.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js");
+importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -709,7 +709,7 @@ function tabMatchesApplication(tab, siteConfig, jobId) {
   }
 
   if (siteConfig.isApplicationUrl?.(parsedUrl)) {
-    return !jobId || parsedUrl.href.includes(jobId);
+    return Boolean(jobId) && CareerPeelerApplicationSafety.matchesJob(jobId, parsedUrl.href);
   }
 
   return false;
@@ -754,7 +754,7 @@ async function sendMessageWithFallback(tabId, message) {
   } catch (_error) {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content.js"]
+      files: ["lib/appleApplicationSafety.js", "content.js"]
     });
 
     return chrome.tabs.sendMessage(tabId, message);
@@ -2197,6 +2197,7 @@ async function runApplicationWorkflow(tab, options = {}) {
   let submissionAttemptCount = 0;
   let workflowStepInFlight = false;
   let submissionRejected = false;
+  let submissionOutcome = "not_attempted";
   let lastWorkflowUrl = tab?.url || null;
   let validationRecoveryAttempts = 0;
   let previousValidationRecoveryFingerprint = "";
@@ -2204,7 +2205,8 @@ async function runApplicationWorkflow(tab, options = {}) {
     submissionAttempted: submissionAttemptCount > 0,
     submissionAttemptCount,
     submissionRejected,
-    submissionOutcomeUnknown: workflowStepInFlight || (submissionAttemptCount > 0 && !submissionRejected),
+    submissionOutcome: workflowStepInFlight ? "unknown" : submissionOutcome,
+    submissionOutcomeUnknown: workflowStepInFlight || submissionOutcome === "unknown",
     url: lastWorkflowUrl
   });
 
@@ -2230,7 +2232,7 @@ async function runApplicationWorkflow(tab, options = {}) {
   const workflowWindowId = options.windowId ?? liveTab?.windowId;
 
   const siteConfig = getSiteConfig(liveTab?.url);
-  const jobId = liveTab?.url ? getJobIdFromUrl(liveTab.url) : null;
+  const jobId = String(jobContext?.jobId || CareerPeelerApplicationSafety.jobIdFromUrl(liveTab?.url) || "");
 
   if (!siteConfig) {
     return {
@@ -2238,6 +2240,10 @@ async function runApplicationWorkflow(tab, options = {}) {
       error: `Expected an Apple careers job/application tab, but the current tab URL is ${liveTab?.url || "unknown"}.`,
       data: { ...workflowOutcomeMetadata(), submitted: false, errorType: "invalid_workflow_tab" }
     };
+  }
+  if (!CareerPeelerApplicationSafety.matchesJob(jobId, liveTab.url)) {
+    return { ok: false, error: "The open Apple page does not verify the reviewed job identity.",
+      data: { ...workflowOutcomeMetadata(), submitted: false, errorType: "job_identity_mismatch" } };
   }
 
   registerQuestionAgentTab(workflowTabId);
@@ -2296,19 +2302,55 @@ async function runApplicationWorkflow(tab, options = {}) {
       await waitForTabComplete(workflowTabId).catch(() => {});
       await delay(PAGE_SETTLE_DELAY_MS);
 
+      const currentTab = await chrome.tabs.get(workflowTabId);
+      const allowConfirmation = submissionAttemptCount > 0;
+      if (!CareerPeelerApplicationSafety.matchesJob(jobId, currentTab.url) &&
+        !(allowConfirmation && CareerPeelerApplicationSafety.isConfirmationUrl(currentTab.url))) {
+        throw Object.assign(new Error("The application page no longer verifies the reviewed Apple job. The workflow stopped."),
+          { code: CareerPeelerApplicationSafety.jobIdFromUrl(currentTab.url) ? "job_identity_mismatch" : "job_identity_unverified" });
+      }
+      const identity = await sendMessageWithFallback(workflowTabId, {
+        type: "APPLE_CAREERS_VERIFY_WORKFLOW_IDENTITY", expectedJobId: jobId, allowConfirmation
+      });
+      if (!identity?.ok || identity.data?.identityVerified !== true || identity.data.expectedJobId !== jobId) {
+        throw Object.assign(new Error(identity?.error || "Apple job identity could not be verified before the next action."),
+          { code: identity?.data?.errorType || "job_identity_unverified" });
+      }
+
       const previousTabIds = await getOpenTabIds();
       // A lost reply can hide a Submit click. Keep that case distinct from a
       // completed step that explicitly reports no submission attempt.
       workflowStepInFlight = true;
-      const response = await sendMessageWithFallback(workflowTabId, {
+      // A rejected message promise can hide a real Submit click. Never inject
+      // and replay this mutating command; leave its outcome unknown for review.
+      const response = await chrome.tabs.sendMessage(workflowTabId, {
         type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP",
+        expectedJobId: jobId,
+        allowConfirmation,
+        applicationAnswers: { workAuthorized: questionAgentProfile.workAuthorized,
+          requiresSponsorship: questionAgentProfile.requiresSponsorship },
         submissionAttemptCount,
+        submissionOutcome,
         validationRecoveryAttempts,
         previousValidationRecoveryFingerprint
       });
 
       if (!response?.ok) {
         throw new Error(response?.error || "The application workflow step failed.");
+      }
+      const responseJobVerified = response.data?.identityVerified === true && response.data.expectedJobId === jobId;
+      const actionSubmitted = (response.data.steps || []).some(step => step.step === "Submit application" && step.status === "clicked");
+      if (response.data.expectedJobId === jobId && /^job_identity_/.test(response.data.errorType || "") &&
+        !actionSubmitted && response.data.submissionOutcome !== "unknown") workflowStepInFlight = false;
+      const permitsConfirmation = (allowConfirmation || actionSubmitted) && response.data.done && responseJobVerified;
+      const afterStepTab = await chrome.tabs.get(workflowTabId);
+      if (!responseJobVerified ||
+        (!CareerPeelerApplicationSafety.matchesJob(jobId, response.data.url) &&
+          !(permitsConfirmation && CareerPeelerApplicationSafety.isConfirmationUrl(response.data.url))) ||
+        (!CareerPeelerApplicationSafety.matchesJob(jobId, afterStepTab.url) &&
+          !(permitsConfirmation && CareerPeelerApplicationSafety.isConfirmationUrl(afterStepTab.url)))) {
+        throw Object.assign(new Error(response.data.summary || "Apple job identity changed during the application step. The workflow stopped."),
+          { code: response.data.errorType?.startsWith("job_identity_") ? response.data.errorType : "job_identity_mismatch" });
       }
       lastWorkflowUrl = response.data.url || lastWorkflowUrl;
 
@@ -2321,7 +2363,16 @@ async function runApplicationWorkflow(tab, options = {}) {
         step.step === "Check for validation errors after submitting" && step.status === "blocked")) {
         submissionRejected = true;
       }
+      if (response.data.submissionOutcome) submissionOutcome = response.data.submissionOutcome;
+      else if (response.data.done) submissionOutcome = "confirmed";
+      else if (finalSubmitClicks) submissionOutcome = submissionRejected ? "rejected" : "unknown";
+      submissionRejected = submissionOutcome === "rejected";
       workflowStepInFlight = false;
+      if (submissionOutcome === "unknown" && !response.data.done) {
+        if (!response.data.pausedForReview) response.data.summary = "Submit outcome is unknown. The workflow stopped without another Submit attempt; check Your Roles before retrying.";
+        response.data.pausedForReview = true;
+        response.data.errorType ||= "clicked_but_unconfirmed";
+      }
 
       if (response.data.validationRecoveryAttempted) {
         validationRecoveryAttempts += 1;
@@ -2365,6 +2416,9 @@ async function runApplicationWorkflow(tab, options = {}) {
         );
 
       if (response.data.openUrlInBackgroundTab) {
+        if (!CareerPeelerApplicationSafety.matchesJob(jobId, response.data.openUrlInBackgroundTab)) {
+          throw Object.assign(new Error("The application link did not identify the reviewed Apple role."), { code: "job_identity_mismatch" });
+        }
         // Keep ownership of target=_blank navigation instead of handing it to the page, but activate
         // the managed tab deliberately so the application SPA renders before the next workflow step.
         const newTab = await createActiveWorkflowTab(response.data.openUrlInBackgroundTab, workflowWindowId);
@@ -2398,9 +2452,12 @@ async function runApplicationWorkflow(tab, options = {}) {
 
       if (response.data.done) {
         const isFreshSubmission = !response.data.alreadySubmitted;
+        let checkpointed = false;
+        let checkpointWarning = null;
 
         if (isFreshSubmission && jobContext) {
-          await recordAppliedCheckpoint(jobContext);
+          try { await recordAppliedCheckpoint(jobContext); checkpointed = true; }
+          catch (_) { checkpointWarning = "Apple confirmed submission, but the local application history could not be saved. Sync Your Roles before another run."; }
         }
 
         if (!response.data.alreadySubmitted) {
@@ -2418,6 +2475,7 @@ async function runApplicationWorkflow(tab, options = {}) {
             data: {
               submitted: false,
               alreadySubmitted: true,
+              submissionOutcome: "confirmed",
               errorType: response.data.errorType || "already_applied",
               attempts,
               steps,
@@ -2433,7 +2491,9 @@ async function runApplicationWorkflow(tab, options = {}) {
           ok: true,
           data: {
             submitted: true,
-            checkpointed: isFreshSubmission && Boolean(jobContext),
+            submissionOutcome: "confirmed",
+            checkpointed,
+            warning: checkpointWarning,
             attempts,
             steps,
             summary: closeOnDone ? "Application submitted and the job tab was closed." : "Application submitted."

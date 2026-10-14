@@ -997,8 +997,12 @@ function getVisibleValidationMessageElements(root = document) {
   );
 }
 
-function getVisibleValidationErrors() {
+function getVisibleValidationErrors(options = {}) {
   const alertMessages = getVisibleValidationMessageElements()
+    // A network/server alert cannot establish that a final Submit was rejected.
+    // Only field-validation feedback permits recovery followed by another Submit.
+    .filter(element => !options.submission || isKnownFormValidationFeedback(element) ||
+      /\b(?:required|invalid)\b.{0,35}\b(?:field|answer|value|selection)\b|\b(?:field|answer|value|selection)\b.{0,35}\b(?:required|invalid)\b|\bplease (?:complete|fill|answer|select)\b/i.test(element.innerText || element.textContent || ""))
     .map((element) => normalizeText(element.innerText || element.textContent || ""))
     .filter(Boolean);
 
@@ -1022,7 +1026,9 @@ async function waitForSubmissionOutcome(options = {}) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const submittedSignal = getSubmittedSignal();
+    options.assertIdentity?.();
+    const submittedSignal = options.expectedJobId && !CareerPeelerApplicationSafety.matchesJob(options.expectedJobId, window.location.href)
+      ? getJobBoundSubmissionSignal(options.expectedJobId) : getSubmittedSignal();
     if (submittedSignal) {
       return { type: "submitted", signal: submittedSignal };
     }
@@ -1032,7 +1038,7 @@ async function waitForSubmissionOutcome(options = {}) {
       return { type: "already_applied", signal: alreadyAppliedSignal };
     }
 
-    const validationErrors = getVisibleValidationErrors();
+    const validationErrors = getVisibleValidationErrors({ submission: true });
     if (validationErrors.length > 0) {
       return { type: "validation", errors: validationErrors };
     }
@@ -2249,10 +2255,11 @@ function findJobSpecificApplyAction(siteConfig) {
   return findClickableByText(siteConfig?.applyPattern || /^submit resume$/i);
 }
 
-async function waitForJobSpecificApplyAction(siteConfig, jobId, timeoutMs = 6000) {
+async function waitForJobSpecificApplyAction(siteConfig, jobId, timeoutMs = 6000, options = {}) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
+    options.assertIdentity?.();
     const element = findJobSpecificApplyAction(siteConfig, jobId);
 
     if (element) {
@@ -2295,6 +2302,7 @@ async function waitForClickable(pattern, timeoutMs = WORKFLOW_WAIT_TIMEOUT_MS, o
       return null;
     }
 
+    options.assertIdentity?.();
     const element = findClickableByText(pattern);
 
     if (element) {
@@ -2314,7 +2322,8 @@ async function clickAction(pattern, stepName, steps, options = {}) {
   }
 
   const element = await waitForClickable(pattern, options.timeoutMs, {
-    shouldStop: options.shouldStop
+    shouldStop: options.shouldStop,
+    assertIdentity: options.assertIdentity
   });
 
   if (!element) {
@@ -2331,6 +2340,7 @@ async function clickAction(pattern, stepName, steps, options = {}) {
     block: "center"
   });
   await delay(200);
+  options.assertIdentity?.();
   element.click();
   steps.push({
     step: stepName,
@@ -2361,11 +2371,48 @@ function buildAlreadyAppliedActionResult(signal, steps) {
   };
 }
 
+const appleSubmissionAttempts = new Map();
+
+function blockedSubmissionResult(outcome, errorType, summary) {
+  return { clicked: false, done: false, pending: false, pausedForReview: true,
+    submissionOutcome: outcome, errorType, summary };
+}
+
+function checkSubmissionPermission(options = {}) {
+  const local = appleSubmissionAttempts.get(options.expectedJobId || getJobId());
+  const parentCount = Math.max(0, Number(options.submissionAttemptCount) || 0);
+  const count = Math.max(parentCount, local?.count || 0);
+  // Older page-local rejection cannot authorize retry of a newer unknown attempt.
+  const outcome = parentCount > (local?.count || 0)
+    ? options.submissionOutcome || "unknown"
+    : local?.outcome || options.submissionOutcome || (count ? "unknown" : "not_attempted");
+  if (outcome === "confirmed") return { clicked: false, done: true, pending: false,
+    alreadySubmitted: true, submissionOutcome: "confirmed", summary: "This role's submission was already confirmed." };
+  if (outcome === "unknown" || (count > 0 && outcome !== "rejected")) return blockedSubmissionResult("unknown", "clicked_but_unconfirmed",
+    "A previous Submit outcome is still unknown. Check this role in Your Roles before retrying; Submit was not clicked again.");
+  if (count >= MAX_FINAL_SUBMIT_ATTEMPTS) return blockedSubmissionResult("rejected", "submission_retry_limit",
+    "The final Submit attempt limit was reached. Review this application manually; Submit was not clicked again.");
+  return null;
+}
+
 async function clickAndDetectSubmission(element, steps, options = {}) {
+  const blocked = checkSubmissionPermission(options);
+  if (blocked) return blocked;
   element.scrollIntoView({
     block: "center"
   });
   await delay(200);
+  options.assertIdentity?.();
+  const lateBlock = checkSubmissionPermission(options);
+  if (lateBlock) return lateBlock;
+  const existingValidation = getVisibleValidationErrors({ submission: true });
+  if (existingValidation.length) return blockedSubmissionResult(options.submissionOutcome || "not_attempted", "blocked_by_validation",
+    `Submit was not clicked because validation is already visible: ${existingValidation.join("; ")}`);
+  const submissionKey = options.expectedJobId || getJobId();
+  const count = Math.max(Number(options.submissionAttemptCount) || 0, appleSubmissionAttempts.get(submissionKey)?.count || 0) + 1;
+  // Reserve synchronously before the click; a concurrent/lost-reply request on
+  // this page must not issue a second Submit while its result is unknown.
+  appleSubmissionAttempts.set(submissionKey, { count, outcome: "unknown" });
   element.click();
   steps.push({
     step: "Submit application",
@@ -2373,9 +2420,10 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
     label: getActionLabel(element)
   });
 
-  const outcome = await waitForSubmissionOutcome(options.outcomeOptions);
+  const outcome = await waitForSubmissionOutcome({ ...options.outcomeOptions, expectedJobId: options.expectedJobId, assertIdentity: options.assertObservationIdentity || options.assertIdentity });
 
   if (outcome?.type === "submitted") {
+    appleSubmissionAttempts.set(submissionKey, { count, outcome: "confirmed" });
     steps.push({
       step: "Confirm application submitted",
       status: "detected",
@@ -2385,11 +2433,13 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
       clicked: true,
       done: true,
       pending: false,
+      submissionOutcome: "confirmed",
       summary: "Clicked final Submit and detected Submitted confirmation."
     };
   }
 
   if (outcome?.type === "already_applied") {
+    appleSubmissionAttempts.set(submissionKey, { count, outcome: "confirmed" });
     const alreadyAppliedSignal = outcome.signal;
     steps.push({
       step: "Detect already applied dialog",
@@ -2401,13 +2451,15 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
       done: true,
       pending: false,
       alreadySubmitted: true,
+      submissionOutcome: "confirmed",
       errorType: "already_applied",
       summary: alreadyAppliedSignal.body || alreadyAppliedSignal.text || "You've already applied for this job. Unable to apply again."
     };
   }
 
-  const postClickValidationErrors = getVisibleValidationErrors();
+  const postClickValidationErrors = outcome?.type === "validation" ? outcome.errors : getVisibleValidationErrors({ submission: true });
   if (postClickValidationErrors.length > 0) {
+    appleSubmissionAttempts.set(submissionKey, { count, outcome: "rejected" });
     steps.push({
       step: "Check for validation errors after submitting",
       status: "blocked",
@@ -2419,6 +2471,7 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
       pending: false,
       pausedForReview: true,
       errorType: "blocked_by_validation",
+      submissionOutcome: "rejected",
       summary: `Submit was clicked, but the form reported ${postClickValidationErrors.length} validation issue(s): ${postClickValidationErrors.join("; ")}`
     };
   }
@@ -2433,29 +2486,16 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
     return {
       clicked: true,
       done: false,
-      pending: true,
-      summary: "Clicked final Submit, but the page is still loading."
-    };
-  }
-
-  const explicitRequiredAudit = auditRequiredApplicationFields({ includeUnmarked: false });
-  if (explicitRequiredAudit.unanswered.length > 0) {
-    const auditSummary = formatRequiredFieldAuditSummary(explicitRequiredAudit);
-    steps.push({
-      step: "Check for validation errors after submitting",
-      status: "blocked",
-      label: auditSummary
-    });
-    return {
-      clicked: true,
-      done: false,
       pending: false,
       pausedForReview: true,
-      errorType: "blocked_by_validation",
-      summary: `Submit was clicked, and the page still has explicit unanswered required fields. ${auditSummary}`
+      errorType: "clicked_but_unconfirmed",
+      submissionOutcome: "unknown",
+      summary: "Submit was clicked, but Apple is still processing and the outcome is unknown. Check Your Roles before retrying; Submit will not be clicked again."
     };
   }
 
+  // Unanswered fields without an explicit rejection do not prove that the
+  // server rejected Submit. Treat that ambiguous case as unknown, never retry.
   // Clicked, and neither a success signal, an already-applied signal, nor a still-loading indicator
   // showed up within waitForSubmissionOutcome's window -- genuinely ambiguous, not a confident success.
   // Reuses pausedForReview (its downstream handling in background.js is already generic: "needs_review"
@@ -2472,12 +2512,15 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
     pending: false,
     pausedForReview: true,
     errorType: "clicked_but_unconfirmed",
+    submissionOutcome: "unknown",
     summary:
       "Clicked final Submit, but couldn't confirm a success, already-applied, or still-loading signal afterward -- please check this application manually before assuming it went through."
   };
 }
 
 async function clickFinalSubmit(steps, options = {}) {
+  const blocked = checkSubmissionPermission(options);
+  if (blocked) return blocked;
   window.scrollTo(0, document.body.scrollHeight);
   await delay(500);
 
@@ -2490,6 +2533,7 @@ async function clickFinalSubmit(steps, options = {}) {
 
   let alreadyAppliedDuringSubmitSearch = null;
   const element = await waitForClickable(siteConfig?.finalSubmitPattern || /^submit$/i, 4000, {
+    assertIdentity: options.assertIdentity,
     shouldStop: () => {
       alreadyAppliedDuringSubmitSearch = getAlreadyAppliedSignal();
       return Boolean(alreadyAppliedDuringSubmitSearch);
@@ -2517,7 +2561,7 @@ async function clickFinalSubmit(steps, options = {}) {
     };
   }
 
-  return clickAndDetectSubmission(element, steps);
+  return clickAndDetectSubmission(element, steps, options);
 }
 
 function findPrimaryActionButton(siteConfig) {
@@ -2538,7 +2582,7 @@ function findPrimaryActionButton(siteConfig) {
 // every step of the apply flow, only changing its visible text. Targeting it by id is more
 // reliable and faster than the text-pattern searches below, which are kept as a fallback for
 // sites/pages where this id isn't present.
-async function clickPrimaryAction(siteConfig, steps) {
+async function clickPrimaryAction(siteConfig, steps, options = {}) {
   const alreadyAppliedSignal = getAlreadyAppliedSignal();
 
   if (alreadyAppliedSignal) {
@@ -2548,7 +2592,7 @@ async function clickPrimaryAction(siteConfig, steps) {
   const primaryButton = findPrimaryActionButton(siteConfig);
 
   if (!primaryButton) {
-    const submitResult = await clickFinalSubmit(steps, { recordMissing: false });
+    const submitResult = await clickFinalSubmit(steps, { ...options, recordMissing: false });
 
     if (
       submitResult.done ||
@@ -2568,6 +2612,7 @@ async function clickPrimaryAction(siteConfig, steps) {
         scrollBottom: true,
         timeoutMs: 5000,
         recordMissing: false,
+        assertIdentity: options.assertIdentity,
         shouldStop: () => {
           alreadyAppliedDuringContinueSearch = getAlreadyAppliedSignal();
           return Boolean(alreadyAppliedDuringContinueSearch);
@@ -2625,13 +2670,14 @@ async function clickPrimaryAction(siteConfig, steps) {
   await delay(500);
 
   if (isFinalSubmit) {
-    return clickAndDetectSubmission(primaryButton, steps);
+    return clickAndDetectSubmission(primaryButton, steps, options);
   }
 
   primaryButton.scrollIntoView({
     block: "center"
   });
   await delay(200);
+  options.assertIdentity?.();
   primaryButton.click();
   steps.push({
     step: "Continue application step",
@@ -2669,7 +2715,7 @@ function findSponsorshipContainer() {
     .filter((element) => isElementVisible(element))
     .filter((element) => {
       const text = normalizeText(element.innerText || "").toLowerCase();
-      return /\b(visa|sponsor|sponsorship|work authorization)\b/.test(text) &&
+      return isVisaSponsorshipQuestion(text) &&
         isQuestionControlRequired(element, text);
     })
     .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
@@ -2677,44 +2723,70 @@ function findSponsorshipContainer() {
   return containers[0] || null;
 }
 
-function clickSponsorshipAnswer(steps) {
+async function clickSponsorshipAnswer(steps, applicationAnswers = {}, options = {}) {
   const container = findSponsorshipContainer();
+  return container ? answerSavedWorkQuestion(container, steps, applicationAnswers, options)
+    : { answered: false };
+}
 
-  if (!container) {
-    return false;
+function getSelectedWorkAnswer(container) {
+  const selected = [];
+  for (const select of Array.from(container.querySelectorAll("select"))) {
+    const option = select.options?.[select.selectedIndex];
+    if (option && !isPlaceholderOption(option)) selected.push(`${option.textContent || ""} ${option.value || ""}`);
   }
+  for (const option of Array.from(container.querySelectorAll("input[type='radio'], [role='radio'], button, [role='button']"))) {
+    if (isAnswerOptionSelected(option)) selected.push(getAnswerOptionLabel(option));
+  }
+  for (const control of Array.from(container.querySelectorAll("[role='combobox'], [aria-haspopup='listbox'], .ud__select__selector"))) {
+    const value = normalizeText(control.value || control.innerText || "");
+    if (value && !/^(?:select|choose)(?: an?)?(?: option| answer)?$/i.test(value)) selected.push(value);
+  }
+  const answers = selected.map(value => isYesAnswerText(value) ? "Yes" : isNoAnswerText(value) ? "No" : "unverified");
+  return answers.length ? answers.every(value => value === answers[0]) ? answers[0] : "conflict" : null;
+}
 
-  const candidates = Array.from(
-    container.querySelectorAll("label, button, [role='radio'], [role='button'], input[type='radio']")
-  ).filter((element) => isElementVisible(element));
-
-  for (const candidate of candidates) {
-    const label = getActionLabel(candidate) || getElementLabel(candidate);
-    const value = candidate.value || "";
-    const lower = `${label} ${value}`.toLowerCase();
-    const isYes = /\byes\b/.test(lower) && !/\bno\b/.test(lower);
-
-    if (!isYes || isActionDisabled(candidate)) {
-      continue;
+async function answerSavedWorkQuestion(container, steps, applicationAnswers = {}, options = {}) {
+  const policy = CareerPeelerApplicationSafety.workQuestionPolicy(container.innerText, applicationAnswers);
+  const step = policy?.policyKey === "sponsorship" ? "Answer visa sponsorship" : "Answer work authorization";
+  const fail = reason => {
+    steps.push({ step, status: "blocked", label: reason });
+    return { answered: false, unresolvedReason: reason };
+  };
+  if (!policy || policy.error) return fail(policy?.error || "The work-eligibility question could not be identified. Review it manually.");
+  const current = getSelectedWorkAnswer(container);
+  if (current && current !== policy.desiredAnswer) {
+    return fail("Apple's existing answer conflicts with the saved setting or cannot be verified. Review it manually; it was not changed.");
+  }
+  if (current === policy.desiredAnswer) {
+    steps.push({ step, status: "verified", label: "Existing answer agrees with the explicit saved setting." });
+    return { answered: true };
+  }
+  const matches = value => policy.desiredAnswer === "Yes" ? isYesAnswerText(value) : isNoAnswerText(value);
+  const select = Array.from(container.querySelectorAll("select")).find(element => isElementVisible(element) && !isActionDisabled(element));
+  if (select) {
+    const option = Array.from(select.options).find(option => !option.disabled && matches(`${option.textContent || ""} ${option.value || ""}`));
+    if (!option) return fail("Apple did not offer the explicit saved answer. Review this question manually.");
+    options.assertIdentity?.();
+    setNativeFormValue(select, option.value);
+  } else {
+    let option = getAgentOptionControls(container).find(element => matches(getAnswerOptionLabel(element)));
+    if (!option) {
+      const control = container.querySelector("[role='combobox'], [aria-haspopup='listbox'], .ud__select__selector");
+      if (!control) return fail("Apple did not expose a supported control for the saved answer. Review this question manually.");
+      options.assertIdentity?.();
+      const offered = await openAndReadAgentDropdownOptions(control, options);
+      option = offered.find(element => matches(getAnswerOptionLabel(element)));
     }
-
-    candidate.scrollIntoView({
-      block: "center"
-    });
-    candidate.click();
-    steps.push({
-      step: "Answer visa sponsorship",
-      status: "clicked",
-      label: "Yes"
-    });
-    return true;
+    if (!option || option.isConnected === false || container.isConnected === false) return fail("Apple's answer control changed or did not offer the saved answer. Review it manually.");
+    options.assertIdentity?.();
+    option.scrollIntoView({ block: "center" });
+    option.click();
   }
-
-  steps.push({
-    step: "Answer visa sponsorship",
-    status: "missing"
-  });
-  return false;
+  const verified = await waitForCondition(() => container.isConnected !== false && getSelectedWorkAnswer(container) === policy.desiredAnswer);
+  if (!verified) return fail("The explicit saved answer could not be verified on Apple. Review it manually.");
+  steps.push({ step, status: "selected", label: "Explicit saved answer selected and verified." });
+  return { answered: true };
 }
 
 function isYesAnswerText(text) {
@@ -2728,15 +2800,7 @@ function isNoAnswerText(text) {
 }
 
 function isWorkAuthorizationQuestion(text) {
-  const lower = normalizeText(text || "").toLowerCase();
-  return (
-    /\blegally authorized\b/.test(lower) ||
-    /\bauthorized to work\b/.test(lower) ||
-    /\beligible to work\b/.test(lower) ||
-    /\b(?:right|permission)[\s\-‐‑‒–—]+to[\s\-‐‑‒–—]+work\b/.test(lower) ||
-    /\bvalid work authori[sz]ation\b/.test(lower) ||
-    /\bwork in the (?:us|u\.s\.|united states)\b/.test(lower)
-  );
+  return CareerPeelerApplicationSafety.workQuestionPolicy(text)?.policyKey === "work_authorization";
 }
 
 function isCategoricalWorkAuthorizationStatusQuestion(text) {
@@ -2745,17 +2809,7 @@ function isCategoricalWorkAuthorizationStatusQuestion(text) {
 }
 
 function isVisaSponsorshipQuestion(text) {
-  const lower = normalizeText(text || "").toLowerCase();
-  return (
-    /\bvisa sponsorship\b/.test(lower) ||
-    /\brequire sponsorship\b/.test(lower) ||
-    /\bsponsorship for employment\b/.test(lower) ||
-    /\bvisa transfer\b/.test(lower) ||
-    /\b(?:employment|work) visa\b/.test(lower) ||
-    /\bimmigration (?:support|assistance)\b/.test(lower) ||
-    /\b(?:require|need|seek)\b.{0,50}\b(?:sponsor(?:ship)?|work visa|immigration support)\b/.test(lower) ||
-    /\bnow or in the future\b.*\b(?:sponsorship|visa)\b/.test(lower)
-  );
+  return CareerPeelerApplicationSafety.workQuestionPolicy(text)?.policyKey === "sponsorship";
 }
 
 function isAgeEligibilityQuestion(text) {
@@ -2952,7 +3006,7 @@ function getQuestionContainers() {
     .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
 }
 
-function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLabel) {
+function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLabel, options = {}) {
   const selects = Array.from(container.querySelectorAll("select"))
     .filter((element) => isElementVisible(element))
     .filter((element) => !isActionDisabled(element));
@@ -2966,6 +3020,7 @@ function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLab
       continue;
     }
 
+    options.assertIdentity?.();
     select.value = option.value;
     select.dispatchEvent(new Event("input", { bubbles: true }));
     select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2980,11 +3035,11 @@ function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLab
   return false;
 }
 
-function selectNativeYesAnswer(container, stepName, steps) {
-  return selectNativeAnswer(container, stepName, steps, isYesAnswerText, "Yes");
+function selectNativeYesAnswer(container, stepName, steps, options = {}) {
+  return selectNativeAnswer(container, stepName, steps, isYesAnswerText, "Yes", options);
 }
 
-function clickAnswerInContainer(container, answerPattern, stepName, steps) {
+function clickAnswerInContainer(container, answerPattern, stepName, steps, options = {}) {
   const candidates = Array.from(
     container.querySelectorAll("label, button, [role='radio'], [role='button'], input[type='radio']")
   ).filter((element) => isElementVisible(element));
@@ -3001,6 +3056,7 @@ function clickAnswerInContainer(container, answerPattern, stepName, steps) {
     candidate.scrollIntoView({
       block: "center"
     });
+    options.assertIdentity?.();
     candidate.click();
     steps.push({
       step: stepName,
@@ -3041,7 +3097,7 @@ async function waitForDropdownOption(scope, matches, options = {}) {
   return null;
 }
 
-async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, answerLabel) {
+async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, answerLabel, options = {}) {
   const controls = Array.from(
     container.querySelectorAll(
       [
@@ -3069,6 +3125,7 @@ async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, an
       block: "center"
     });
     await delay(150);
+    options.assertIdentity?.();
     control.click();
 
     const matchedOption = await waitForDropdownOption(
@@ -3093,6 +3150,7 @@ async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, an
       block: "center"
     });
     await delay(100);
+    options.assertIdentity?.();
     matchedOption.click();
     steps.push({
       step: stepName,
@@ -3106,8 +3164,8 @@ async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, an
   return false;
 }
 
-async function clickDropdownYesAnswer(container, stepName, steps) {
-  return clickDropdownAnswer(container, stepName, steps, isYesAnswerText, "Yes");
+async function clickDropdownYesAnswer(container, stepName, steps, options = {}) {
+  return clickDropdownAnswer(container, stepName, steps, isYesAnswerText, "Yes", options);
 }
 
 function getSelectedDropdownText(container) {
@@ -3130,31 +3188,31 @@ function hasMeaningfulSelectedDropdownValue(container) {
   return Boolean(displayedValue) && !/^(?:select|choose)(?: an?)?(?: option| answer)?$/i.test(displayedValue);
 }
 
-async function answerYesQuestion(container, stepName, steps) {
-  if (selectNativeYesAnswer(container, stepName, steps)) {
+async function answerYesQuestion(container, stepName, steps, options = {}) {
+  if (selectNativeYesAnswer(container, stepName, steps, options)) {
     return true;
   }
 
-  if (clickAnswerInContainer(container, /\byes\b/, stepName, steps)) {
+  if (clickAnswerInContainer(container, /\byes\b/, stepName, steps, options)) {
     return true;
   }
 
-  return clickDropdownYesAnswer(container, stepName, steps);
+  return clickDropdownYesAnswer(container, stepName, steps, options);
 }
 
-async function answerNoQuestion(container, stepName, steps) {
-  if (selectNativeAnswer(container, stepName, steps, isNoAnswerText, "No")) {
+async function answerNoQuestion(container, stepName, steps, options = {}) {
+  if (selectNativeAnswer(container, stepName, steps, isNoAnswerText, "No", options)) {
     return true;
   }
 
-  if (clickAnswerInContainer(container, /\bno\b/, stepName, steps)) {
+  if (clickAnswerInContainer(container, /\bno\b/, stepName, steps, options)) {
     return true;
   }
 
-  return clickDropdownAnswer(container, stepName, steps, isNoAnswerText, "No");
+  return clickDropdownAnswer(container, stepName, steps, isNoAnswerText, "No", options);
 }
 
-async function answerQuestionnaire(steps) {
+async function answerQuestionnaire(steps, applicationAnswers = {}, options = {}) {
   const alreadyAppliedBeforeQuestions = getAlreadyAppliedSignal();
 
   if (alreadyAppliedBeforeQuestions) {
@@ -3166,15 +3224,14 @@ async function answerQuestionnaire(steps) {
     };
   }
 
-  const containers = getQuestionContainers();
   const questionRules = [
     {
       matcher: (question) =>
-        isWorkAuthorizationQuestion(question) && !isCategoricalWorkAuthorizationStatusQuestion(question),
-      answer: answerYesQuestion,
+        isWorkAuthorizationQuestion(question),
+      savedWorkAnswer: true,
       stepName: "Answer work authorization"
     },
-    { matcher: isVisaSponsorshipQuestion, answer: answerYesQuestion, stepName: "Answer visa sponsorship" },
+    { matcher: isVisaSponsorshipQuestion, savedWorkAnswer: true, stepName: "Answer visa sponsorship" },
     { matcher: isAgeEligibilityQuestion, answer: answerYesQuestion, stepName: "Answer age eligibility" },
     {
       matcher: isPriorAppleEmploymentQuestion,
@@ -3203,7 +3260,7 @@ async function answerQuestionnaire(steps) {
       };
     }
 
-    const container = containers.find((candidate) => rule.matcher(normalizeText(candidate.innerText || "")));
+    const container = getQuestionContainers().find((candidate) => rule.matcher(normalizeText(candidate.innerText || "")));
 
     if (!container) {
       continue;
@@ -3211,7 +3268,13 @@ async function answerQuestionnaire(steps) {
 
     requiredCount += 1;
 
-    if (await rule.answer(container, rule.stepName, steps)) {
+    options.assertIdentity?.();
+    if (rule.savedWorkAnswer) {
+      const result = await answerSavedWorkQuestion(container, steps, applicationAnswers, options);
+      if (result.unresolvedReason) return { answeredAny: answeredCount > 0, requiredCount, answeredCount,
+        alreadyAppliedSignal: null, unresolvedReason: result.unresolvedReason };
+      if (result.answered) answeredCount += 1;
+    } else if (await rule.answer(container, rule.stepName, steps, options)) {
       answeredCount += 1;
     }
   }
@@ -3560,10 +3623,11 @@ function getAgentDropdownControlledScopes(control) {
     .filter(Boolean);
 }
 
-async function openAndReadAgentDropdownOptions(control) {
+async function openAndReadAgentDropdownOptions(control, options = {}) {
   const before = new Set(getVisibleAgentDropdownOptions());
   control.scrollIntoView({ block: "center" });
   await delay(150);
+  options.assertIdentity?.();
   control.click();
 
   const deadline = Date.now() + 4000;
@@ -3572,6 +3636,7 @@ async function openAndReadAgentDropdownOptions(control) {
   let bestCandidates = [];
 
   while (Date.now() < deadline) {
+    options.assertIdentity?.();
     const visible = getVisibleAgentDropdownOptions();
     const revealed = visible.filter((option) => !before.has(option));
     const controlled = getAgentDropdownControlledScopes(control)
@@ -3659,6 +3724,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
   let answeredCount = 0;
 
   for (let iteration = 0; iteration < 20; iteration += 1) {
+    options.assertIdentity?.();
     const alreadyAppliedSignal = getAlreadyAppliedSignal();
     if (alreadyAppliedSignal) {
       return { answeredCount, incomplete: false, alreadyAppliedSignal };
@@ -3681,7 +3747,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
     let optionElements = descriptor.optionElements || [];
     let optionLabels = descriptor.options;
     if (["custom_dropdown", "custom_multi_select"].includes(descriptor.kind)) {
-      optionElements = await openAndReadAgentDropdownOptions(descriptor.element);
+      optionElements = await openAndReadAgentDropdownOptions(descriptor.element, options);
       optionLabels = optionElements.map(getAnswerOptionLabel);
     }
 
@@ -3698,6 +3764,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
       return { answeredCount, incomplete: true, alreadyAppliedSignal: null };
     }
 
+    options.assertIdentity?.();
     let confirmed = false;
     if (["select", "multi_select"].includes(descriptor.kind)) {
       if (setNativeSelectValues(descriptor.element, wantedValues)) {
@@ -3716,6 +3783,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
       if (!matched.some((option) => !option) && (matched.length === 1 || descriptor.kind === "checkbox_group")) {
         for (const option of matched) {
           option.scrollIntoView({ block: "nearest" });
+          options.assertIdentity?.();
           option.click();
         }
         confirmed = await waitForCondition(() => matched.every(isAnswerOptionSelected));
@@ -3724,7 +3792,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
       confirmed = true;
       for (let valueIndex = 0; valueIndex < wantedValues.length; valueIndex += 1) {
         const wantedValue = wantedValues[valueIndex];
-        const currentOptions = valueIndex === 0 ? optionElements : await openAndReadAgentDropdownOptions(descriptor.element);
+        const currentOptions = valueIndex === 0 ? optionElements : await openAndReadAgentDropdownOptions(descriptor.element, options);
         const option = currentOptions.find(
           (candidate) => getAnswerOptionLabel(candidate).toLowerCase() === wantedValue.toLowerCase()
         );
@@ -3733,6 +3801,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
           break;
         }
         option.scrollIntoView({ block: "nearest" });
+        options.assertIdentity?.();
         option.click();
         const selected = await waitForCondition(() => {
           const displayed = normalizeText(
@@ -3801,6 +3870,7 @@ async function answerOpenTextQuestion(steps, options = {}) {
     return { answered: false, incomplete: true, questionText: label };
   }
 
+  options.assertIdentity?.();
   field.focus();
   setNativeFormValue(field, answer);
   field.scrollIntoView({ block: "center" });
@@ -3939,6 +4009,46 @@ async function resolveRequiredFieldAudit(steps, options = {}) {
   };
 }
 
+function getJobIdentifiedSubmissionSignals() {
+  const signals = [];
+  for (const element of Array.from(document.querySelectorAll("#global-alert, [role='alert'], [data-autom='submission-confirmation']"))) {
+    if (!isElementVisible(element)) continue;
+    const text = normalizeText(element.innerText || element.textContent || "");
+    if (!isSubmissionConfirmationText(text)) continue;
+    const ids = new Set(Array.from(element.querySelectorAll?.('a[href*="/details/"]') || [])
+      .map(anchor => CareerPeelerApplicationSafety.jobIdFromUrl(anchor.href)).filter(Boolean));
+    for (const match of text.matchAll(/\b(?:job|role|requisition)\s*(?:id|number|#|:)\s*:?\s*(\d+(?:-\d+)?)/gi)) ids.add(match[1]);
+    signals.push({ text, ids });
+  }
+  return signals;
+}
+
+function getJobBoundSubmissionSignal(expectedJobId) {
+  const signal = getJobIdentifiedSubmissionSignals().find(signal => signal.ids.size === 1 && signal.ids.has(String(expectedJobId)));
+  return signal ? { text: signal.text, jobId: String(expectedJobId) } : null;
+}
+
+function assertAppleWorkflowIdentity(options = {}, allowConfirmation = false) {
+  const expected = String(options.expectedJobId || "");
+  const url = window.location.href;
+  if (!/^\d+(?:-\d+)?$/.test(expected)) throw Object.assign(new Error("The reviewed Apple job ID is missing or invalid. The workflow stopped."),
+    { code: "job_identity_unverified" });
+  if (getJobIdentifiedSubmissionSignals().some(signal => [...signal.ids].some(id => id !== expected))) {
+    throw Object.assign(new Error("The submission confirmation identifies a different Apple role. The workflow stopped."),
+      { code: "job_identity_mismatch" });
+  }
+  if (CareerPeelerApplicationSafety.matchesJob(expected, url)) return;
+  // A profile route has no job identity. Accept it for observation only when
+  // this workflow submitted and the confirmation itself identifies that role.
+  if (allowConfirmation && options.allowConfirmation && CareerPeelerApplicationSafety.isConfirmationUrl(url) &&
+    getJobBoundSubmissionSignal(expected)) return;
+  const actual = CareerPeelerApplicationSafety.jobIdFromUrl(url);
+  throw Object.assign(new Error(actual
+    ? `Apple job identity changed: reviewed ${expected || "unknown"}, now ${actual}. The workflow stopped.`
+    : "Apple job identity could not be verified. The workflow stopped; review the selected role and Your Roles manually."),
+  { code: actual ? "job_identity_mismatch" : "job_identity_unverified" });
+}
+
 function buildStepResult(overrides) {
   return {
     url: window.location.href,
@@ -3986,6 +4096,7 @@ async function waitForApplicationFormToSettle(options = {}) {
       .length;
 
   while (Date.now() < deadline) {
+    options.assertObservationIdentity?.();
     const alreadyAppliedSignal = getAlreadyAppliedSignal();
 
     if (alreadyAppliedSignal) {
@@ -4015,6 +4126,26 @@ async function waitForApplicationFormToSettle(options = {}) {
 
 async function runApplicationWorkflowStep(options = {}) {
   const steps = [];
+  const bound = { ...options, steps };
+  bound.assertIdentity = () => assertAppleWorkflowIdentity(bound);
+  bound.assertObservationIdentity = () => assertAppleWorkflowIdentity({ ...bound,
+    allowConfirmation: Boolean(bound.allowConfirmation || steps.some(step => step.step === "Submit application" && step.status === "clicked")) }, true);
+  try {
+    bound.assertObservationIdentity();
+    const result = await runBoundApplicationWorkflowStep(bound);
+    bound.assertObservationIdentity();
+    return { ...result, expectedJobId: String(bound.expectedJobId), identityVerified: true };
+  } catch (error) {
+    if (!/^job_identity_/.test(error.code || "")) throw error;
+    const unknown = bound.submissionOutcome === "unknown" || steps.some(step => step.step === "Submit application" && step.status === "clicked");
+    return buildStepResult({ clicked: false, done: false, pausedForReview: true,
+      errorType: error.code, steps, expectedJobId: String(bound.expectedJobId || ""), identityVerified: false,
+      submissionOutcome: unknown ? "unknown" : bound.submissionOutcome || "not_attempted", summary: error.message });
+  }
+}
+
+async function runBoundApplicationWorkflowStep(options) {
+  const steps = options.steps;
   const siteConfig = getSiteConfig();
   const currentUrl = getCurrentUrl();
   const submissionAttemptCount = Math.max(0, Number(options.submissionAttemptCount) || 0);
@@ -4064,7 +4195,8 @@ async function runApplicationWorkflowStep(options = {}) {
     }
 
     const jobId = getJobId();
-    const submitResume = await waitForJobSpecificApplyAction(siteConfig, jobId, 6000);
+    const submitResume = await waitForJobSpecificApplyAction(siteConfig, jobId, 6000, options);
+    options.assertIdentity();
 
     if (!submitResume) {
       const lateSubmittedSignal = getSubmittedSignal();
@@ -4103,6 +4235,9 @@ async function runApplicationWorkflowStep(options = {}) {
     const backgroundOpenableLink = getBackgroundOpenableLink(submitResume);
 
     if (backgroundOpenableLink) {
+      if (!CareerPeelerApplicationSafety.matchesJob(options.expectedJobId, backgroundOpenableLink)) {
+        throw Object.assign(new Error("The application link did not identify the reviewed Apple role."), { code: "job_identity_mismatch" });
+      }
       steps.push({
         step: "Open application flow",
         status: "opening_in_workflow_tab",
@@ -4122,6 +4257,7 @@ async function runApplicationWorkflowStep(options = {}) {
       block: "center"
     });
     await delay(200);
+    options.assertIdentity();
     submitResume.click();
     steps.push({
       step: "Open application flow",
@@ -4150,7 +4286,8 @@ async function runApplicationWorkflowStep(options = {}) {
   // saveJobRecord() ran. The next scan then re-queues this job and lands back on this same page,
   // which no longer has a working Continue/Submit action. Check for the generic Submitted signal
   // here too (already checked on the detail page) before assuming the form still needs filling out.
-  const submittedOnLoad = getSubmittedSignal();
+  const submittedOnLoad = CareerPeelerApplicationSafety.matchesJob(options.expectedJobId, window.location.href)
+    ? getSubmittedSignal() : getJobBoundSubmissionSignal(options.expectedJobId);
 
   if (submittedOnLoad) {
     return buildStepResult({
@@ -4169,8 +4306,9 @@ async function runApplicationWorkflowStep(options = {}) {
   }
 
   const settleResult = await waitForApplicationFormToSettle({
-    minimumWaitMs: 0
+    minimumWaitMs: 0, assertObservationIdentity: options.assertObservationIdentity
   });
+  options.assertObservationIdentity();
 
   if (settleResult.alreadyAppliedSignal) {
     return buildAlreadyAppliedStepResult(settleResult.alreadyAppliedSignal, steps);
@@ -4201,7 +4339,9 @@ async function runApplicationWorkflowStep(options = {}) {
   let answeredSponsorship = false;
 
   if (!isReviewAndSubmitStep) {
-    const questionnaireResult = await answerQuestionnaire(steps);
+    const questionnaireResult = await answerQuestionnaire(steps, options.applicationAnswers, options);
+    if (questionnaireResult.unresolvedReason) return buildStepResult({ clicked: false, done: false, pausedForReview: true,
+      errorType: "work_eligibility_unresolved", steps, summary: questionnaireResult.unresolvedReason });
 
     if (questionnaireResult.alreadyAppliedSignal) {
       return buildAlreadyAppliedStepResult(questionnaireResult.alreadyAppliedSignal, steps);
@@ -4215,7 +4355,11 @@ async function runApplicationWorkflowStep(options = {}) {
       return buildAlreadyAppliedStepResult(alreadyAppliedBeforeFallback, steps);
     }
 
-    answeredSponsorship = answeredQuestionnaire ? false : clickSponsorshipAnswer(steps);
+    const sponsorshipResult = answeredQuestionnaire ? { answered: false }
+      : await clickSponsorshipAnswer(steps, options.applicationAnswers, options);
+    if (sponsorshipResult.unresolvedReason) return buildStepResult({ clicked: false, done: false, pausedForReview: true,
+      errorType: "work_eligibility_unresolved", steps, summary: sponsorshipResult.unresolvedReason });
+    answeredSponsorship = sponsorshipResult.answered;
 
     if (answeredQuestionnaire || answeredSponsorship) {
       await delay(500);
@@ -4248,7 +4392,8 @@ async function runApplicationWorkflowStep(options = {}) {
     });
   }
 
-  const primaryActionResult = await clickPrimaryAction(siteConfig, steps);
+  options.assertIdentity();
+  const primaryActionResult = await clickPrimaryAction(siteConfig, steps, options);
 
   if (
     !primaryActionResult.clicked &&
@@ -4268,6 +4413,7 @@ async function runApplicationWorkflowStep(options = {}) {
     }
 
     const stuckRecovery = await resolveRequiredFieldAudit(steps, {
+      ...options,
       includeUnmarked: true,
       previousRecoveryFingerprint: previousValidationRecoveryFingerprint
     });
@@ -4322,6 +4468,7 @@ async function runApplicationWorkflowStep(options = {}) {
         done: false,
         pausedForReview: true,
         errorType: "submission_retry_limit",
+        submissionOutcome: "rejected",
         steps,
         summary: `The form still reported validation errors after ${MAX_FINAL_SUBMIT_ATTEMPTS} final Submit attempts, so it was not clicked again.`
       });
@@ -4339,6 +4486,7 @@ async function runApplicationWorkflowStep(options = {}) {
     }
 
     const recoveryResult = await resolveRequiredFieldAudit(steps, {
+      ...options,
       includeUnmarked: true,
       previousRecoveryFingerprint: previousValidationRecoveryFingerprint
     });
@@ -4366,6 +4514,7 @@ async function runApplicationWorkflowStep(options = {}) {
         validationRecoveryAttempted: true,
         validationRecoveryFingerprint: recoveryResult.recoveryFingerprint,
         steps,
+        submissionOutcome: primaryActionResult.submissionOutcome,
         summary: `Required validation blocked progress; the question agent answered and verified ${recoveryResult.answeredCount} field(s). Retrying the application step.`
       });
     }
@@ -4377,6 +4526,7 @@ async function runApplicationWorkflowStep(options = {}) {
         pausedForReview: true,
         errorType: "required_field_audit_failed",
         steps,
+        submissionOutcome: primaryActionResult.submissionOutcome,
         summary: `Required validation blocked progress. ${formatRequiredFieldAuditSummary(recoveryResult.audit)}`
       });
     }
@@ -4389,6 +4539,7 @@ async function runApplicationWorkflowStep(options = {}) {
       alreadySubmitted: Boolean(primaryActionResult.alreadySubmitted),
       errorType: primaryActionResult.errorType || null,
       steps,
+      submissionOutcome: primaryActionResult.submissionOutcome,
       summary: primaryActionResult.summary
     });
   }
@@ -4398,6 +4549,7 @@ async function runApplicationWorkflowStep(options = {}) {
       clicked: true,
       done: false,
       steps,
+      submissionOutcome: primaryActionResult.submissionOutcome,
       summary: primaryActionResult.summary
     });
   }
@@ -4409,6 +4561,7 @@ async function runApplicationWorkflowStep(options = {}) {
       pausedForReview: true,
       errorType: primaryActionResult.errorType || "blocked_by_validation",
       steps,
+      submissionOutcome: primaryActionResult.submissionOutcome,
       summary: primaryActionResult.summary
     });
   }
@@ -4426,6 +4579,15 @@ async function runApplicationWorkflowStep(options = {}) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "APPLE_CAREERS_VERIFY_WORKFLOW_IDENTITY") {
+    try {
+      assertAppleWorkflowIdentity(message, true);
+      sendResponse({ ok: true, data: { identityVerified: true, expectedJobId: String(message.expectedJobId), url: window.location.href } });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message, data: { errorType: error.code } });
+    }
+    return false;
+  }
   if (message?.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") {
     const details = message.details || {};
     let text = [details.title, "Description", details.description, "Minimum Qualifications", details.minimumQualifications,
@@ -4515,6 +4677,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP") {
     runApplicationWorkflowStep({
+      expectedJobId: message.expectedJobId,
+      allowConfirmation: message.allowConfirmation,
+      applicationAnswers: message.applicationAnswers,
+      submissionOutcome: message.submissionOutcome,
       submissionAttemptCount: message.submissionAttemptCount,
       validationRecoveryAttempts: message.validationRecoveryAttempts,
       previousValidationRecoveryFingerprint: message.previousValidationRecoveryFingerprint
