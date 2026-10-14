@@ -1786,6 +1786,10 @@ function hasAppliedSignalInListRow(anchor, jobId) {
 }
 
 function getCurrentResultsPage() {
+  const applePage = document.querySelector("#search-pagnation #pagination-search-page-number");
+  if (applePage && /^\d+$/.test(String(applePage.value).trim()) && Number(applePage.value) > 0) {
+    return Number(applePage.value);
+  }
   const url = new URL(window.location.href);
   const pageParams = ["page", "pg", "p"];
 
@@ -1796,7 +1800,8 @@ function getCurrentResultsPage() {
     }
   }
 
-  const offset = Number(url.searchParams.get("offset") || url.searchParams.get("start"));
+  const offsetValue = url.searchParams.get("offset") ?? url.searchParams.get("start");
+  const offset = offsetValue === null ? NaN : Number(offsetValue);
   const pageSize = Number(url.searchParams.get("limit") || url.searchParams.get("size") || 20);
   if (Number.isInteger(offset) && offset >= 0 && Number.isInteger(pageSize) && pageSize > 0) {
     return Math.floor(offset / pageSize) + 1;
@@ -1815,8 +1820,6 @@ function getCurrentResultsPage() {
 }
 
 function getNextPageControl() {
-  const siteConfig = getSiteConfig();
-
   const candidates = document.querySelectorAll("a[href], button, [role='button']");
 
   for (const candidate of candidates) {
@@ -1838,12 +1841,14 @@ function getNextPageControl() {
 
     if (candidate instanceof HTMLAnchorElement && candidate.href) {
       return {
+        element: candidate,
         action: "navigate",
         url: candidate.href
       };
     }
 
     return {
+      element: candidate,
       action: "click"
     };
   }
@@ -1876,7 +1881,143 @@ async function waitForJobLinksChange(previousLinks, options = {}) {
   return false;
 }
 
-async function goToNextPage() {
+function appleSearchIdentity(value) {
+  let url;
+  try { url = new URL(value); } catch (_) {
+    throw appleSearchPaginationError("The filtered Apple search could not be verified.", "search_filter_changed", false);
+  }
+  if (url.origin !== "https://jobs.apple.com" || !/^\/[a-z]{2}-[a-z]{2}\/search\/?$/i.test(url.pathname)) {
+    throw appleSearchPaginationError("The filtered Apple search could not be verified.", "search_filter_changed", false);
+  }
+  url.searchParams.delete("page");
+  url.searchParams.sort();
+  url.pathname = url.pathname.toLowerCase().replace(/\/$/, "");
+  url.hash = "";
+  return url.href;
+}
+
+function appleSearchPaginationError(message, errorType = "search_pagination_unavailable", retryable = true) {
+  return Object.assign(new Error(message), { errorType, retryable });
+}
+
+function appleSearchPageSignature(links) {
+  return links.map(link => String(link.jobId)).sort().join("|");
+}
+
+function readAppleSearchPagination(expectedSearchUrl) {
+  const session = getSessionRequiredSignal();
+  if (session) throw appleSearchPaginationError(session, "session_or_login_required", false);
+  if (appleSearchIdentity(window.location.href) !== appleSearchIdentity(expectedSearchUrl)) {
+    throw appleSearchPaginationError("Apple's search filters changed. Saved rankings remain available.", "search_filter_changed", false);
+  }
+  if (Array.from(document.querySelectorAll("[aria-busy='true'], [role='progressbar']")).some(isElementVisible)) {
+    throw appleSearchPaginationError("Apple's search results are still loading.", "search_results_loading");
+  }
+  const error = Array.from(document.querySelectorAll("[role='alert']")).find(element => isElementVisible(element) &&
+    /\b(error|failed|failure|unavailable|unable|timed out|something went wrong|try again)\b/i.test(element.innerText || element.textContent || ""));
+  if (error) throw appleSearchPaginationError(normalizeText(error.innerText || error.textContent), "search_results_failed");
+  const pagination = document.querySelector("#search-pagnation");
+  const input = pagination?.querySelector("#pagination-search-page-number");
+  const total = pagination?.querySelector("[data-autom='paginationTotalPages']");
+  const next = pagination?.querySelector('button[aria-label="Next Page"]');
+  const previous = pagination?.querySelector('button[aria-label="Previous Page"]');
+  const ordinal = String(input?.value ?? "").trim();
+  const totalText = String(total?.textContent ?? "").trim();
+  const currentPage = /^\d+$/.test(ordinal) ? Number(ordinal) : null;
+  const pageCount = /^\d+$/.test(totalText) ? Number(totalText) : null;
+  const visible = element => Boolean(element && element.isConnected !== false && isElementVisible(element));
+  if (!pagination || !isElementVisible(pagination) || !Number.isInteger(currentPage) || !Number.isInteger(pageCount) || currentPage < 1 || currentPage > pageCount ||
+    !visible(next) || !visible(previous) || !isActionDisabled(next) !== (currentPage < pageCount) || !isActionDisabled(previous) !== (currentPage > 1)) {
+    throw appleSearchPaginationError("Apple's search pagination is incomplete or still loading.");
+  }
+  return { currentPage, pageCount, hasNextPage: currentPage < pageCount, next };
+}
+
+async function waitForVerifiedAppleSearchPage({ expectedSearchUrl, expectedPage, previousPageSignature = null,
+  timeoutMs = 30000, intervalMs = 300, stableChecksRequired = 4 } = {}) {
+  if (!Number.isInteger(expectedPage) || expectedPage < 1 || !expectedSearchUrl) {
+    throw appleSearchPaginationError("The intended Apple search page is missing.", "search_page_identity_missing", false);
+  }
+  const deadline = Date.now() + timeoutMs;
+  let lastSignature = null;
+  let stableReads = 0;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const page = readAppleSearchPagination(expectedSearchUrl);
+      if (page.currentPage > expectedPage) {
+        throw appleSearchPaginationError(`Apple opened search page ${page.currentPage} instead of ${expectedPage}.`, "search_page_mismatch", false);
+      }
+      const links = collectJobLinks();
+      const signature = appleSearchPageSignature(links);
+      if (page.currentPage === expectedPage && links.length &&
+        links.every(link => /^\d+(?:-\d+)?$/.test(String(link.jobId))) && signature !== previousPageSignature) {
+        const identity = `${page.currentPage}|${page.pageCount}|${signature}`;
+        stableReads = identity === lastSignature ? stableReads + 1 : 1;
+        lastSignature = identity;
+        if (stableReads >= stableChecksRequired) {
+          return { ...page, next: undefined, links, paginationVerified: true, url: window.location.href };
+        }
+      } else {
+        stableReads = 0;
+        lastSignature = null;
+        lastError = appleSearchPaginationError(`Apple's search page ${expectedPage} has not finished loading.`, "search_page_not_ready");
+      }
+    } catch (error) {
+      if (error.retryable === false) throw error;
+      stableReads = 0;
+      lastSignature = null;
+      lastError = error;
+    }
+    await delay(intervalMs);
+  }
+  throw appleSearchPaginationError(lastError?.message || `Apple's search page ${expectedPage} did not finish loading.`,
+    lastError?.errorType || "search_page_timeout", true);
+}
+
+async function goToVerifiedAppleNextPage(options) {
+  const { expectedSearchUrl, expectedFromPage, expectedPage, previousPageSignature } = options;
+  if (!Number.isInteger(expectedFromPage) || expectedFromPage < 1 || expectedPage !== expectedFromPage + 1 ||
+    typeof previousPageSignature !== "string" || !previousPageSignature) {
+    throw appleSearchPaginationError("The intended next Apple search page is missing.", "search_page_identity_missing", false);
+  }
+  const deadline = Date.now() + (options.timeoutMs ?? 30000);
+  let lastError;
+  while (Date.now() < deadline) {
+    let page;
+    try { page = readAppleSearchPagination(expectedSearchUrl); } catch (error) {
+      if (error.retryable === false) throw error;
+      lastError = error;
+      await delay(300);
+      continue;
+    }
+    if (page.currentPage === expectedPage) {
+      const verified = await waitForVerifiedAppleSearchPage({ ...options, timeoutMs: Math.max(1, deadline - Date.now()) });
+      return { ok: true, action: "click", currentPage: verified.currentPage, pageCount: verified.pageCount,
+        paginationVerified: true, alreadyAdvanced: true };
+    }
+    if (page.currentPage !== expectedFromPage || !page.hasNextPage) {
+      throw appleSearchPaginationError(`Apple's current search page does not match page ${expectedFromPage}.`, "search_page_mismatch", false);
+    }
+    if (appleSearchPageSignature(collectJobLinks()) !== previousPageSignature) {
+      throw appleSearchPaginationError("Apple's search results changed before pagination. Saved rankings remain available.", "search_page_changed", false);
+    }
+    const control = page.next;
+    if (!isElementVisible(control) || isActionDisabled(control) || control.isConnected === false) {
+      lastError = appleSearchPaginationError("Apple's next-page control is still loading.");
+      await delay(300);
+      continue;
+    }
+    // A second click after a slow transition can skip an entire unranked page.
+    control.click();
+    const verified = await waitForVerifiedAppleSearchPage({ ...options, timeoutMs: Math.max(1, deadline - Date.now()) });
+    return { ok: true, action: "click", currentPage: verified.currentPage, pageCount: verified.pageCount, paginationVerified: true };
+  }
+  throw lastError || appleSearchPaginationError("Apple's next-page control did not finish loading.");
+}
+
+async function goToNextPage(options = {}) {
+  if (options.expectedSearchUrl) return goToVerifiedAppleNextPage(options);
   const nextPageControl = getNextPageControl();
 
   if (!nextPageControl) {
@@ -1896,19 +2037,13 @@ async function goToNextPage() {
   }
 
   const previousLinks = collectJobLinks();
-
-  const candidates = document.querySelectorAll("a[href], button, [role='button']");
-  for (const candidate of candidates) {
-    const label = normalizeText(`${candidate.innerText || ""} ${candidate.getAttribute("aria-label") || ""}`);
-    const lower = label.toLowerCase();
-
-    if ((/^(next|next page)$/.test(lower) || /\bnext page\b/.test(lower)) && isElementVisible(candidate)) {
-      candidate.click();
-      const changed = await waitForJobLinksChange(previousLinks);
-      return changed
-        ? { ok: true, action: "click" }
-        : { ok: false, reason: "The job list did not visibly change after clicking the next-page control." };
-    }
+  const candidate = nextPageControl.element;
+  if (candidate && isElementVisible(candidate) && !isActionDisabled(candidate) && candidate.isConnected !== false) {
+    candidate.click();
+    const changed = await waitForJobLinksChange(previousLinks);
+    return changed
+      ? { ok: true, action: "click" }
+      : { ok: false, reason: "The job list did not visibly change after clicking the next-page control." };
   }
 
   return {
@@ -4843,8 +4978,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
-    waitForJobListToSettle().then(() => {
-      const links = collectJobLinks();
+    const ready = message.verifySearchPagination
+      ? waitForVerifiedAppleSearchPage(message)
+      : waitForJobListToSettle();
+    ready.then((verified) => {
+      const links = verified?.links || collectJobLinks();
       const siteConfig = getSiteConfig();
       const currentUrl = getCurrentUrl();
       const currentJob = siteConfig?.isJobDetailUrl(currentUrl) || siteConfig?.isApplicationUrl(currentUrl)
@@ -4865,20 +5003,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           site: siteConfig?.id || "unknown",
           siteLabel: siteConfig?.label || "Unsupported site",
           url: window.location.href,
-          currentPage: getCurrentResultsPage(),
+          currentPage: verified?.currentPage || getCurrentResultsPage(),
+          ...(verified ? { pageCount: verified.pageCount, paginationVerified: true } : {}),
           currentJob,
           links,
           listStats: getJobListStats(links),
-          hasNextPage: Boolean(getNextPageControl())
+          hasNextPage: verified ? verified.hasNextPage : Boolean(getNextPageControl())
         }
       });
-    });
+    }).catch((error) => sendResponse({ ok: false, error: error?.message || "The Apple search page could not be read.",
+      reason: error?.message, data: { errorType: error?.errorType || "search_page_read_failed", retryable: error?.retryable !== false } }));
 
     return true;
   }
 
   if (message?.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") {
-    goToNextPage().then(sendResponse);
+    goToNextPage(message).then(sendResponse).catch(error => sendResponse({ ok: false,
+      error: error?.message || "Apple's next search page could not be opened.", reason: error?.message,
+      data: { errorType: error?.errorType || "search_page_navigation_failed", retryable: error?.retryable !== false } }));
     return true;
   }
 

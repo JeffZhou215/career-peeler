@@ -116,7 +116,8 @@ test("OpenAI 429 errors preserve the actionable provider message and retry metad
 function workerHarness(options = {}) {
   let clock = 100000;
   const store = options.store || {};
-  const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [], capacityReads: [], capacityTabs: [] };
+  const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [], capacityReads: [], capacityTabs: [],
+    collected: [], next: [], updated: [] };
   const mocks = { pages: [], activeRoles: [], live: details, workflow: { ok: true, data: { submitted: true } } };
   const adapter = {
     get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(store[key])])),
@@ -130,6 +131,38 @@ function workerHarness(options = {}) {
     putRecords: async (key, values) => { store[key] = { ...store[key], ...structuredClone(values) }; },
     updateMetadata: async (key, update) => { const value = update(structuredClone(store[key])); store[key] = structuredClone(value); return structuredClone(value); },
     getMetadata: async key => structuredClone(store[key])
+  };
+  const setSearchUrl = (url) => {
+    mocks.currentSearchUrl = url;
+    mocks.currentSearchPage = Number(new URL(url).searchParams.get("page") || 1);
+  };
+  const searchMessage = async (tabId, message) => {
+    if (message.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
+      calls.pages++;
+      calls.collected.push(structuredClone(message));
+      assert.equal(message.verifySearchPagination, true, "every ranking read verifies actual pagination");
+      assert.equal(message.expectedSearchUrl, sandbox.api.appleRankingSearchUrl(message.expectedSearchUrl));
+      const page = mocks.pages[(mocks.currentSearchPage || 1) - 1];
+      if (mocks.onPage) mocks.onPage(mocks.currentSearchPage, message);
+      if (mocks.collect) return mocks.collect(tabId, message, page);
+      if (!page || page.ok === false) return { ok: false, error: page?.error || "Synthetic search page could not be read." };
+      if (message.expectedPage !== mocks.currentSearchPage) return { ok: false,
+        error: `Expected search page ${message.expectedPage}, but Apple is still on page ${mocks.currentSearchPage}.` };
+      return { ok: true, data: { url: mocks.currentSearchUrl, paginationVerified: true,
+        currentPage: mocks.currentSearchPage, pageCount: mocks.pages.length,
+        hasNextPage: mocks.currentSearchPage < mocks.pages.length, ...page } };
+    }
+    if (message.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") {
+      calls.next.push(structuredClone(message));
+      assert.equal(message.expectedFromPage, mocks.currentSearchPage, "next-page requests bind the original page");
+      assert.equal(message.expectedPage, message.expectedFromPage + 1);
+      if (mocks.next) return mocks.next(tabId, message);
+      const nextUrl = new URL(mocks.currentSearchUrl);
+      nextUrl.searchParams.set("page", String(message.expectedPage));
+      setSearchUrl(nextUrl.href);
+      return { ok: true, action: "click" };
+    }
+    throw new Error(`Unexpected direct message ${message.type}`);
   };
   const sandbox = {
     ...core, CareerPeelerRanking: ranking, CareerPeelerApplicationSafety: safety, CareerPeelerJobStore: adapter,
@@ -145,13 +178,21 @@ function workerHarness(options = {}) {
       onActivated: { addListener() {} }, onUpdated: { addListener() {} },
       query: async () => mocks.capacityTabs || [],
       create: async ({ url }) => ({ id: 42, url }),
+      get: async (id) => ({ id, url: mocks.currentSearchUrl, windowId: 1, status: "complete" }),
+      update: async (id, updates) => {
+        calls.updated.push({ id, ...structuredClone(updates) });
+        if (mocks.update) return mocks.update(id, updates);
+        if (updates.url) setSearchUrl(updates.url);
+        return { id, url: mocks.currentSearchUrl, windowId: 1, status: "complete" };
+      },
+      sendMessage: searchMessage,
       remove: async (id) => calls.removed.push(id)
     } },
     delay: async (ms) => { clock += ms; }, waitForTabComplete: async () => {}, activateTab: async () => {},
     initializeKnownSiteScanActivity: async () => {}, saveScanState: async () => {},
     closeOwnedWorkflowTabs: async () => {}, finishKnownSiteScanRun: async () => {},
     createActiveWorkflowTab: async (url) => { mocks.currentJobUrl = url; return { id: 99, url }; },
-    createTaskTab: async url => { if (url.includes("/search")) { mocks.currentSearchUrl = url; calls.pageUrls.push(url); } return { id: 42, url }; }, getTaskWindowId: async () => 1,
+    createTaskTab: async url => { if (url.includes("/search")) { setSearchUrl(url); calls.pageUrls.push(url); } return { id: 42, url }; }, getTaskWindowId: async () => 1,
     appliedJobLedger: {}, errorJobLedger: {}, currentScanActivityCycles: [],
     beginKnownSiteActivityCycle: async () => "test-cycle", finishKnownSiteActivityCycle: async () => {},
     waitForAppleSubmittedRoleDetails: async (_tab, jobId) => ({ jobId, url: mocks.currentJobUrl, ...mocks.live }),
@@ -162,12 +203,9 @@ function workerHarness(options = {}) {
         pageIndex: 1, pageCount: 1, roles: [{ jobId: "123", active: true }]
       } };
       if (message.type === "APPLE_CAREERS_COLLECT_JOB_LINKS") {
-        const page = mocks.pages[calls.pages++];
-        if (!page || page.ok === false) return { ok: false };
-        if (mocks.onPage) mocks.onPage(calls.pages);
-        return { ok: true, data: { url: mocks.currentSearchUrl, ...page } };
+        return searchMessage(tabId, message);
       }
-      if (message.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") return { ok: true, action: "click" };
+      if (message.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") throw new Error("Mutating pagination must not use generic message replay.");
       if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
         calls.capacityReads.push({ tabId, restoreOriginalPage: message.restoreOriginalPage });
         return {
@@ -181,8 +219,11 @@ function workerHarness(options = {}) {
       if (message.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") return { ok: true, data: { score: 90 } };
       throw new Error(`Unexpected message ${message.type}`);
     },
-    fetchAppleSubmittedRoleDetails: async (links) => ({ detailsByJobId: new Map(links.map((job) => [job.jobId, details])) }),
-    callOpenAi: async () => { calls.scored += 1; if (mocks.error) throw mocks.error; return JSON.stringify(good); },
+    fetchAppleSubmittedRoleDetails: async (links) => {
+      if (mocks.onDetails) mocks.onDetails(links);
+      return { detailsByJobId: new Map(links.map((job) => [job.jobId, details])) };
+    },
+    callOpenAi: async () => { calls.scored += 1; if (mocks.onScore) mocks.onScore(calls.scored); if (mocks.error) throw mocks.error; return JSON.stringify(good); },
     runApplicationWorkflow: async (tab, options) => {
       assert.ok(calls.capacityReads.length, "every application requires a fresh full inventory read");
       assert.equal(store.appleJobRanking.capacitySnapshot.complete, true);
@@ -194,13 +235,13 @@ function workerHarness(options = {}) {
     }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleWorkflowRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleSubmissionSync.js"), "utf8") +
-    "\nglobalThis.api = { runAppleJobRanking, runAppleJobQueue, getAppleRankingView, appleRankingProfileSignature, scoreAppleRankingPosting, queueTopAppleJobs, refreshAppleJobQueueCount, appleAutoApplyJobs, appleRankingDiscovery, appleRankingSearchUrl };", sandbox);
+    "\nglobalThis.api = { startAppleJobRanking, runAppleJobRanking, runAppleJobQueue, getAppleRankingView, appleRankingProfileSignature, scoreAppleRankingPosting, queueTopAppleJobs, refreshAppleJobQueueCount, appleAutoApplyJobs, appleRankingDiscovery, appleRankingSearchUrl };", sandbox);
   function queuedJob(jobId, score) {
     return { jobId, title: details.title, url: `https://jobs.apple.com/en-us/details/${jobId}/engineer`,
       eligible: true, score, queueStatus: "queued", profileSignature: sandbox.api.appleRankingProfileSignature(profile),
       postingSignature: core.fingerprintText(JSON.stringify(ranking.postingInput(details))) };
   }
-  return { api: sandbox.api, store, calls, mocks, queuedJob };
+  return { api: sandbox.api, store, calls, mocks, queuedJob, sandbox, setSearchUrl };
 }
 
 test("filtered scans visit all pages, deduplicate overlaps, and reuse matching scores on the next scan", async () => {
@@ -411,7 +452,7 @@ test("pagination and parameter ordering do not change the filter identity; missi
   assert.equal(h.api.appleRankingSearchUrl(url), h.api.appleRankingSearchUrl(h.mocks.pages[1].url));
   assert.equal(h.api.appleRankingSearchUrl(url), h.api.appleRankingSearchUrl(url.replace("/en-us/search?", "/EN-US/search/?")));
   const malformed = workerHarness();
-  malformed.mocks.pages = [{ links: [searchLink("100")] }];
+  malformed.mocks.pages = [{ links: [searchLink("100")], paginationVerified: false }];
   await malformed.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, autoApply: true }, profile);
   assert.equal(Object.values(malformed.store.appleJobRanking.searches)[0].complete, false);
   assert.equal(malformed.calls.applied.length, 0);
@@ -425,7 +466,8 @@ test("a restored partial scan preserves its own observations but imports no hist
   await first.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
   const interrupted = Object.values(first.store.appleJobRanking.searches)[0];
   const second = workerHarness({ store: first.store });
-  second.mocks.pages = [{ links: [searchLink("102")], hasNextPage: false }];
+  second.mocks.pages = [{ links: [searchLink("101")], hasNextPage: true },
+    { links: [searchLink("102")], hasNextPage: false }];
   await second.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, resume: true, autoApply: true, topN: 50 }, profile);
   const completed = Object.values(second.store.appleJobRanking.searches)[0];
   assert.equal(completed.scanId, interrupted.scanId);
@@ -433,6 +475,278 @@ test("a restored partial scan preserves its own observations but imports no hist
   assert.deepEqual([...second.calls.applied].sort(), ["101", "102"]);
   assert.ok(second.calls.pageUrls[0].includes("page=2"));
   assert.equal(first.store.appleJobRanking.jobs["100"].queueStatus, "available");
+});
+
+test("verified search scans continue beyond ten pages and bind every navigation to the observed ordinal", async () => {
+  const h = workerHarness();
+  h.mocks.pages = Array.from({ length: 15 }, (_, index) => ({ links: [searchLink(String(7000 + index))] }));
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
+  const search = Object.values(h.store.appleJobRanking.searches)[0];
+  assert.equal(search.complete, true);
+  assert.equal(search.pagesRead, 15);
+  assert.equal(h.calls.scored, 15);
+  assert.equal(h.calls.next.length, 14);
+  assert.deepEqual(h.calls.next.map(message => message.expectedFromPage), Array.from({ length: 14 }, (_, index) => index + 1));
+  assert.ok(h.calls.next.every(message => message.expectedSearchUrl === filterA && typeof message.previousPageSignature === "string"));
+  assert.deepEqual(h.calls.collected.map(message => message.expectedPage), Array.from({ length: 15 }, (_, index) => index + 1));
+});
+
+test("a timed-out next-page response reconciles an already reached target without replaying navigation", async () => {
+  const h = workerHarness();
+  h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  h.mocks.next = async (_tabId, message) => {
+    const url = new URL(h.mocks.currentSearchUrl);
+    url.searchParams.set("page", String(message.expectedPage));
+    h.setSearchUrl(url.href);
+    throw new Error("Next-page response timed out after the click.");
+  };
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
+  assert.equal(Object.values(h.store.appleJobRanking.searches)[0].complete, true);
+  assert.equal(h.calls.next.length, 1, "the potentially executed Next action must not be replayed");
+  assert.equal(h.calls.updated.length, 0, "a verified target needs no fallback navigation");
+  assert.equal(h.calls.scored, 2);
+});
+
+test("a next-page timeout on the original page uses bounded owned-tab navigation and verifies the target", async () => {
+  const h = workerHarness();
+  h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  h.mocks.next = async () => { throw new Error("Next-page request timed out before a result was known."); };
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
+  assert.equal(Object.values(h.store.appleJobRanking.searches)[0].complete, true);
+  assert.equal(h.calls.next.length, 1);
+  assert.equal(h.calls.updated.length, 1);
+  assert.ok(h.calls.updated.every(update => update.id === 42 && new URL(update.url).searchParams.get("page") === "2"));
+  assert.ok(h.calls.collected.some(message => message.expectedPage === 2));
+  assert.equal(h.calls.scored, 2);
+});
+
+test("pagination retry exhaustion retains its real failure reason and never starts Auto Apply", async () => {
+  const h = workerHarness();
+  h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  h.mocks.next = async () => ({ ok: false, error: "Apple Next control did not become ready." });
+  h.mocks.update = async () => { throw new Error("Synthetic navigation timed out."); };
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, autoApply: true }, profile);
+  const search = Object.values(h.store.appleJobRanking.searches)[0];
+  assert.equal(search.complete, false);
+  assert.equal(search.pagesRead, 1);
+  assert.match(h.store.appleJobRanking.error, /Apple Next control did not become ready/);
+  assert.match(h.store.appleJobRanking.error, /Synthetic navigation timed out/);
+  assert.equal(h.calls.updated.length, 2);
+  assert.equal(h.calls.next.length, 1);
+  assert.deepEqual(h.calls.applied, []);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.store.appleJobRanking.jobs["100"].score, 90);
+});
+
+test("wrong page ordinals or a changing page count cannot certify a complete scan", async () => {
+  for (const invalid of [{ currentPage: 1 }, { pageCount: 3 }]) {
+    const h = workerHarness();
+    h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")], ...invalid }];
+    await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, autoApply: true }, profile);
+    assert.equal(Object.values(h.store.appleJobRanking.searches)[0].complete, false);
+    assert.ok(h.store.appleJobRanking.error);
+    assert.deepEqual(h.calls.applied, []);
+    assert.equal(h.calls.capacityReads.length, 0);
+  }
+});
+
+test("resume uses the last completed page rather than a prematurely advanced pageIndex", async () => {
+  const first = workerHarness();
+  first.mocks.pages = [{ links: [searchLink("100")] }, { ok: false, error: "Page two inventory read failed." }];
+  await first.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
+  const search = Object.values(first.store.appleJobRanking.searches)[0];
+  assert.equal(search.pagesRead, 1);
+  search.pageIndex = 8; // Simulate an older checkpoint that counted navigation as completed processing.
+  const restored = workerHarness({ store: first.store });
+  restored.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  await restored.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, resume: true }, profile);
+  assert.equal(new URL(restored.calls.pageUrls[0]).searchParams.get("page"), "2");
+  assert.equal(restored.calls.scored, 1);
+  assert.equal(Object.values(restored.store.appleJobRanking.searches)[0].complete, true);
+});
+
+test("Resume Scan rejects a different filter or changed profile instead of silently starting another scan", async () => {
+  for (const changed of ["filter", "profile"]) {
+    const h = workerHarness();
+    const searchKey = core.fingerprintText(filterA);
+    const saved = { url: filterA, scanId: "saved-partial-scan", pagesRead: 13, pageIndex: 13,
+      complete: false, discoveredJobIds: ["100"], profileSignature: h.api.appleRankingProfileSignature(profile), startedAt: 1 };
+    h.store.appleJobRanking = { jobs: {}, searches: { [searchKey]: saved }, latestSearchKey: searchKey, reservations: [] };
+    const result = await h.api.startAppleJobRanking({ id: 1, url: changed === "filter" ? filterB : filterA },
+      changed === "profile" ? { ...profile, resumeText: "Changed resume content" } : profile, { resume: true });
+    assert.equal(result.ok, false);
+    assert.match(result.error, changed === "filter" ? /last interrupted filter/ : /resume or matching settings changed/);
+    assert.equal(h.calls.pageUrls.length, 0);
+    assert.equal(h.calls.next.length, 0);
+    assert.deepEqual(h.store.appleJobRanking.searches[searchKey], saved);
+  }
+});
+
+test("resume rereads an interrupted page and processes discovered jobs without a completed score", async () => {
+  const first = workerHarness();
+  const run = { sourceTabId: 1, searchUrl: filterA };
+  first.mocks.pages = [{ links: [searchLink("100"), searchLink("101")] }];
+  first.mocks.onDetails = links => { if (links[0].jobId === "101") run.stopRequested = true; };
+  await first.api.runAppleJobRanking(run, profile);
+  const interrupted = Object.values(first.store.appleJobRanking.searches)[0];
+  assert.equal(interrupted.pagesRead, 0);
+  assert.deepEqual([...interrupted.discoveredJobIds], ["100", "101"]);
+  assert.deepEqual([...interrupted.processedJobIds], ["100"]);
+  assert.equal(first.store.appleJobRanking.jobs["101"].score, null);
+  const restored = workerHarness({ store: first.store });
+  restored.mocks.pages = [{ links: [searchLink("100"), searchLink("101")] }];
+  await restored.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, resume: true }, profile);
+  const completed = Object.values(restored.store.appleJobRanking.searches)[0];
+  assert.equal(new URL(restored.calls.pageUrls[0]).searchParams.get("page") || "1", "1");
+  assert.equal(restored.calls.scored, 1, "only the unprocessed job should require matching");
+  assert.equal(restored.store.appleJobRanking.scoresReused, 0, "the completed job is skipped, not reprocessed");
+  assert.deepEqual([...completed.processedJobIds], ["100", "101"]);
+  assert.equal(completed.complete, true);
+});
+
+test("pagination rejects exact filter drift even after the first page completed", async () => {
+  const h = workerHarness();
+  const filtered = "https://jobs.apple.com/en-us/search?team=software&location=USA";
+  h.mocks.pages = [{ links: [searchLink("100")] }, { url: "https://jobs.apple.com/en-us/search?team=software&location=CAN&page=2",
+    links: [searchLink("101")] }];
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filtered, autoApply: true }, profile);
+  assert.equal(Object.values(h.store.appleJobRanking.searches)[0].complete, false);
+  assert.equal(h.calls.scored, 1);
+  assert.equal(h.calls.applied.length, 0);
+  assert.ok(h.store.appleJobRanking.error);
+});
+
+test("nonretryable authentication failures during Next stop without recovery navigation or Auto Apply", async () => {
+  const h = workerHarness();
+  h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  h.mocks.next = async () => ({ ok: false, error: "Apple requires sign-in before continuing.",
+    data: { errorType: "search_authentication_required", retryable: false } });
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, autoApply: true }, profile);
+  assert.equal(Object.values(h.store.appleJobRanking.searches)[0].complete, false);
+  assert.equal(h.calls.next.length, 1);
+  assert.equal(h.calls.updated.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.deepEqual(h.calls.applied, []);
+  assert.equal(h.store.appleJobRanking.errorType, "search_authentication_required");
+  assert.match(h.store.appleJobRanking.error, /requires sign-in/);
+});
+
+test("an initial transient read is retried without changing pages, with a bounded retry limit", async () => {
+  const recovered = workerHarness();
+  const page = { url: filterA, paginationVerified: true, currentPage: 1, pageCount: 1,
+    hasNextPage: false, links: [searchLink("100")] };
+  recovered.mocks.pages = [page];
+  recovered.mocks.collect = async () => recovered.calls.pages === 1
+    ? { ok: false, error: "Apple is still loading the first search page." }
+    : { ok: true, data: page };
+  await recovered.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
+  assert.equal(Object.values(recovered.store.appleJobRanking.searches)[0].complete, true);
+  assert.equal(recovered.calls.pages, 2);
+  assert.equal(recovered.calls.next.length, 0);
+  assert.equal(recovered.calls.updated.length, 0);
+  assert.equal(recovered.calls.scored, 1);
+
+  const exhausted = workerHarness();
+  exhausted.mocks.pages = [{ ok: false, error: "Apple's first search page never became ready." }];
+  await exhausted.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, autoApply: true }, profile);
+  assert.equal(Object.values(exhausted.store.appleJobRanking.searches)[0].complete, false);
+  assert.equal(exhausted.calls.pages, 2);
+  assert.match(exhausted.store.appleJobRanking.error, /never became ready/);
+  assert.equal(exhausted.calls.updated.length, 0);
+  assert.equal(exhausted.calls.capacityReads.length, 0);
+  assert.deepEqual(exhausted.calls.applied, []);
+});
+
+test("cancellation during pagination reconciliation does not perform another navigation", async () => {
+  const h = workerHarness();
+  const run = { sourceTabId: 1, searchUrl: filterA, autoApply: true };
+  h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  h.mocks.next = async () => ({ ok: false, error: "Next response could not be verified." });
+  h.mocks.collect = async (_tabId, message) => {
+    if (message.expectedPage === 2) {
+      run.stopRequested = true;
+      return { ok: false, error: "Stopped while reconciling the next page." };
+    }
+    return { ok: true, data: { url: filterA, paginationVerified: true,
+      currentPage: 1, pageCount: 2, hasNextPage: true, links: [searchLink("100")] } };
+  };
+  await h.api.runAppleJobRanking(run, profile);
+  const search = Object.values(h.store.appleJobRanking.searches)[0];
+  assert.equal(search.complete, false);
+  assert.equal(search.pagesRead, 1);
+  assert.equal(h.calls.next.length, 1);
+  assert.equal(h.calls.updated.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.deepEqual(h.calls.applied, []);
+  assert.equal(h.store.appleJobRanking.phase, "Ranking stopped; results saved");
+  assert.equal(h.store.appleJobRanking.error, null);
+});
+
+test("Stop during the completed-page save prevents the pending Next action", async () => {
+  const h = workerHarness();
+  const run = { sourceTabId: 1, searchUrl: filterA, autoApply: true };
+  h.mocks.pages = [{ links: [searchLink("100")] }, { links: [searchLink("101")] }];
+  const patch = h.sandbox.CareerPeelerJobStore.patch;
+  h.sandbox.CareerPeelerJobStore.patch = async (...args) => {
+    await patch(...args);
+    if (Object.values(args[1].searches || {}).some(search => search.pagesRead === 1 && !search.complete)) run.stopRequested = true;
+  };
+  await h.api.runAppleJobRanking(run, profile);
+  const search = Object.values(h.store.appleJobRanking.searches)[0];
+  assert.equal(search.pagesRead, 1);
+  assert.equal(search.complete, false);
+  assert.deepEqual([...search.processedJobIds], ["100"]);
+  assert.equal(h.calls.next.length, 0);
+  assert.equal(h.calls.updated.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.deepEqual(h.calls.applied, []);
+  assert.equal(h.store.appleJobRanking.phase, "Ranking stopped; results saved");
+  assert.equal(h.store.appleJobRanking.error, null);
+});
+
+test("latest scan strong-match count uses exact current observations while saved count includes every cache", async () => {
+  const h = workerHarness();
+  const job = (jobId, overrides = {}) => ({ ...h.queuedJob(jobId, 90), queueStatus: "available", ...overrides });
+  const jobs = {
+    "100": job("100"),
+    "101": job("101"), // Historical eligible job, absent from the latest scan.
+    "102": job("102", { profileSignature: "older-resume" }),
+    "103": job("103", { score: null, eligible: false }),
+    "104": job("104", { queueStatus: "submitted" }),
+    "105": job("105"),
+    "200123456": job("200123456-9999"), // Latest discovery has the same base but a different full ID.
+    "106": job("106", { eligible: false, score: 75, breakdown: {} }),
+    "107": job("107", { queueStatus: "withdrawn" }),
+    "108": job("108", { queueStatus: "queued" })
+  };
+  const searchKey = core.fingerprintText(filterA);
+  h.store.appleJobRanking = { jobs, latestSearchKey: searchKey, reservations: [], searches: { [searchKey]: {
+    url: filterA, scanId: "current-scan", complete: false, profileSignature: h.api.appleRankingProfileSignature(profile),
+    discoveredJobIds: ["100", "102", "103", "104", "105", "200123456-0836", "106", "107", "108"], startedAt: 1
+  } } };
+  h.store.applied = { "105": { jobId: "105", site: "apple" } };
+  const view = await h.api.getAppleRankingView(profile);
+  assert.equal(view.latestSearchStrongCount, 2, "only exact observed, current-profile, eligible, unapplied jobs count");
+  assert.equal(view.eligibleCount, 4, "historical eligible jobs remain visible in the global cache count");
+  assert.equal(view.savedJobCount, 10, "saved count includes historical, stale, unscored, applied, and protected histories");
+  assert.equal(view.staleCount, 1);
+  assert.equal(view.queued.length, 1);
+  assert.equal(view.latestSearch.complete, false, "an observed match count does not certify full scan completion");
+});
+
+test("legacy, absent, or stale-profile scan identity reports an unknown latest-scan match count rather than cached totals", async () => {
+  for (const latestSearch of [null, { url: filterA, discoveredIds: ["100"], complete: true, startedAt: 1 },
+    { url: filterA, scanId: "legacy-scan", discoveredIds: ["100"], complete: false, startedAt: 1 },
+    { url: filterA, scanId: "old-profile-scan", discoveredJobIds: ["100"], profileSignature: "older-resume", complete: true, startedAt: 1 }]) {
+    const h = workerHarness();
+    const searchKey = core.fingerprintText(filterA);
+    h.store.appleJobRanking = { jobs: { "100": h.queuedJob("100", 90) }, reservations: [],
+      latestSearchKey: searchKey, searches: latestSearch ? { [searchKey]: latestSearch } : {} };
+    const view = await h.api.getAppleRankingView(profile);
+    assert.equal(view.latestSearchStrongCount, null);
+    assert.equal(view.savedJobCount, 1);
+    assert.equal(view.eligibleCount, 1);
+  }
 });
 
 test("legacy restored scans with base-only discovery have unknown membership and require fresh discovery", async () => {

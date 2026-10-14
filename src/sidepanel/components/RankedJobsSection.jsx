@@ -10,6 +10,14 @@ import { getActiveTab, formatRelativeTime } from "../lib/format";
 
 const RANKING_VIEW_KEY = "appleCareersRankingView";
 
+export function RankingScanSummary({ view, search }) {
+  if (!search) return <span className="compact-role-meta">{view?.savedJobCount || 0} Cached Jobs</span>;
+  return <span className="compact-role-meta">This Scan: {search.jobsRead || 0} Jobs Found · <span
+    title="Strong matches meet automatic application requirements: verified minimum qualifications and resume evidence, high confidence, and the required overall, responsibility, qualification, and level scores.">
+    {Number.isInteger(view?.latestSearchStrongCount) ? view.latestSearchStrongCount : "—"} Strong Matches
+  </span></span>;
+}
+
 export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange, embedded = false, onOpenSetup }) {
   const roleGroupId = useId();
   const [view, setView] = useState(null);
@@ -252,7 +260,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         {view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
       </div>
     </div>
-    <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong><span className="compact-role-meta">{view?.reviewedCount || 0} Saved · {view?.eligibleCount || 0} Strong Matches</span>
+    <div className="compact-progress" aria-live="polite"><span><strong>{progressLabel}</strong><RankingScanSummary view={view} search={latestSearch} />
       {!view?.running && view?.lastBatchSummary && <span className="compact-role-meta">{view.workflowMode === "current_role" ? "Last Application" : "Last Batch"}: {view.lastBatchSummary.submitted} Submitted · {view.lastBatchSummary.failed} Need Review
         {!!view.lastBatchSummary.alreadySubmitted && <> · {view.lastBatchSummary.alreadySubmitted} Already Submitted</>}
         {!!view.lastBatchSummary.remainingQueued && <> · {view.lastBatchSummary.remainingQueued} Selected Roles Still Queued</>}
@@ -261,7 +269,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       {view?.currentJob && <a className="compact-role-meta" href={view.currentJob.url} target="_blank" rel="noopener noreferrer">{view.currentJob.title} · {view.currentJob.jobId}</a>}</span>
     </div>
     {view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
-      ? `The previous scan was interrupted on page ${(latestSearch.pageIndex || 0) + 1}. Choose Resume Scan to continue using saved scores.`
+      ? `The previous scan was interrupted. Choose Resume Scan to continue from page ${(latestSearch.pagesRead || 0) + 1} using saved scores.`
       : view?.recovery?.reconciliationRequired
         ? "The application workflow was interrupted. Sync Submissions, then review your selection before starting again. No applications resumed automatically."
         : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
@@ -273,6 +281,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     <details className="compact-fold"><summary>Scan Details</summary>
       <div className="compact-fold-body">
         {view?.phase && <span>{view.phase}</span>}
+        <span>{view?.savedJobCount || 0} Cached Jobs Across Filters</span>
         <span>{view?.scoresReused || 0} Scores Reused</span>
         {capacity?.checkedAt && <span>Count checked {formatRelativeTime(capacity.checkedAt)}.</span>}
         {latestSearch && <span>{latestSearch.jobsRead || 0} Found In Latest Filter
