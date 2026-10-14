@@ -54,7 +54,7 @@ export async function sendMessageWithFallback(tabId, message) {
   } catch (_error) {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["lib/appleApplicationSafety.js", "content.js"]
+      files: ["lib/appleApplicationSafety.js", "lib/appleWithdrawalSafety.js", "content.js"]
     });
 
     return chrome.tabs.sendMessage(tabId, message);

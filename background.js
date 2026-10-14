@@ -36,6 +36,7 @@ const questionAgentActivityByTabId = new Map();
 const submittedRoleAnalysisRuns = new Map();
 const pendingSubmittedRoleAnalysisStops = new Set();
 const pendingAppleWithdrawalClickByTabId = new Map();
+let appleWithdrawalSelection = null;
 
 let scanState = createIdleState();
 let storedJobRecordsAtScanStart = {};
@@ -756,7 +757,7 @@ async function sendMessageWithFallback(tabId, message) {
   } catch (_error) {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["lib/appleApplicationSafety.js", "content.js"]
+      files: ["lib/appleApplicationSafety.js", "lib/appleWithdrawalSafety.js", "content.js"]
     });
 
     return chrome.tabs.sendMessage(tabId, message);
@@ -2648,13 +2649,16 @@ function detachDebugger(tabId) {
   });
 }
 
-async function sendMouseClickWithAttachedDebugger(tabId, x, y) {
+async function sendMouseClickWithAttachedDebugger(tabId, x, y, assertOwnership = () => {}) {
+  assertOwnership("mouseMoved");
   await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved", x, y, button: "none", clickCount: 0, pointerType: "mouse"
   });
+  assertOwnership("mousePressed");
   await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
     type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse"
   });
+  assertOwnership("mouseReleased");
   await sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", {
     type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse"
   });
@@ -2671,114 +2675,137 @@ async function sendTrustedMouseClick(tabId, x, y) {
   }
 }
 
-async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expectedPageIndex) {
-  const tabId = sender?.tab?.id;
-  const roleId = String(jobId || "");
-  if (!Number.isInteger(tabId) || Number(sender?.frameId || 0) !== 0 ||
-    !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(sender?.tab?.url || "") ||
-    !/^\d+(?:-\d+)?$/.test(roleId) || !["open", "proceed"].includes(stage) ||
-    !Number.isInteger(expectedPageIndex) || expectedPageIndex < 1 ||
-    roleId.split("-")[0] === "200654506") {
-    return { ok: false, error: "Trusted withdrawal input requires a valid, unprotected Apple role on the active submissions page." };
-  }
-  if (stage === "proceed") {
-    const pending = pendingAppleWithdrawalClickByTabId.get(tabId);
-    if (pending?.jobId !== roleId || Date.now() - pending.startedAt > 30000) {
-      return { ok: false, error: "Apple's confirmation no longer matches the withdrawal that was opened." };
+async function setAppleWithdrawalBatch(message, sender) {
+  if (sender?.tab) throw new Error("Withdrawal batches must be reviewed from the extension panel.");
+  if (!message.active) {
+    if (message.batchId === appleWithdrawalBatchId) {
+      const previous = appleWithdrawalSelection;
+      const pending = pendingAppleWithdrawalClickByTabId.get(previous?.tabId);
+      pendingAppleWithdrawalClickByTabId.delete(previous?.tabId);
+      appleWithdrawalSelection = null;
+      appleWithdrawalBatchId = null; appleWithdrawalBatchUntil = 0;
+      if (pending) await chrome.tabs.sendMessage(previous.tabId, {
+        type: "APPLE_CAREERS_REVOKE_WITHDRAWAL", jobId: pending.jobId,
+        batchId: pending.batchId, requestId: pending.requestId
+      }, { documentId: pending.documentId }).catch(() => {});
     }
+    return { ok: true };
   }
-
-  let attached = false;
+  if (scanState.running || appleRankingIsRunning() || submittedRoleAnalysisRuns.size) {
+    throw new Error("Stop the current workflow before withdrawing.");
+  }
+  const roles = message.roles;
+  if (message.confirmed !== true || !message.batchId || !Number.isInteger(message.tabId) ||
+      !Array.isArray(roles) || !roles.length || roles.some(role =>
+        !/^\d+(?:-\d+)?$/.test(role?.jobId || "") || String(role.jobId).split("-")[0] === "200654506") ||
+      new Set(roles.map(role => role.jobId)).size !== roles.length) {
+    throw new Error("Explicitly review and confirm a valid, unique withdrawal selection.");
+  }
+  // Install the exclusive lease before the asynchronous tab read.
+  appleWithdrawalBatchId = message.batchId;
+  appleWithdrawalBatchUntil = Date.now() + 30 * 60000;
+  const selection = { batchId: message.batchId, tabId: message.tabId,
+    jobIds: new Set(roles.map(role => role.jobId)), usedJobIds: new Set(), documentId: null };
+  appleWithdrawalSelection = selection;
   try {
-    // Attaching can change Chrome's viewport. Locate the button after attachment,
-    // and keep that session open until the input has been dispatched.
-    await attachDebugger(tabId);
-    attached = true;
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: async (requestedJobId, requestedStage, pageIndex) => {
-        const deadline = Date.now() + 5000;
-        let previousButton;
-        let previousSignature = "";
-        let stableReads = 0;
-        let lastError = "Apple's withdrawal button is unavailable.";
-        const visible = (element) => {
-          if (!element) return false;
-          const rect = element.getBoundingClientRect();
-          const style = window.getComputedStyle(element);
-          return rect.width > 0 && rect.height > 0 && style.display !== "none" &&
-            style.visibility !== "hidden" && style.opacity !== "0";
-        };
-        while (Date.now() < deadline) {
-          const input = document.querySelector('#profile-roles-pagination input[type="number"]');
-          const currentPage = input ? Number(input.value) :
-            Number(document.querySelector("[data-autom='paginationTotalPages']")?.textContent) === 1 ? 1 : null;
-          if (currentPage !== pageIndex) return { error: "Apple changed the visible submissions page." };
-          let button;
-          if (requestedStage === "open") {
-            button = document.getElementById(`js-withdraw-link-${requestedJobId}`);
-            const card = button?.closest(".rolecard");
-            const favorite = card?.querySelector(`input[type="checkbox"][id="addToFavoriteId-favorite-${requestedJobId}"]`);
-            if (!card || !favorite || favorite.checked ||
-              !card.querySelector(`[id="role-title-${requestedJobId}"]`)) {
-              return { error: "The selected role is missing, starred, or could not be verified on this page." };
-            }
-          } else {
-            const modal = Array.from(document.querySelectorAll(".rc-overlay-popup-outer")).find((candidate) => {
-              const heading = candidate.querySelector("#yourroles-withdrawmodal-header")?.textContent?.replace(/\s+/g, " ").trim();
-              return heading === "Are you sure you want to withdraw this submission?" && visible(candidate);
-            });
-            if (!modal) {
-              stableReads = 0;
-              lastError = "Apple's withdrawal confirmation did not become visible.";
-              await new Promise((resolve) => setTimeout(resolve, 150));
-              continue;
-            }
-            button = modal.querySelector("#yourroles-withdrawmodal-proceed-button");
-          }
-          if (visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true") {
-            let rect = button.getBoundingClientRect();
-            if (rect.top < 0 || rect.left < 0 || rect.bottom > window.innerHeight || rect.right > window.innerWidth) {
-              button.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-              rect = button.getBoundingClientRect();
-            }
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const hit = document.elementFromPoint(x, y);
-            const signature = [rect.left, rect.top, rect.width, rect.height, window.innerWidth, window.innerHeight]
-              .map((value) => value.toFixed(1)).join("|");
-            if (rect.width >= 2 && rect.height >= 2 && hit && (hit === button || button.contains(hit))) {
-              stableReads = button === previousButton && signature === previousSignature ? stableReads + 1 : 1;
-              previousButton = button;
-              previousSignature = signature;
-              if (stableReads >= 3) return { x, y };
-              lastError = "Apple's withdrawal button did not stop moving.";
-            } else {
-              stableReads = 0;
-              lastError = "Apple's withdrawal button is obscured or no longer visible.";
-            }
-          } else {
-            stableReads = 0;
-            lastError = "Apple's withdrawal button did not become enabled and visible.";
-          }
-          await new Promise((resolve) => setTimeout(resolve, 150));
-        }
-        return { error: lastError };
-      },
-      args: [roleId, stage, expectedPageIndex]
-    });
-    const point = injection?.result;
-    if (point?.error || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
-      return { ok: false, error: point?.error || "Apple's withdrawal button could not be located." };
+    const tab = await chrome.tabs.get(message.tabId);
+    if (!/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
+      throw new Error("Open Apple's active submissions page before confirming withdrawals.");
     }
-    await sendMouseClickWithAttachedDebugger(tabId, point.x, point.y);
-    if (stage === "open") pendingAppleWithdrawalClickByTabId.set(tabId, { jobId: roleId, startedAt: Date.now() });
-    else pendingAppleWithdrawalClickByTabId.delete(tabId);
+    if (appleWithdrawalSelection !== selection) throw new Error("The withdrawal batch was cancelled during review.");
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: `Apple withdrawal click failed: ${error?.message || "Chrome rejected the input request."}` };
+    if (appleWithdrawalSelection === selection) {
+      appleWithdrawalSelection = null; appleWithdrawalBatchId = null; appleWithdrawalBatchUntil = 0;
+    }
+    throw error;
+  }
+}
+
+async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expectedPageIndex, batchId, requestId) {
+  const tabId = sender?.tab?.id;
+  const selection = appleWithdrawalSelection;
+  const roleId = String(jobId || "");
+  const documentId = sender?.documentId;
+  if (!Number.isInteger(tabId) || Number(sender?.frameId || 0) !== 0 || !documentId ||
+      !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(sender?.url || sender?.tab?.url || "") ||
+      !/^\d+(?:-\d+)?$/.test(roleId) || !["open", "proceed"].includes(stage) ||
+      !Number.isInteger(expectedPageIndex) || expectedPageIndex < 1 || !requestId ||
+      !selection || selection.batchId !== batchId || selection.tabId !== tabId ||
+      !selection.jobIds.has(roleId) || Date.now() >= appleWithdrawalBatchUntil ||
+      (selection.documentId && selection.documentId !== documentId) || roleId.split("-")[0] === "200654506") {
+    return { ok: false, error: "The reviewed withdrawal selection or Apple document could not be verified. Review the batch again." };
+  }
+  let pending = pendingAppleWithdrawalClickByTabId.get(tabId);
+  if (stage === "open") {
+    if ((pending && !["done", "failed"].includes(pending.phase)) || selection.usedJobIds.has(roleId)) {
+      return { ok: false, error: "A withdrawal is already pending or this selected job was already processed." };
+    }
+    selection.documentId ||= documentId;
+    selection.usedJobIds.add(roleId);
+    pending = { jobId: roleId, requestId, batchId, documentId, pageIndex: expectedPageIndex,
+      phase: "opening", startedAt: Date.now() };
+    pendingAppleWithdrawalClickByTabId.set(tabId, pending);
+  } else {
+    if (!pending || pending.jobId !== roleId || pending.requestId !== requestId || pending.batchId !== batchId ||
+        pending.documentId !== documentId || pending.pageIndex !== expectedPageIndex || pending.phase !== "opened" ||
+        Date.now() - pending.startedAt > 30000) {
+      return { ok: false, error: "Apple's confirmation no longer matches the reviewed withdrawal request." };
+    }
+    pending.phase = "confirming"; // Consume before any awaited browser action.
+  }
+  const identity = { jobId: roleId, batchId, requestId };
+  const matches = data => data?.identityVerified === true && data.jobId === roleId &&
+    data.batchId === batchId && data.requestId === requestId;
+  let attached = false;
+  let navigationBlocker;
+  let finalInputMayHaveRun = false;
+  const blockerKey = `__careerPeelerWithdrawal_${requestId}`;
+  try {
+    await attachDebugger(tabId); attached = true;
+    // A navigation destroys content's old capture guard. Block input in any new
+    // document for the duration of this click, before that page's handlers load.
+    const script = `(() => { const key = ${JSON.stringify(blockerKey)}; const types = ['pointerdown','mousedown','pointerup','mouseup','click','keydown']; const block = e => { e.preventDefault(); e.stopImmediatePropagation(); }; types.forEach(t => window.addEventListener(t, block, true)); window[key] = () => { types.forEach(t => window.removeEventListener(t, block, true)); delete window[key]; }; })();`;
+    const installed = await sendDebuggerCommand(tabId, "Page.addScriptToEvaluateOnNewDocument", { source: script });
+    if (!installed?.identifier) throw new Error("Chrome could not protect withdrawal input across navigation.");
+    navigationBlocker = installed.identifier;
+    const prepared = await chrome.tabs.sendMessage(tabId, {
+      type: "APPLE_CAREERS_PREPARE_WITHDRAWAL_CLICK", ...identity, stage, expectedPageIndex
+    }, { documentId });
+    const point = prepared?.data;
+    if (!prepared?.ok || !matches(point) || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw new Error(prepared?.error || "The bound withdrawal control could not be verified.");
+    }
+    if (appleWithdrawalSelection !== selection || pendingAppleWithdrawalClickByTabId.get(tabId) !== pending) {
+      throw new Error("The withdrawal batch was cancelled before its click.");
+    }
+    await sendMouseClickWithAttachedDebugger(tabId, point.x, point.y, inputType => {
+      if (appleWithdrawalSelection !== selection || pendingAppleWithdrawalClickByTabId.get(tabId) !== pending ||
+          Date.now() >= appleWithdrawalBatchUntil) throw new Error("The withdrawal batch was cancelled before its input completed.");
+      if (stage === "proceed" && inputType === "mousePressed") finalInputMayHaveRun = true;
+    });
+    const finished = await chrome.tabs.sendMessage(tabId, {
+      type: "APPLE_CAREERS_FINISH_WITHDRAWAL_CLICK", ...identity, stage
+    }, { documentId });
+    if (!finished?.ok || !matches(finished.data) || finished.data.actionActivated !== true) {
+      throw new Error(finished?.error || "The bound withdrawal click was not acknowledged. Review Apple before retrying.");
+    }
+    pending.phase = stage === "open" ? "opened" : "done";
+    return { ok: true, data: finished.data };
+  } catch (error) {
+    pending.phase = "failed";
+    return { ok: false, data: { ...identity, identityVerified: false, outcomeUnknown: finalInputMayHaveRun },
+      error: `Apple withdrawal stopped: ${error?.message || "Chrome rejected the input request."}` };
   } finally {
-    if (attached) await detachDebugger(tabId);
+    if (attached) {
+      if (navigationBlocker) {
+        await sendDebuggerCommand(tabId, "Page.removeScriptToEvaluateOnNewDocument", { identifier: navigationBlocker }).catch(() => {});
+        await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+          expression: `window[${JSON.stringify(blockerKey)}]?.()`
+        }).catch(() => {});
+      }
+      await detachDebugger(tabId);
+    }
   }
 }
 
@@ -3386,16 +3413,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // request after an extension update. It must never start a workflow.
         sendResponse({ ok: true, ignored: true });
       } else if (message.type === "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE") {
-        if (sender.tab) throw new Error("Withdrawal batches must be started from the extension panel.");
-        if (message.active && (scanState.running || appleRankingIsRunning() || submittedRoleAnalysisRuns.size)) throw new Error("Stop the current workflow before withdrawing.");
-        if (message.active) {
-          if (!message.batchId) throw new Error("A withdrawal batch ID is required.");
-          appleWithdrawalBatchId = message.batchId;
-          appleWithdrawalBatchUntil = Date.now() + 30 * 60000;
-        } else if (message.batchId === appleWithdrawalBatchId) {
-          appleWithdrawalBatchId = null; appleWithdrawalBatchUntil = 0;
-        }
-        sendResponse({ ok: true });
+        sendResponse(await setAppleWithdrawalBatch(message, sender));
       } else if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
         sendResponse({ ok: true, data: await getAppleRankingView(message.userProfile, message.topN) });
       } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {
@@ -3547,7 +3565,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
       } else if (message.type === "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK") {
-        sendResponse(await dispatchTrustedAppleWithdrawalClick(sender, message.jobId, message.stage, message.expectedPageIndex));
+        sendResponse(await dispatchTrustedAppleWithdrawalClick(sender, message.jobId, message.stage, message.expectedPageIndex, message.batchId, message.requestId));
 
       } else if (message.type === "APPLE_CAREERS_TEST_API_KEY") {
         // The UI never calls the provider directly -- same "content/UI messages background, background

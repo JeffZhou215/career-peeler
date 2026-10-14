@@ -34,6 +34,7 @@ function createContentHarness(options = {}) {
   }
   vm.createContext(sandbox);
   vm.runInContext(source("lib/appleApplicationSafety.js"), sandbox);
+  vm.runInContext(source("lib/appleWithdrawalSafety.js"), sandbox);
   vm.runInContext(source("content.js"), sandbox);
   sandbox.delay = async () => {};
   sandbox.waitForCondition = async predicate => Boolean(predicate());

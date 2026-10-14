@@ -30,6 +30,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false); busyRef.current = busy;
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [confirmationSelection, setConfirmationSelection] = useState([]);
+  const confirmationSelectionRef = useRef(null);
+  const withdrawalInFlightRef = useRef(false);
   const [withdrawProgress, setWithdrawProgress] = useState(null);
   const [error, setError] = useState("");
   const [postingCacheStats, setPostingCacheStats] = useState(null);
@@ -164,6 +167,21 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     );
   }
 
+  function reviewWithdrawals() {
+    if (busyRef.current || !selectedRoles.length) return;
+    const reviewed = selectedRoles.map(({ jobId, title }) => ({ jobId: String(jobId), title }));
+    confirmationSelectionRef.current = reviewed;
+    setConfirmationSelection(reviewed);
+    setConfirmationOpen(true);
+  }
+
+  function closeWithdrawalConfirmation() {
+    if (withdrawalInFlightRef.current) return;
+    confirmationSelectionRef.current = null;
+    setConfirmationSelection([]);
+    setConfirmationOpen(false);
+  }
+
   useEffect(() => {
     const dialog = confirmationRef.current;
     if (!dialog) return;
@@ -256,10 +274,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   }
 
   async function withdrawSelected() {
-    if (!selectedRoles.length) return;
+    if (withdrawalInFlightRef.current || !confirmationOpen || !confirmationSelectionRef.current?.length) return;
+    withdrawalInFlightRef.current = true;
+    const targets = confirmationSelectionRef.current.map(({ jobId, title }) => ({ jobId, title }));
+    confirmationSelectionRef.current = null;
     const batchId = crypto.randomUUID();
     let lockAcquired = false;
-    const targets = selectedRoles.map(({ jobId, title }) => ({ jobId, title }));
     const pending = new Map(targets.map((role) => [String(role.jobId), role]));
     const skipped = [];
     let confirmedCount = 0;
@@ -269,9 +289,6 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     try {
       const ranking = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING" });
       if (ranking?.data?.running) throw new Error("Stop the job ranking or application queue before withdrawing applications.");
-      const lock = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE", active: true, batchId });
-      if (!lock?.ok) throw new Error(lock?.error || "Another workflow is running.");
-      lockAcquired = true;
       const tab = await getActiveTab();
       if (!tab?.id) {
         throw new Error("Return to the Apple tab containing your submissions.");
@@ -279,6 +296,10 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       if (!/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
         throw new Error("Open Apple Careers → Your Roles → Submissions → Active before withdrawing.");
       }
+      const lock = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE", active: true,
+        batchId, tabId: tab.id, roles: targets, confirmed: true });
+      if (!lock?.ok) throw new Error(lock?.error || "Another workflow is running.");
+      lockAcquired = true;
       const readApplePage = async (type, payload = {}) => {
         const response = await sendMessageWithFallback(tab.id, { type, ...payload });
         if (!response?.ok) throw new Error(response?.error || "Apple's active submissions page could not be read.");
@@ -306,17 +327,6 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
         }
         throw lastError || new Error("Apple's submissions list did not settle after the withdrawal.");
       };
-      const verifyAcrossPages = async (role) => {
-        const currentPage = await readApplePage("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
-        if (currentPage.withdrawalConfirmationOpen) return { confirmationOpen: true, active: null };
-        const result = await readApplePage("APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
-        if (!Array.isArray(result.pages) || result.pages.length !== result.pageCount) {
-          throw new Error("Apple did not return every active submissions page.");
-        }
-        return { confirmationOpen: false, active: result.pages.some((page) => page.roles.some((current) =>
-          String(current.jobId) === String(role.jobId) && current.active
-        )) };
-      };
       let page = await readSettledPage();
       const visitedPages = new Set();
       let navigationRecoveries = 0;
@@ -343,13 +353,24 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
             visitedPages.clear();
             continue;
           }
+          const requestId = crypto.randomUUID();
           await withdrawSubmittedRolesSequentially([role], {
+            batchId,
+            requestId,
             withdrawOne: () => chrome.tabs.sendMessage(tab.id, {
               type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES",
+              batchId,
+              requestId,
               roles: [role],
               expectedPageIndex: page.pageIndex
             }),
-            verifyRoleStatus: verifyAcrossPages,
+            verifyRoleStatus: async () => {
+              const response = await chrome.tabs.sendMessage(tab.id, {
+                type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", batchId, requestId, jobId: role.jobId
+              });
+              if (!response?.ok) throw new Error(response?.error || "The withdrawal outcome could not be verified.");
+              return response.data;
+            },
             onRoleStart: () => {
               setWithdrawProgress({ index: confirmedCount + 1, total: targets.length, title: role.title });
               setStatusMessage(`Withdrawing ${confirmedCount + 1} of ${targets.length}: ${role.title}...`);
@@ -415,6 +436,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     } finally {
       if (lockAcquired) await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE", active: false, batchId }).catch(() => {});
       setWithdrawProgress(null);
+      setConfirmationSelection([]);
+      withdrawalInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -456,20 +479,20 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
         {!visibleRoles.length && <p className="muted">No submitted roles match that title or job ID.</p>}
         <ol className="submitted-role-list compact-role-list">{visibleRoles.map(role => renderRoleCard(role, role.protectedFromBatchWithdrawal))}</ol>
         <div className="compact-selection-bar"><span>{selectedIds.length} Selected{hiddenSelectedCount ? ` · ${hiddenSelectedCount} Hidden By Filters` : ""}</span>
-          <button type="button" className="danger-button" disabled={busy || !selectedRoles.length} onClick={() => setConfirmationOpen(true)}>Review Withdrawal</button>
+          <button type="button" className="danger-button" disabled={busy || !selectedRoles.length} onClick={reviewWithdrawals}>Review Withdrawal</button>
           <HelpTooltip label="Review Withdrawal" text="Review every selected job title and ID before confirming. Apple withdrawals cannot be undone, and you cannot reapply to those roles." />
         </div>
       </> : !analysisRunning && <p className="muted">{savedArchive.latestScan?.complete && !collection.partial ? "No Active Submissions." : "No Saved Submissions Yet."}</p>}
       <dialog ref={confirmationRef} className="submitted-history-confirm ios-sheet" aria-labelledby="withdraw-confirm-title"
-        onCancel={(event) => { if (busy) event.preventDefault(); else setConfirmationOpen(false); }} onClose={() => setConfirmationOpen(false)}>
+        onCancel={(event) => { if (withdrawalInFlightRef.current) event.preventDefault(); else closeWithdrawalConfirmation(); }} onClose={closeWithdrawalConfirmation}>
         <h3 id="withdraw-confirm-title">Confirm Application Withdrawals</h3>
-        <p>This will withdraw {selectedRoles.length} Apple applications. Withdrawals cannot be undone, and you cannot reapply to these roles.</p>
-        <ul>{selectedRoles.map((role) => <li key={role.jobId}>{role.title} · {role.jobId}</li>)}</ul>
+        <p>This will withdraw {confirmationSelection.length} Apple applications. Withdrawals cannot be undone, and you cannot reapply to these roles.</p>
+        <ul>{confirmationSelection.map((role) => <li key={role.jobId}>{role.title} · {role.jobId}</li>)}</ul>
         {withdrawProgress && <p role="status">Withdrawing {withdrawProgress.index} Of {withdrawProgress.total}: {withdrawProgress.title}</p>}
         <div className="compact-actions">
-          <button type="button" className="secondary" onClick={() => setConfirmationOpen(false)} disabled={busy}>Cancel</button>
-          <button type="button" className="danger-button" onClick={withdrawSelected} disabled={busy || !selectedRoles.length}>
-            {busy ? "Withdrawing…" : `Confirm Withdrawal (${selectedRoles.length})`}
+          <button type="button" className="secondary" onClick={closeWithdrawalConfirmation} disabled={busy}>Cancel</button>
+          <button type="button" className="danger-button" onClick={withdrawSelected} disabled={busy || !confirmationSelection.length}>
+            {busy ? "Withdrawing…" : `Confirm Withdrawal (${confirmationSelection.length})`}
           </button>
         </div>
       </dialog>

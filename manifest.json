@@ -36,6 +36,16 @@
         "https://www.apple.com/careers/*"
       ],
       "js": [
+        "lib/appleWithdrawalSafety.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://jobs.apple.com/*",
+        "https://www.apple.com/careers/*"
+      ],
+      "js": [
         "lib/appleApplicationSafety.js",
         "content.js"
       ],
