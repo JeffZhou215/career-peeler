@@ -83,3 +83,5 @@ Reloading restores saved rankings, your Top setting, search text, and View filte
 Resume and job data are saved on your device. AI features send the PDF or relevant resume and job information to OpenAI using your key. See [Privacy](PRIVACY.md) and [Storage Details](docs/storage.md).
 
 After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`.
+
+For development, install dependencies with `npm ci`, then run `npm test` and `npm run check`. The default test command discovers every top-level test file, runs all suites with Node's test runner, and blocks unmocked fetch requests. Tests use synthetic Apple pages and in-memory IndexedDB; they do not submit or withdraw real applications. See [Testing](docs/testing.md) for fixtures and coverage limits.

@@ -43,20 +43,37 @@ function readStorage(keys) {
   return Object.fromEntries(requestedKeys.filter((key) => key in storageData).map((key) => [key, storageData[key]]));
 }
 
+const event = () => ({ addListener() {}, removeListener() {} });
+const jobStore = {
+  get: async keys => structuredClone(readStorage(keys)),
+  set: async updates => Object.assign(storageData, structuredClone(updates)),
+  remove: async keys => { for (const key of [].concat(keys)) delete storageData[key]; },
+  patch: async (key, value) => { storageData[key] = structuredClone(value); },
+  getMetadata: async key => structuredClone(storageData[key]),
+  getRecords: async (key, ids, field = null) => {
+    const records = field ? storageData[key]?.[field] : storageData[key];
+    return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
+  },
+  putRecords: async (key, records) => { storageData[key] = { ...storageData[key], ...structuredClone(records) }; }
+};
+
 const sandbox = {
+  CareerPeelerJobStore: jobStore,
   URL,
   console,
   // background.js's real importScripts("lib/core.js") loads that file into the same global scope
   // (classic MV3 service workers support importScripts natively) -- simulate that here by
   // pre-populating the sandbox with lib/core.js's exports instead of actually loading a file.
   importScripts: (...files) => {
-    for (const file of files.filter((name) => name !== "lib/core.js")) {
+    for (const file of files.filter((name) => !["lib/core.js", "lib/appleJobStore.js"].includes(name))) {
       vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), sandbox, { filename: file });
     }
   },
   ...core,
   chrome: {
+    tabs: { onActivated: event(), onUpdated: event() },
     storage: {
+      session: jobStore, onChanged: event(),
       local: {
         get: async (keys) => readStorage(keys),
         set: async (updates) => Object.assign(storageData, updates),
@@ -78,7 +95,8 @@ const sandbox = {
   }
 };
 
-vm.runInNewContext(
+vm.createContext(sandbox);
+vm.runInContext(
   `${source}
 globalThis.__backgroundTestApi = {
   applyRequiredYoeHardSkip,
@@ -120,18 +138,7 @@ globalThis.__backgroundTestApi = {
   clearAppliedJobs,
   clearErrorJobs,
   shouldAutoApply,
-  shouldAutoSubmitGenericAutofill,
-  buildGenericSubmitOutcome,
-  buildNeedsReviewReasonSummary,
-  buildGenericContentProfile,
-  isWorkdayHostname,
-  isWorkdayUrl,
-  dispatchTrustedWorkdayClick,
   dispatchTrustedAppleWithdrawalClick,
-  dispatchTrustedWorkdayTextReplacement,
-  mergeWorkdayAutofillPage,
-  persistObservedWorkdayCandidateProfile,
-  runWorkdayAutofillWorkflow,
   buildFinalMatchObservation,
   beginKnownSiteActivityCycle,
   finishKnownSiteActivityCycle,
@@ -204,18 +211,7 @@ const {
   clearAppliedJobs,
   clearErrorJobs,
   shouldAutoApply,
-  shouldAutoSubmitGenericAutofill,
-  buildGenericSubmitOutcome,
-  buildNeedsReviewReasonSummary,
-  buildGenericContentProfile,
-  isWorkdayHostname,
-  isWorkdayUrl,
-  dispatchTrustedWorkdayClick,
   dispatchTrustedAppleWithdrawalClick,
-  dispatchTrustedWorkdayTextReplacement,
-  mergeWorkdayAutofillPage,
-  persistObservedWorkdayCandidateProfile,
-  runWorkdayAutofillWorkflow,
   buildFinalMatchObservation,
   beginKnownSiteActivityCycle,
   finishKnownSiteActivityCycle,
@@ -234,33 +230,19 @@ const {
   setDurableLedgersForTest
 } = sandbox.__backgroundTestApi;
 
-function test(name, fn) {
-  try {
-    fn();
-    console.log(`PASS ${name}`);
-  } catch (error) {
-    console.error(`FAIL ${name}`);
-    throw error;
-  }
-}
+const { test, before } = require("node:test");
+const asyncTest = test;
+before(async () => { await scanStateReady; });
 
-const asyncTests = [];
-
-function asyncTest(name, fn) {
-  asyncTests.push({ name, fn });
-}
-
-test("getSiteConfig recognizes Apple and TikTok/ByteDance hosts", () => {
+test("getSiteConfig supports Apple and rejects retired employer hosts", () => {
   assert.equal(getSiteConfig("https://jobs.apple.com/en-us/search")?.id, "apple");
   assert.equal(getSiteConfig("https://www.apple.com/careers/us/")?.id, "apple");
-  assert.equal(getSiteConfig("https://careers.tiktok.com/position/123/detail")?.id, "tiktok");
-  assert.equal(getSiteConfig("https://lifeattiktok.com/search/123")?.id, "tiktok");
-  assert.equal(getSiteConfig("https://joinbytedance.com/search?keyword=software+engineer")?.id, "tiktok");
-  assert.equal(getSiteConfig("https://example.com"), null);
+  for (const url of ["https://careers.tiktok.com/position/123/detail", "https://lifeattiktok.com/search/123", "https://joinbytedance.com/search", "https://acme.wd1.myworkdayjobs.com/en-US/External/job/123", "https://example.com"]) assert.equal(getSiteConfig(url), null);
 });
 
-test("the side-panel URL gate recognizes joinbytedance.com consistently with the runtime", () => {
-  assert.equal(isSupportedCareersUrl("https://joinbytedance.com/search/7278068779270408508"), true);
+test("the side-panel URL gate agrees with Apple-only runtime support", () => {
+  for (const url of ["https://jobs.apple.com/en-us/search", "https://jobs.apple.com/app/en-us/profile/roles"]) assert.equal(isSupportedCareersUrl(url), true);
+  for (const url of ["https://joinbytedance.com/search/123", "https://lifeattiktok.com/search/123", "https://acme.myworkdayjobs.com/External", "https://example.com"]) assert.equal(isSupportedCareersUrl(url), false);
 });
 
 test("legacy flat activity is split into setup, iOS, and Android outer cycles", () => {
@@ -274,7 +256,7 @@ test("legacy flat activity is split into setup, iOS, and Android outer cycles", 
         tool: "read_job_description",
         label: "iOS Software Engineer - TikTok - Singapore",
         status: "success",
-        url: "https://lifeattiktok.com/search/ios-1"
+        url: "https://jobs.apple.com/en-us/details/200000001/ios-engineer"
       },
       { id: 4, tool: "local_match", status: "success", observation: "33%" },
       {
@@ -282,7 +264,7 @@ test("legacy flat activity is split into setup, iOS, and Android outer cycles", 
         tool: "read_job_description",
         label: "Android Software Engineer - TikTok - Singapore",
         status: "success",
-        url: "https://lifeattiktok.com/search/android-2"
+        url: "https://jobs.apple.com/en-us/details/200000002/android-engineer"
       },
       { id: 6, tool: "local_match", status: "success", observation: "40%" }
     ]
@@ -322,7 +304,7 @@ test("a failed confirmation settles the old pending Submit row instead of leavin
         tool: "read_job_description",
         label: "Android Software Engineer",
         status: "success",
-        url: "https://lifeattiktok.com/search/android-2"
+        url: "https://jobs.apple.com/en-us/details/200000002/android-engineer"
       },
       {
         id: 2,
@@ -347,55 +329,21 @@ test("a failed confirmation settles the old pending Submit row instead of leavin
   assert.match(views[0].steps[1].observation, /outcome was not confirmed/i);
 });
 
-test("buildRetryableErrorLinks returns only supported, deduplicated saved error jobs", () => {
+test("buildRetryableErrorLinks returns only Apple jobs, deduplicates aliases, and uses supported recovery links", () => {
   const links = buildRetryableErrorLinks([
-    {
-      jobId: "123",
-      site: "tiktok",
-      title: "Newest copy",
-      url: "https://jobs.bytedance.com/en/position/123"
-    },
-    {
-      jobId: "123",
-      site: "tiktok",
-      title: "Older duplicate",
-      url: "https://jobs.bytedance.com/en/position/123"
-    },
-    {
-      jobId: "unknown",
-      title: "Apple role",
-      url: "https://jobs.apple.com/en-us/details/200123/software-engineer"
-    },
-    {
-      jobId: "join-123",
-      title: "Join ByteDance role",
-      url: "https://joinbytedance.com/search/join-123"
-    },
-    {
-      jobId: "manual-123",
-      title: "Manual recovery role",
-      url: "https://example.com/stale/error-url",
-      manualReviewUrl: "https://jobs.bytedance.com/en/position/manual-123"
-    },
-    {
-      type: "scan_loop_failed",
-      message: "No job URL"
-    },
-    {
-      jobId: "foreign",
-      url: "https://example.com/jobs/foreign"
-    }
+    { jobId: "200123", title: "Newest", url: "https://jobs.apple.com/en-us/details/200123/engineer" },
+    { jobId: "200123", title: "Duplicate", url: "https://jobs.apple.com/en-us/details/200123/engineer" },
+    { jobId: "unknown", title: "Apple role", url: "https://jobs.apple.com/en-us/details/200124/software-engineer" },
+    { jobId: "200125", url: "https://example.com/stale", manualReviewUrl: "https://jobs.apple.com/en-us/details/200125/engineer" },
+    { jobId: "123", site: "tiktok", url: "https://jobs.bytedance.com/en/position/123" },
+    { type: "scan_loop_failed", message: "No job URL" }
   ]);
-
-  assert.equal(links.length, 4);
-  assert.equal(links[0].title, "Newest copy");
-  assert.equal(links[0].site, "tiktok");
+  assert.equal(links.length, 3);
+  assert.equal(links[0].title, "Newest");
+  assert.equal(links[0].site, "apple");
   assert.equal(links[0].alreadyAppliedFromList, false);
-  assert.equal(links[1].jobId, "200123");
-  assert.equal(links[1].site, "apple");
-  assert.equal(links[2].jobId, "join-123");
-  assert.equal(links[2].site, "tiktok");
-  assert.equal(links[3].url, "https://jobs.bytedance.com/en/position/manual-123");
+  assert.equal(links[1].jobId, "200124");
+  assert.equal(links[2].url, "https://jobs.apple.com/en-us/details/200125/engineer");
 });
 
 test("durable ledgers use site-qualified job IDs and retain an error until the job resolves", () => {
@@ -483,7 +431,7 @@ test("buildPersistedScanState leaves durable ledger records out of the frequentl
 
 test("getSiteLabel resolves from a site id or a URL", () => {
   assert.equal(getSiteLabel("apple"), "Apple Careers");
-  assert.equal(getSiteLabel("https://careers.tiktok.com/position/123/detail"), "TikTok/ByteDance Careers");
+  assert.equal(getSiteLabel("https://careers.tiktok.com/position/123/detail"), "Unknown site");
   assert.equal(getSiteLabel("https://example.com"), "Unknown site");
 });
 
@@ -492,7 +440,7 @@ test("getJobIdFromUrl extracts ids across supported path shapes", () => {
     getJobIdFromUrl("https://jobs.apple.com/en-us/details/200669112-0836/software-development-engineer"),
     "200669112-0836"
   );
-  assert.equal(getJobIdFromUrl("https://careers.tiktok.com/position/7278068779270408508/detail"), "7278068779270408508");
+  assert.equal(getJobIdFromUrl("https://jobs.apple.com/app/en-us/apply/200669112-0836"), "200669112-0836");
   assert.equal(getJobIdFromUrl("not a url"), null);
 });
 
@@ -635,7 +583,7 @@ test("background scan readiness enforces the personalized LLM layer only for LLM
     autoApplyConsent: true,
     llmEnabled: true,
     llmApiKey: "sk-test",
-    resumeProfile: "Backend engineer",
+    resumeText: "Backend engineer",
     ...requiredApplicationAnswers
   });
   assert.match(getAutoApplyReadinessError(unvalidated), /valid API key/i);
@@ -647,7 +595,7 @@ test("background scan readiness enforces the personalized LLM layer only for LLM
   });
   assert.equal(getAutoApplyReadinessError(validatedBase), null);
 
-  const withoutProfile = normalizeUserProfile({ ...validatedBase, resumeProfile: "", candidateProfile: {} });
+  const withoutProfile = normalizeUserProfile({ ...validatedBase, resumeText: "", candidateProfile: {} });
   assert.match(getAutoApplyReadinessError(withoutProfile), /CandidateProfile or a resume\/profile summary/i);
 
   const resumeFileDataUrl = "data:application/pdf;base64,JVBERi0xLjQK";
@@ -662,121 +610,15 @@ test("background scan readiness enforces the personalized LLM layer only for LLM
   assert.equal(getAutoApplyReadinessError(freshResume), null);
 });
 
-test("shouldAutoSubmitGenericAutofill only submits with zero flagged or unresolved agent fields and auto-apply consent", () => {
-  const requiredApplicationAnswers = {
-    eeoGender: "male",
-    eeoRaceEthnicity: ["asian"],
-    eeoVeteranStatus: "not_protected_veteran",
-    eeoDisabilityStatus: "no_current_or_past"
-  };
-  const autoApplyProfile = normalizeUserProfile({
-    scanMode: "auto_apply",
-    autoApplyConsent: true,
-    ...requiredApplicationAnswers
-  });
-  const scanOnlyProfile = normalizeUserProfile({ scanMode: "scan_only", autoApplyConsent: true });
-  const noConsentProfile = normalizeUserProfile({
-    scanMode: "auto_apply",
-    autoApplyConsent: false,
-    ...requiredApplicationAnswers
-  });
-  const incompleteProfile = normalizeUserProfile({ scanMode: "auto_apply", autoApplyConsent: true });
 
-  assert.equal(shouldAutoSubmitGenericAutofill(0, false, autoApplyProfile), true);
-  assert.equal(shouldAutoSubmitGenericAutofill(1, false, autoApplyProfile), false);
-  assert.equal(shouldAutoSubmitGenericAutofill(0, true, autoApplyProfile), false);
-  assert.equal(shouldAutoSubmitGenericAutofill(0, false, scanOnlyProfile), false);
-  assert.equal(shouldAutoSubmitGenericAutofill(0, false, noConsentProfile), false);
-  assert.equal(shouldAutoSubmitGenericAutofill(0, false, incompleteProfile), false);
-});
 
-test("generic submit clicks remain confirmation-pending and are never reported as submitted", () => {
-  const clicked = { ...buildGenericSubmitOutcome(true, { clicked: true }) };
-  assert.deepEqual(clicked, {
-    submitted: false,
-    submitAttempted: true,
-    submitClicked: true,
-    confirmationPending: true
-  });
 
-  const notClicked = { ...buildGenericSubmitOutcome(true, { clicked: false }) };
-  assert.equal(notClicked.submitted, false);
-  assert.equal(notClicked.submitAttempted, true);
-  assert.equal(notClicked.submitClicked, false);
-  assert.equal(notClicked.confirmationPending, false);
-});
 
-test("buildNeedsReviewReasonSummary summarizes single vs multiple flagged fields", () => {
-  assert.equal(
-    buildNeedsReviewReasonSummary([{ label: "Email", reason: "Email -- no value saved" }]),
-    "Email -- no value saved"
-  );
-  assert.equal(
-    buildNeedsReviewReasonSummary([
-      { label: "Email", reason: "Email -- no value saved" },
-      { label: "Gender", reason: "Gender -- no value saved" }
-    ]),
-    "2 fields need review: Email, Gender"
-  );
-});
 
-test("Workday URL detection is limited to candidate-facing Workday hosts", () => {
-  assert.equal(isWorkdayHostname("acme.wd5.myworkdayjobs.com"), true);
-  assert.equal(isWorkdayHostname("acme.myworkdaysite.com"), true);
-  assert.equal(isWorkdayUrl("https://acme.wd5.myworkdayjobs.com/en-US/jobs"), true);
-  assert.equal(isWorkdayUrl("https://example.com/?next=myworkdayjobs.com"), false);
-  assert.equal(isWorkdayHostname("fake-myworkdayjobs.com"), false);
-});
 
-asyncTest("trusted Workday clicks use a bounded CDP mouse sequence and detach immediately", async () => {
-  const originalDebugger = sandbox.chrome.debugger;
-  const calls = [];
 
-  try {
-    sandbox.chrome.debugger = {
-      attach(target, version, callback) {
-        calls.push({ operation: "attach", target, version });
-        callback();
-      },
-      sendCommand(target, method, params, callback) {
-        calls.push({ operation: "command", target, method, params });
-        callback({});
-      },
-      detach(target, callback) {
-        calls.push({ operation: "detach", target });
-        callback();
-      }
-    };
 
-    const result = await dispatchTrustedWorkdayClick(
-      { tab: { id: 42, url: "https://acme.wd5.myworkdayjobs.com/en-US/apply" } },
-      { x: 125.5, y: 240.25 }
-    );
 
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.operation), ["attach", "command", "command", "command", "detach"]);
-    assert.deepEqual(
-      calls.filter((call) => call.operation === "command").map((call) => call.params.type),
-      ["mouseMoved", "mousePressed", "mouseReleased"]
-    );
-    assert.ok(calls.every((call) => call.target.tabId === 42));
-
-    const rejected = await dispatchTrustedWorkdayClick(
-      { tab: { id: 42, url: "https://example.com/apply" } },
-      { x: 125.5, y: 240.25 }
-    );
-    assert.equal(rejected.ok, false);
-
-    const rejectedFrame = await dispatchTrustedWorkdayClick(
-      { frameId: 3, tab: { id: 42, url: "https://acme.wd5.myworkdayjobs.com/en-US/apply" } },
-      { x: 125.5, y: 240.25 }
-    );
-    assert.equal(rejectedFrame.ok, false);
-    assert.equal(calls.length, 5, "a non-Workday sender must never reach chrome.debugger");
-  } finally {
-    sandbox.chrome.debugger = originalDebugger;
-  }
-});
 
 asyncTest("Apple Proceed waits for popup layout after debugger attachment and never clicks an obscured button", async () => {
   const originalDebugger = sandbox.chrome.debugger;
@@ -862,133 +704,13 @@ asyncTest("Apple Proceed waits for popup layout after debugger attachment and ne
   }
 });
 
-asyncTest("trusted Workday text repair clears one selected value, inserts its replacement, and detaches", async () => {
-  const originalDebugger = sandbox.chrome.debugger;
-  const calls = [];
 
-  try {
-    sandbox.chrome.debugger = {
-      attach(target, version, callback) {
-        calls.push({ operation: "attach", target, version });
-        callback();
-      },
-      sendCommand(target, method, params, callback) {
-        calls.push({ operation: "command", target, method, params });
-        callback({});
-      },
-      detach(target, callback) {
-        calls.push({ operation: "detach", target });
-        callback();
-      }
-    };
 
-    const sender = {
-      frameId: 0,
-      tab: { id: 84, url: "https://acme.wd5.myworkdayjobs.com/en-US/apply" }
-    };
-    const result = await dispatchTrustedWorkdayTextReplacement(sender, "Jeff");
 
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.operation), ["attach", "command", "command", "command", "detach"]);
-    assert.deepEqual(
-      calls.filter((call) => call.operation === "command").map((call) => [call.method, call.params.type, call.params.key, call.params.text]),
-      [
-        ["Input.dispatchKeyEvent", "keyDown", "Backspace", undefined],
-        ["Input.dispatchKeyEvent", "keyUp", "Backspace", undefined],
-        ["Input.insertText", undefined, undefined, "Jeff"]
-      ]
-    );
-    assert.ok(calls.every((call) => call.target.tabId === 84));
 
-    const callCount = calls.length;
-    assert.equal((await dispatchTrustedWorkdayTextReplacement({ tab: { id: 84, url: "https://example.com" } }, "Jeff")).ok, false);
-    assert.equal((await dispatchTrustedWorkdayTextReplacement(sender, "x".repeat(4001))).ok, false);
-    assert.equal(calls.length, callCount, "rejected requests must never reach chrome.debugger");
-  } finally {
-    sandbox.chrome.debugger = originalDebugger;
-  }
-});
 
-test("mergeWorkdayAutofillPage accumulates fields and page-level workflow state", () => {
-  const aggregate = {
-    filledFields: [],
-    flaggedFields: [],
-    hadPendingAnswerFields: false,
-    needsResumeUpload: false,
-    resumeUploaded: false,
-    trace: [],
-    pageTitle: "",
-    hostname: "",
-    pageFingerprint: "",
-    workdayPagesProcessed: 0
-  };
-  mergeWorkdayAutofillPage(aggregate, {
-    filledFields: [{ label: "Country", value: "United States of America" }],
-    flaggedFields: [],
-    hadPendingAnswerFields: false,
-    needsResumeUpload: true,
-    resumeUploaded: true,
-    trace: ["Resume attached."],
-    pageTitle: "Apply",
-    hostname: "acme.myworkdayjobs.com",
-    pageFingerprint: "resume"
-  });
-  mergeWorkdayAutofillPage(aggregate, {
-    filledFields: [{ label: "Phone", value: "555-555-5555" }],
-    flaggedFields: [{ label: "Question", reason: "needs review" }],
-    hadPendingAnswerFields: true,
-    trace: ["Profile page."],
-    pageFingerprint: "profile"
-  });
 
-  assert.equal(aggregate.workdayPagesProcessed, 2);
-  assert.equal(aggregate.filledFields.length, 2);
-  assert.equal(aggregate.flaggedFields.length, 1);
-  assert.equal(aggregate.hadPendingAnswerFields, true);
-  assert.equal(aggregate.resumeUploaded, true);
-  assert.equal(aggregate.pageFingerprint, "profile");
-});
 
-asyncTest("persistObservedWorkdayCandidateProfile enriches the single local profile record idempotently", async () => {
-  const resumeFileDataUrl = "data:application/pdf;base64,WORKDAY";
-  storageData.appleCareersUserProfile = normalizeUserProfile({
-    resumeFileDataUrl,
-    resumeFileName: "resume.pdf",
-    resumeFileType: "application/pdf",
-    candidateProfileResumeFingerprint: core.fingerprintText(resumeFileDataUrl),
-    candidateProfile: {
-      experience: [{ company: "Acme", title: "Engineer", summary: "Resume summary" }]
-    }
-  });
-
-  const observed = {
-    experience: [{ company: "Acme", title: "Engineer", location: "Austin, TX" }],
-    education: [{ institution: "State University", degree: "Masters", gradeAverage: "3.9" }]
-  };
-  const first = await persistObservedWorkdayCandidateProfile(observed);
-  assert.equal(first.changed, true);
-  assert.equal(storageData.appleCareersUserProfile.candidateProfile.experience[0].summary, "Resume summary");
-  assert.equal(storageData.appleCareersUserProfile.candidateProfile.experience[0].location, "Austin, TX");
-  assert.equal(storageData.appleCareersUserProfile.candidateProfile.education[0].gradeAverage, "3.9");
-
-  const second = await persistObservedWorkdayCandidateProfile(observed);
-  assert.equal(second.changed, false);
-  assert.equal(storageData.appleCareersUserProfile.candidateProfile.experience.length, 1);
-  assert.equal(storageData.appleCareersUserProfile.candidateProfile.education.length, 1);
-});
-
-test("buildGenericContentProfile keeps form data but strips the OpenAI key before page injection", () => {
-  const contentProfile = buildGenericContentProfile({
-    llmEnabled: true,
-    llmApiKey: "sk-secret",
-    firstName: "Jeff",
-    resumeProfile: "Backend engineer."
-  });
-  assert.equal(contentProfile.llmEnabled, true);
-  assert.equal(contentProfile.llmApiKey, "");
-  assert.equal(contentProfile.firstName, "Jeff");
-  assert.equal(contentProfile.resumeProfile, "Backend engineer.");
-});
 
 test("classifyWorkflowError recognizes common failure signatures", () => {
   assert.equal(classifyWorkflowError("You've already applied for this job.", null), "already_applied");
@@ -1103,17 +825,17 @@ test("compactResumeMatch and truncateText shape values defensively", () => {
 });
 
 test("hasLlmAnswerCapability requires an enabled LLM, an API key, and a resume profile", () => {
-  assert.equal(hasLlmAnswerCapability({ llmEnabled: false, llmApiKey: "k", resumeProfile: "r" }), false);
-  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "", resumeProfile: "r" }), false);
-  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "k", resumeProfile: "" }), false);
-  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "k", resumeProfile: "r" }), true);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: false, llmApiKey: "k", resumeText: "r" }), false);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "", resumeText: "r" }), false);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "k", resumeText: "" }), false);
+  assert.equal(hasLlmAnswerCapability({ llmEnabled: true, llmApiKey: "k", resumeText: "r" }), true);
 });
 
 test("buildAnswerPrompt grounds the answer in the resume profile, question, and job context", () => {
   const messages = buildAnswerPrompt(
     "Why do you want to work at this company?",
     { title: "Software Engineer", siteLabel: "Apple Careers", matchScore: { keywords: ["Swift", "iOS"] } },
-    { resumeProfile: "5 years of backend experience." }
+    { resumeText: "5 years of backend experience." }
   );
 
   assert.equal(messages.length, 2);
@@ -1130,7 +852,7 @@ test("buildAnswerPrompt grounds the answer in the resume profile, question, and 
 
 test("buildAnswerPrompt tolerates a missing stored job record", () => {
   const messages = buildAnswerPrompt("Tell us about a challenge you overcame.", null, {
-    resumeProfile: "5 years of backend experience."
+    resumeText: "5 years of backend experience."
   });
   const userContent = JSON.parse(messages[1].content);
 
@@ -1459,166 +1181,9 @@ asyncTest("applied and error clear actions remove only their own ledger and rela
   }
 });
 
-asyncTest("Workday auto-apply re-sweeps after Continue and stops at one confirmation-pending Submit", async () => {
-  const originalTabs = sandbox.chrome.tabs;
-  const originalDelay = sandbox.delay;
-  const tab = {
-    id: 71,
-    status: "complete",
-    title: "Workday application",
-    url: "https://acme.wd5.myworkdayjobs.com/en-US/apply"
-  };
-  const messages = [];
-  let page = 1;
 
-  try {
-    sandbox.delay = async () => {};
-    sandbox.chrome.tabs = {
-      async get() {
-        return tab;
-      },
-      async sendMessage(_tabId, message) {
-        messages.push(message);
-        if (message.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL") {
-          return {
-            ok: true,
-            data: {
-              filledFields: page === 1 ? [{ label: "Resume", value: "resume.pdf" }] : [{ label: "Country", value: "United States of America" }],
-              flaggedFields: [],
-              hadPendingAnswerFields: false,
-              needsResumeUpload: page === 1,
-              resumeUploaded: page === 1,
-              trace: [],
-              pageTitle: tab.title,
-              hostname: "acme.wd5.myworkdayjobs.com",
-              pageFingerprint: `page-${page}`
-            }
-          };
-        }
-        if (message.type === "APPLE_CAREERS_GET_WORKDAY_PROGRESS_ACTION") {
-          return {
-            ok: true,
-            found: true,
-            label: page === 1 ? "Continue" : "Submit",
-            actionKind: page === 1 ? "continue" : "submit"
-          };
-        }
-        if (message.type === "APPLE_CAREERS_CLICK_WORKDAY_PROGRESS_ACTION") {
-          if (page === 1) page = 2;
-          return { ok: true, clicked: true };
-        }
-        throw new Error(`Unexpected message ${message.type}`);
-      }
-    };
 
-    const profile = normalizeUserProfile({
-      scanMode: "auto_apply",
-      autoApplyConsent: true,
-      eeoGender: "male",
-      eeoRaceEthnicity: ["asian"],
-      eeoVeteranStatus: "not_protected_veteran",
-      eeoDisabilityStatus: "no_current_or_past"
-    });
-    const result = await runWorkdayAutofillWorkflow(tab, profile, buildGenericContentProfile(profile));
 
-    assert.equal(result.ok, true);
-    assert.equal(result.data.workdayPagesProcessed, 2);
-    assert.equal(result.data.filledFields.length, 2);
-    assert.equal(result.data.submitClicked, true);
-    assert.equal(result.data.submitted, false);
-    assert.equal(result.data.confirmationPending, true);
-    assert.equal(
-      messages.filter((message) => message.type === "APPLE_CAREERS_CLICK_WORKDAY_PROGRESS_ACTION").length,
-      2
-    );
-  } finally {
-    sandbox.chrome.tabs = originalTabs;
-    sandbox.delay = originalDelay;
-  }
-});
-
-asyncTest("Workday retries the same Continue exactly once after rejected visible values are repaired", async () => {
-  const originalTabs = sandbox.chrome.tabs;
-  const originalDelay = sandbox.delay;
-  const tab = {
-    id: 72,
-    status: "complete",
-    title: "Workday validation recovery",
-    url: "https://acme.wd5.myworkdayjobs.com/en-US/apply"
-  };
-  const messages = [];
-  let page = 1;
-  let firstPageSweep = 0;
-  let continueClicks = 0;
-
-  try {
-    sandbox.delay = async () => {};
-    sandbox.chrome.tabs = {
-      async get() {
-        return tab;
-      },
-      async sendMessage(_tabId, message) {
-        messages.push(message);
-        if (message.type === "APPLE_CAREERS_RUN_GENERIC_AUTOFILL") {
-          if (page === 1) firstPageSweep += 1;
-          return {
-            ok: true,
-            data: {
-              filledFields: [],
-              flaggedFields: [],
-              hadPendingAnswerFields: false,
-              needsResumeUpload: false,
-              resumeUploaded: false,
-              repairedRejectedWorkdayFieldCount: page === 1 && firstPageSweep === 2 ? 1 : 0,
-              trace: [],
-              pageTitle: tab.title,
-              hostname: "acme.wd5.myworkdayjobs.com",
-              pageFingerprint: `page-${page}`
-            }
-          };
-        }
-        if (message.type === "APPLE_CAREERS_GET_WORKDAY_PROGRESS_ACTION") {
-          return {
-            ok: true,
-            found: true,
-            label: page === 1 ? "Continue" : "Submit",
-            actionKind: page === 1 ? "continue" : "submit"
-          };
-        }
-        if (message.type === "APPLE_CAREERS_CLICK_WORKDAY_PROGRESS_ACTION") {
-          if (page === 1) {
-            continueClicks += 1;
-            if (continueClicks === 2) page = 2;
-          }
-          return { ok: true, clicked: true };
-        }
-        throw new Error(`Unexpected message ${message.type}`);
-      }
-    };
-
-    const profile = normalizeUserProfile({
-      scanMode: "auto_apply",
-      autoApplyConsent: true,
-      eeoGender: "male",
-      eeoRaceEthnicity: ["asian"],
-      eeoVeteranStatus: "not_protected_veteran",
-      eeoDisabilityStatus: "no_current_or_past"
-    });
-    const result = await runWorkdayAutofillWorkflow(tab, profile, buildGenericContentProfile(profile));
-
-    assert.equal(result.ok, true);
-    assert.equal(result.data.workdayPagesProcessed, 3);
-    assert.equal(continueClicks, 2);
-    assert.equal(result.data.confirmationPending, true);
-    assert.equal(
-      messages.filter((message) => message.type === "APPLE_CAREERS_CLICK_WORKDAY_PROGRESS_ACTION").length,
-      3
-    );
-  } finally {
-    sandbox.chrome.tabs = originalTabs;
-    sandbox.delay = originalDelay;
-  }
-});
 
 asyncTest("workflow tabs are activated without focusing Chrome, and the recorded list tab can be restored", async () => {
   const originalTabs = sandbox.chrome.tabs;
@@ -1636,7 +1201,7 @@ asyncTest("workflow tabs are activated without focusing Chrome, and the recorded
         return { id: tabId, windowId: 7 };
       }
     };
-    await createActiveWorkflowTab("https://careers.tiktok.com/position/123/detail");
+    await createActiveWorkflowTab("https://jobs.apple.com/en-us/details/123/engineer");
     await activateListTab();
 
     assert.equal(calls[0].method, "create");
@@ -1660,8 +1225,8 @@ asyncTest("application workflow carries bounded validation-recovery state across
   const liveTab = {
     id: 31,
     status: "complete",
-    title: "ByteDance application",
-    url: "https://jobs.bytedance.com/en/resume/123/apply"
+    title: "Apple application",
+    url: "https://jobs.apple.com/app/en-us/apply/123"
   };
   const messages = [];
 
@@ -1678,11 +1243,13 @@ asyncTest("application workflow carries bounded validation-recovery state across
         return [liveTab];
       },
       async sendMessage(_tabId, message) {
+        if (message.type === "APPLE_CAREERS_VERIFY_WORKFLOW_IDENTITY") return { ok: true, data: { identityVerified: true, expectedJobId: "123", url: liveTab.url } };
         messages.push(message);
         if (messages.length === 1) {
           return {
             ok: true,
             data: {
+              identityVerified: true, expectedJobId: "123", submissionOutcome: "rejected",
               url: liveTab.url,
               title: liveTab.title,
               heading: "",
@@ -1707,6 +1274,7 @@ asyncTest("application workflow carries bounded validation-recovery state across
         return {
           ok: true,
           data: {
+            identityVerified: true, expectedJobId: "123", submissionOutcome: "rejected",
             url: liveTab.url,
             title: liveTab.title,
             heading: "",
@@ -1778,7 +1346,7 @@ asyncTest("cached Apple details survive redirected URLs and optional qualificati
   try {
     storageData[key] = {
       "200651307": {
-        version: 1,
+        version: 2,
         url: "https://jobs.apple.com/en-us/details/200651307-0836/hid-algorithms-engineer",
         description: "Cached role description",
         minimumQualifications: "",
@@ -1817,19 +1385,4 @@ asyncTest("redirected Apple posting IDs pass detail extraction", async () => {
   } finally {
     sandbox.chrome.tabs = originalTabs;
   }
-});
-
-(async () => {
-  for (const { name, fn } of asyncTests) {
-    try {
-      await fn();
-      console.log(`PASS ${name}`);
-    } catch (error) {
-      console.error(`FAIL ${name}`);
-      throw error;
-    }
-  }
-})().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
 });

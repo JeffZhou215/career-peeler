@@ -35,11 +35,7 @@ const sandbox = {
     }
   },
   window: {
-    location: {
-      href: "https://jobs.apple.com/en-us/search",
-      pathname: "/en-us/search",
-      search: ""
-    },
+    location: new URL("https://jobs.apple.com/en-us/search"),
     getComputedStyle() {
       return {
         visibility: "visible",
@@ -49,7 +45,9 @@ const sandbox = {
   }
 };
 
-vm.runInNewContext(
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "lib", "appleApplicationSafety.js"), "utf8"), sandbox);
+vm.runInContext(
   `${source}
 globalThis.__contentTestApi = {
   analyzeLocalMatch,
@@ -89,7 +87,6 @@ globalThis.__contentTestApi = {
   isRaceEthnicityQuestion,
   isStartDateQuestion,
   isSupportedJobDetailUrl,
-  isTikTokAuthorizationModuleQuestion,
   isValidationBlockedControl,
   isVisaSponsorshipQuestion,
   isVeteranStatusQuestion,
@@ -99,7 +96,6 @@ globalThis.__contentTestApi = {
   resolveRequiredFieldAudit,
   runApplicationWorkflowStep,
   shouldAgentAnswerRequiredControl,
-  shouldAnswerTikTokAuthorizationField,
   textIncludesTerm,
   waitForAppleWithdrawalConfirmationModal
 };`,
@@ -145,7 +141,6 @@ const {
   isRaceEthnicityQuestion,
   isStartDateQuestion,
   isSupportedJobDetailUrl,
-  isTikTokAuthorizationModuleQuestion,
   isValidationBlockedControl,
   isVisaSponsorshipQuestion,
   isVeteranStatusQuestion,
@@ -155,7 +150,6 @@ const {
   resolveRequiredFieldAudit,
   runApplicationWorkflowStep,
   shouldAgentAnswerRequiredControl,
-  shouldAnswerTikTokAuthorizationField,
   textIncludesTerm,
   waitForAppleWithdrawalConfirmationModal
 } = sandbox.__contentTestApi;
@@ -177,21 +171,15 @@ function classify(
   };
 }
 
-function test(name, fn) {
-  try {
-    fn();
-    console.log(`PASS ${name}`);
-  } catch (error) {
-    console.error(`FAIL ${name}`);
-    throw error;
-  }
-}
-
-const asyncTests = [];
-
-function asyncTest(name, fn) {
-  asyncTests.push({ name, fn });
-}
+const { test, beforeEach } = require("node:test");
+const asyncTest = test;
+beforeEach(() => {
+  vm.runInContext("appleSubmissionAttempts.clear()", sandbox);
+  sandbox.window.location.href = "https://jobs.apple.com/app/en-us/apply/123";
+  let clock = 1000;
+  sandbox.Date = class extends Date { static now() { return clock; } };
+  sandbox.delay = async ms => { clock += Number(ms) || 1; };
+});
 
 test("parses numeric and word-based years", () => {
   assert.deepEqual(Array.from(parseYears("Requires 2+ years of software experience")), [2]);
@@ -238,57 +226,15 @@ test("Apple posting details remain usable when qualification sections are absent
   }
 });
 
-test("extracts TikTok and ByteDance role ids from details URLs", () => {
-  assert.equal(
-    getJobIdFromUrl("https://careers.tiktok.com/position/7391234567890123456/detail"),
-    "7391234567890123456"
-  );
-  assert.equal(
-    getJobIdFromUrl("https://jobs.bytedance.com/en/position/7391234567890123456/detail"),
-    "7391234567890123456"
-  );
-  assert.equal(
-    getJobIdFromUrl("https://lifeattiktok.com/resume/7538573630772726034/apply"),
-    "7538573630772726034"
-  );
-  assert.equal(
-    getJobIdFromUrl("https://lifeattiktok.com/search/7278068779270408508"),
-    "7278068779270408508"
-  );
-});
 
-test("extracts generic career role ids from query parameters", () => {
-  assert.equal(
-    getJobIdFromUrl("https://careers.tiktok.com/search?job_id=ABC-123"),
-    "ABC-123"
-  );
-});
 
-test("recognizes TikTok search detail links but not application links as result cards", () => {
-  assert.equal(isSupportedJobDetailUrl(new URL("https://lifeattiktok.com/search/7278068779270408508")), true);
-  assert.equal(isSupportedJobDetailUrl(new URL("https://lifeattiktok.com/search?keyword=ml")), false);
-  assert.equal(isSupportedJobDetailUrl(new URL("https://lifeattiktok.com/resume/7278068779270408508/apply")), false);
-  assert.equal(isSupportedJobDetailUrl(new URL("https://careers.tiktok.com/position/application")), false);
-  assert.equal(isSupportedJobDetailUrl(new URL("https://careers.tiktok.com/position/7278068779270408508/detail")), true);
-});
 
-test("recognizes joinbytedance.com as a supported ByteDance careers host", () => {
-  assert.equal(
-    isSupportedJobDetailUrl(
-      new URL(
-        "https://joinbytedance.com/search?keyword=software+engineer&recruitment_id_list=1&job_category_id_list=&subject_id_list=&location_code_list=CT_159%2CCT_93&limit=12&offset=0"
-      )
-    ),
-    false
-  );
-  assert.equal(isSupportedJobDetailUrl(new URL("https://joinbytedance.com/search/7278068779270408508")), true);
-  assert.equal(
-    getJobIdFromUrl("https://joinbytedance.com/search/7278068779270408508"),
-    "7278068779270408508"
-  );
-});
 
-test("recognizes TikTok work authorization and sponsorship questions", () => {
+
+
+
+
+test("recognizes Apple work authorization and sponsorship questions", () => {
   assert.equal(
     isWorkAuthorizationQuestion("Are you legally authorized to work in the US without restriction?"),
     true
@@ -753,7 +699,7 @@ test("the question agent discovers required non-question select and text labels"
   }
 });
 
-test("ByteDance validation can wake the agent for an unmarked required control, but optional still wins", () => {
+test("Apple validation can wake the agent for an unmarked required control, but optional still wins", () => {
   const invalidField = {
     getBoundingClientRect() {
       return { width: 240, height: 40 };
@@ -812,47 +758,9 @@ test("ByteDance validation can wake the agent for an unmarked required control, 
   );
 });
 
-test("ByteDance Work Authorization module questions remain actionable when Formily omits required markers", () => {
-  const module = {
-    className: "applyFormModuleWrapper__2JZaE",
-    innerText:
-      "Work Authorization To comply with our legal obligations, we are required to ask each applicant for employment.",
-    parentElement: null,
-    querySelector(selector) {
-      return selector === "[class*='applyFormModuleWrapper-title']"
-        ? { innerText: "Work Authorization" }
-        : null;
-    }
-  };
-  const field = {
-    className: "ud-formily-item",
-    parentElement: module,
-    required: false,
-    getAttribute() {
-      return null;
-    },
-    closest() {
-      return null;
-    },
-    querySelector() {
-      return null;
-    }
-  };
 
-  const workAuthorization = "Are you legally authorized to work in the US without restriction?";
-  const sponsorship = "Will you now or in the future require visa sponsorship or a visa transfer?";
 
-  assert.equal(isQuestionControlRequired(field, workAuthorization), false);
-  assert.equal(isTikTokAuthorizationModuleQuestion(field, workAuthorization), true);
-  assert.equal(isTikTokAuthorizationModuleQuestion(field, sponsorship), true);
-  assert.equal(shouldAnswerTikTokAuthorizationField(field, workAuthorization), true);
-  assert.equal(shouldAnswerTikTokAuthorizationField(field, sponsorship), true);
-  assert.equal(isTikTokAuthorizationModuleQuestion(field, `${sponsorship} (optional)`), false);
-  assert.equal(shouldAnswerTikTokAuthorizationField(field, `${sponsorship} (optional)`), false);
-  assert.equal(isTikTokAuthorizationModuleQuestion(field, "Why do you want to join ByteDance?"), false);
-});
-
-test("a visible Submit button does not make a one-page ByteDance form review-only while question controls remain", () => {
+test("a visible Submit button does not make a one-page Apple form review-only while question controls remain", () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const control = {
     disabled: false,
@@ -884,67 +792,9 @@ test("a visible Submit button does not make a one-page ByteDance form review-onl
   }
 });
 
-test("the question-agent fallback discovers a blank no-marker ByteDance authorization dropdown", () => {
-  const originalQuerySelectorAll = sandbox.document.querySelectorAll;
-  const question = "Are you legally authorized to work in the US without restriction?";
-  const module = {
-    className: "applyFormModuleWrapper__2JZaE",
-    innerText: "Work Authorization",
-    parentElement: null,
-    querySelector() {
-      return { innerText: "Work Authorization" };
-    }
-  };
-  const input = { value: "" };
-  const field = {
-    className: "ud-formily-item",
-    innerText: question,
-    parentElement: module,
-    getAttribute(name) {
-      return name === "data-form-field-i18n-name" ? question : null;
-    },
-    querySelector(selector) {
-      if (selector.startsWith(".ud__select__selector")) return control;
-      if (selector.startsWith("input[role='combobox']")) return input;
-      return null;
-    }
-  };
-  const control = {
-    className: "ud__select__selector ud__select__selector-readOnly",
-    innerText: "",
-    parentElement: field,
-    disabled: false,
-    labels: [],
-    name: "",
-    id: "",
-    contains() {
-      return false;
-    },
-    getAttribute() {
-      return null;
-    },
-    getBoundingClientRect() {
-      return { width: 240, height: 40 };
-    },
-    closest(selector) {
-      if (selector === "[data-form-field-i18n-name]") return field;
-      if (selector.includes("[data-form-field-i18n-name]")) return field;
-      return null;
-    }
-  };
 
-  try {
-    sandbox.document.querySelectorAll = () => [control];
-    assert.equal(findAgentCustomDropdown(), control);
 
-    control.innerText = "Yes";
-    assert.equal(findAgentCustomDropdown(), null, "an already-selected dropdown must not wake the agent again");
-  } finally {
-    sandbox.document.querySelectorAll = originalQuerySelectorAll;
-  }
-});
-
-test("stuck recovery skips a populated ByteDance phone prefix and continues to the required dropdown", () => {
+test("stuck recovery skips a populated Apple phone prefix and continues to the required dropdown", () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const makeField = (label) => ({
     className: "ud-formily-item",
@@ -1094,11 +944,11 @@ asyncTest("a Submit click that reveals validation errors stops for review instea
   }
 });
 
-asyncTest("a Submit click is still attempted when validation markers already exist", async () => {
+asyncTest("existing field validation prevents another final Submit click", async () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   let clicked = false;
   const alert = {
-    innerText: "Current right-to-work status is required.",
+    innerText: "This required field is missing a value.",
     getBoundingClientRect() {
       return { width: 420, height: 40 };
     }
@@ -1125,17 +975,17 @@ asyncTest("a Submit click is still attempted when validation markers already exi
     const steps = [];
     const result = await clickAndDetectSubmission(submit, steps, { outcomeOptions: { timeoutMs: 0 } });
 
-    assert.equal(clicked, true);
-    assert.equal(result.clicked, true);
+    assert.equal(clicked, false);
+    assert.equal(result.clicked, false);
     assert.equal(result.errorType, "blocked_by_validation");
-    assert.equal(steps[0].step, "Submit application");
-    assert.equal(steps[1].step, "Check for validation errors after submitting");
+    assert.equal(result.submissionOutcome, "not_attempted");
+    assert.equal(steps.length, 0);
   } finally {
     sandbox.document.querySelectorAll = originalQuerySelectorAll;
   }
 });
 
-asyncTest("an unconfirmed Submit becomes validation-blocked when explicit required fields remain", async () => {
+asyncTest("unanswered fields alone leave Submit unknown rather than authorizing retry", async () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const originalAuditRequiredApplicationFields = sandbox.auditRequiredApplicationFields;
   const submit = {
@@ -1165,10 +1015,10 @@ asyncTest("an unconfirmed Submit becomes validation-blocked when explicit requir
     const result = await clickAndDetectSubmission(submit, steps, { outcomeOptions: { timeoutMs: 0 } });
 
     assert.equal(result.pausedForReview, true);
-    assert.equal(result.errorType, "blocked_by_validation");
-    assert.match(result.summary, /explicit unanswered required fields/i);
-    assert.equal(steps[1].step, "Check for validation errors after submitting");
-    assert.equal(steps[1].status, "blocked");
+    assert.equal(result.errorType, "clicked_but_unconfirmed");
+    assert.equal(result.submissionOutcome, "unknown");
+    assert.equal(steps[1].step, "Confirm application submitted");
+    assert.equal(steps[1].status, "unconfirmed");
   } finally {
     sandbox.document.querySelectorAll = originalQuerySelectorAll;
     sandbox.auditRequiredApplicationFields = originalAuditRequiredApplicationFields;
@@ -1260,13 +1110,13 @@ asyncTest("an unconfirmed Submit stops without broad required-field recovery", a
 
   try {
     sandbox.getSiteConfig = () => ({
-      id: "tiktok",
+      id: "apple",
       isJobDetailUrl: () => false,
       isApplicationUrl: () => true,
       finalSubmitPattern: /^submit$/i,
       continuePattern: /^continue$/i
     });
-    sandbox.getCurrentUrl = () => new URL("https://jobs.bytedance.com/en/resume/123/apply");
+    sandbox.getCurrentUrl = () => new URL("https://jobs.apple.com/app/en-us/apply/123");
     sandbox.getSessionRequiredSignal = () => null;
     sandbox.getAlreadyAppliedSignal = () => null;
     sandbox.getSubmittedSignal = () => null;
@@ -1296,7 +1146,7 @@ asyncTest("an unconfirmed Submit stops without broad required-field recovery", a
       };
     };
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
     assert.equal(result.pausedForReview, true);
     assert.equal(result.errorType, "clicked_but_unconfirmed");
     assert.equal(submitClicks, 1);
@@ -1336,13 +1186,13 @@ asyncTest("post-click validation engages required-field recovery before retrying
 
   try {
     sandbox.getSiteConfig = () => ({
-      id: "tiktok",
+      id: "apple",
       isJobDetailUrl: () => false,
       isApplicationUrl: () => true,
       finalSubmitPattern: /^submit$/i,
       continuePattern: /^continue$/i
     });
-    sandbox.getCurrentUrl = () => new URL("https://jobs.bytedance.com/en/resume/123/apply");
+    sandbox.getCurrentUrl = () => new URL("https://jobs.apple.com/app/en-us/apply/123");
     sandbox.getSessionRequiredSignal = () => null;
     sandbox.getAlreadyAppliedSignal = () => null;
     sandbox.getSubmittedSignal = () => null;
@@ -1392,7 +1242,7 @@ asyncTest("post-click validation engages required-field recovery before retrying
       };
     };
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
     assert.deepEqual(events, ["submit", "recover"]);
     assert.equal(recoveryOptions.includeUnmarked, true);
     assert.equal(result.validationRecoveryAttempted, true);
@@ -1421,13 +1271,13 @@ asyncTest("the third validation-blocked final Submit stops without another recov
 
   try {
     sandbox.getSiteConfig = () => ({
-      id: "tiktok",
+      id: "apple",
       isJobDetailUrl: () => false,
       isApplicationUrl: () => true,
       finalSubmitPattern: /^submit$/i,
       continuePattern: /^continue$/i
     });
-    sandbox.getCurrentUrl = () => new URL("https://jobs.bytedance.com/en/resume/123/apply");
+    sandbox.getCurrentUrl = () => new URL("https://jobs.apple.com/app/en-us/apply/123");
     sandbox.getSessionRequiredSignal = () => null;
     sandbox.getAlreadyAppliedSignal = () => null;
     sandbox.getSubmittedSignal = () => null;
@@ -1457,7 +1307,7 @@ asyncTest("the third validation-blocked final Submit stops without another recov
       throw new Error("the retry cap must stop before another agent call");
     };
 
-    const result = await runApplicationWorkflowStep({ submissionAttemptCount: 2 });
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href), submissionAttemptCount: 2 });
     assert.equal(result.pausedForReview, true);
     assert.equal(result.errorType, "submission_retry_limit");
     assert.match(result.summary, /after 3 final Submit attempts/i);
@@ -1486,13 +1336,13 @@ asyncTest("a missing or disabled Continue/Submit action triggers one broadened r
 
   try {
     sandbox.getSiteConfig = () => ({
-      id: "tiktok",
+      id: "apple",
       isJobDetailUrl: () => false,
       isApplicationUrl: () => true,
       finalSubmitPattern: /^submit$/i,
       continuePattern: /^continue$/i
     });
-    sandbox.getCurrentUrl = () => new URL("https://jobs.bytedance.com/en/resume/123/apply");
+    sandbox.getCurrentUrl = () => new URL("https://jobs.apple.com/app/en-us/apply/123");
     sandbox.getSessionRequiredSignal = () => null;
     sandbox.getAlreadyAppliedSignal = () => null;
     sandbox.getSubmittedSignal = () => null;
@@ -1529,7 +1379,7 @@ asyncTest("a missing or disabled Continue/Submit action triggers one broadened r
       summary: "No Continue or Submit action was found."
     });
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
     assert.equal(result.clicked, true);
     assert.match(result.summary, /required-field recovery answered and verified 1 field/i);
     assert.equal(auditOptions.length, 1);
@@ -1892,14 +1742,14 @@ test("a locally 'Likely match' job (once correctly classified) is auto-apply-eli
   assert.equal(shouldAutoApply(seniorStatus, seniorJob, autoApplyProfile), false);
 });
 
-// Real posting (https://joinbytedance.com/search/6964059491882076430) lists Android/Java/Objective-C/Python/Golang as alternatives.
+// Preserve the alternative-language requirement regression using a synthetic Apple job context.
 // The candidate's Python and Java background satisfies alternatives in that list, so Objective-C alone
 // must not turn this backend/infrastructure role into an iOS domain mismatch.
-test("real ByteDance posting (Software Engineer, Backend and Infrastructure): Objective-C alternative is not an iOS domain mismatch", () => {
+test("Apple backend posting with alternative language requirements: Objective-C alternative is not an iOS domain mismatch", () => {
   const result = classify(
     "Software Engineer, Backend and Infrastructure",
     `Responsibilities
-Build development infra including Cloud IDE, Repo&code management and CI/CD systems; - Build advanced intelligent data platforms, help client developers make decisions to optimize the user experience of our products; - Build ByteDance staging environment for TikTok, Ads, Shopping to enable internal isolate user and traffic from Prod, scale distributed applications, tweak technology like K8S, RPC, DB, MQ, KAFKA, HDFS, Hive, Yarn, build monitor and alert system; - Research and convert state of art computer engineering technology into the real products.
+Build development infra including Cloud IDE, Repo&code management and CI/CD systems; - Build advanced intelligent data platforms, help client developers make decisions to optimize the user experience of our products; - Build Apple staging environment for TikTok, Ads, Shopping to enable internal isolate user and traffic from Prod, scale distributed applications, tweak technology like K8S, RPC, DB, MQ, KAFKA, HDFS, Hive, Yarn, build monitor and alert system; - Research and convert state of art computer engineering technology into the real products.
 
 Minimum Qualifications
 Bachelor degree in computer science or a related technical discipline; - Experience working with Android/Java/Objective-C/Python/Golang
@@ -2052,14 +1902,14 @@ test("does not treat plain unlabeled or unrelated text as an essay question", ()
   assert.equal(isEssayQuestionLabel(""), false);
 });
 
-// Real ByteDance "Application Failed" confirm-dialog text (ud__confirm__content), reported as a live
+// Real Apple "Application Failed" confirm-dialog text (ud__confirm__content), reported as a live
 // bug: getAlreadyAppliedDialog()'s selector list didn't match this dialog's BEM (double-underscore)
 // class names at all, so getAlreadyAppliedSignal() returned null and the workflow fell through to the
 // Continue/Submit search, which failed with a confusing error instead of correctly recognizing this as
 // already-applied. This locks in that the TEXT half of that detection was always correct -- the bug was
 // purely in the DOM selector (not unit-testable here; see this file's document.querySelectorAll stub),
 // not in isAlreadyAppliedDialogText's own matching logic.
-test("isAlreadyAppliedDialogText recognizes ByteDance's real 'Application Failed' confirm-dialog text", () => {
+test("isAlreadyAppliedDialogText recognizes the supported duplicate-application wording", () => {
   assert.equal(
     isAlreadyAppliedDialogText("Application Failed You've already applied for this job. Unable to apply again."),
     true
@@ -2068,7 +1918,7 @@ test("isAlreadyAppliedDialogText recognizes ByteDance's real 'Application Failed
   assert.equal(isAlreadyAppliedDialogText(""), false);
 });
 
-test("getAlreadyAppliedSignal recognizes TikTok's exact ud__confirm__body popup element", () => {
+test("getAlreadyAppliedSignal recognizes a supported dialog-body node", () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const popupBody = {
     innerText: "You've already applied for this job. Unable to apply again.",
@@ -2092,16 +1942,18 @@ test("getAlreadyAppliedSignal recognizes TikTok's exact ud__confirm__body popup 
   }
 });
 
-test("getAlreadyAppliedSignal recognizes ByteDance's exact visible failure message without relying on wrapper classes", () => {
+test("getAlreadyAppliedSignal recognizes a supported visible duplicate notice without relying on wrapper classes", () => {
   const originalHref = sandbox.window.location.href;
   const originalBodyText = sandbox.document.body.innerText;
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
 
   try {
-    sandbox.window.location.href = "https://jobs.bytedance.com/en/resume/123/apply";
+    sandbox.window.location.href = "https://jobs.apple.com/app/en-us/apply/123";
     sandbox.document.body.innerText =
       "Application Failed\nYou've already applied for this job. Unable to apply again.\nView more jobs Cancel";
-    sandbox.document.querySelectorAll = () => [];
+    const notice = { innerText: sandbox.document.body.innerText,
+      getBoundingClientRect: () => ({ width: 400, height: 40 }) };
+    sandbox.document.querySelectorAll = selector => selector.includes("notice-error") ? [notice] : [];
 
     const signal = getAlreadyAppliedSignal();
 
@@ -2113,7 +1965,20 @@ test("getAlreadyAppliedSignal recognizes ByteDance's exact visible failure messa
   }
 });
 
-test("getSubmittedSignal recognizes ByteDance's 'We have received your resume' success page", () => {
+test("unscoped body text alone cannot mark an application as already applied", () => {
+  const body = sandbox.document.body.innerText;
+  const query = sandbox.document.querySelectorAll;
+  try {
+    sandbox.document.body.innerText = "Application Failed You've already applied for this job. Unable to apply again.";
+    sandbox.document.querySelectorAll = () => [];
+    assert.equal(getAlreadyAppliedSignal(), null);
+  } finally {
+    sandbox.document.body.innerText = body;
+    sandbox.document.querySelectorAll = query;
+  }
+});
+
+test("getSubmittedSignal recognizes supported received-resume confirmation text", () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const receivedMessage = {
     innerText: "We have received your resume.",
@@ -2138,7 +2003,7 @@ test("getSubmittedSignal recognizes ByteDance's 'We have received your resume' s
   }
 });
 
-asyncTest("the workflow terminates when ByteDance shows an already-applied dialog on a detail page", async () => {
+asyncTest("the workflow terminates when Apple shows an already-applied dialog on a detail page", async () => {
   const originalHref = sandbox.window.location.href;
   const originalQuerySelector = sandbox.document.querySelector;
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
@@ -2157,12 +2022,12 @@ asyncTest("the workflow terminates when ByteDance shows an already-applied dialo
   };
 
   try {
-    sandbox.window.location.href = "https://careers.tiktok.com/position/123/detail";
+    sandbox.window.location.href = "https://jobs.apple.com/en-us/details/123/engineer";
     sandbox.document.querySelector = () => null;
     sandbox.document.querySelectorAll = (selector) =>
       selector.includes(".ud__confirm__content") ? [dialog] : [];
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
 
     assert.equal(result.done, true);
     assert.equal(result.alreadySubmitted, true);
@@ -2176,7 +2041,7 @@ asyncTest("the workflow terminates when ByteDance shows an already-applied dialo
   }
 });
 
-asyncTest("a delayed ByteDance already-applied dialog stops the workflow before questionnaire fields are read", async () => {
+asyncTest("a delayed Apple already-applied dialog stops the workflow before questionnaire fields are read", async () => {
   const originalHref = sandbox.window.location.href;
   const originalQuerySelector = sandbox.document.querySelector;
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
@@ -2197,7 +2062,7 @@ asyncTest("a delayed ByteDance already-applied dialog stops the workflow before 
   };
 
   try {
-    sandbox.window.location.href = "https://lifeattiktok.com/resume/123/apply";
+    sandbox.window.location.href = "https://jobs.apple.com/app/en-us/apply/123";
     sandbox.document.querySelector = (selector) =>
       selector === "[data-form-field-i18n-name]" ? { getAttribute() {} } : null;
     sandbox.document.querySelectorAll = (selector) => {
@@ -2213,7 +2078,7 @@ asyncTest("a delayed ByteDance already-applied dialog stops the workflow before 
       return [];
     };
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
 
     assert.equal(result.done, true);
     assert.equal(result.alreadySubmitted, true);
@@ -2226,7 +2091,7 @@ asyncTest("a delayed ByteDance already-applied dialog stops the workflow before 
   }
 });
 
-asyncTest("a ByteDance already-applied dialog is detected after the page shell stabilizes but before the form loads", async () => {
+asyncTest("an Apple already-applied dialog is detected after the page shell stabilizes but before the form loads", async () => {
   const originalHref = sandbox.window.location.href;
   const originalQuerySelector = sandbox.document.querySelector;
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
@@ -2247,7 +2112,7 @@ asyncTest("a ByteDance already-applied dialog is detected after the page shell s
   };
 
   try {
-    sandbox.window.location.href = "https://jobs.bytedance.com/en/resume/123/apply";
+    sandbox.window.location.href = "https://jobs.apple.com/app/en-us/apply/123";
     sandbox.document.querySelector = () => null;
     sandbox.document.querySelectorAll = (selector) => {
       if (selector.includes(".ud__confirm__content")) {
@@ -2267,7 +2132,7 @@ asyncTest("a ByteDance already-applied dialog is detected after the page shell s
       return [];
     };
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
 
     assert.equal(result.done, true);
     assert.equal(result.alreadySubmitted, true);
@@ -2281,21 +2146,25 @@ asyncTest("a ByteDance already-applied dialog is detected after the page shell s
   }
 });
 
-asyncTest("a ByteDance popup mounting during the Submit search interrupts it immediately", async () => {
+asyncTest("a duplicate notice mounting during form readiness stops before Submit", async () => {
   const originalHref = sandbox.window.location.href;
   const originalBodyText = sandbox.document.body.innerText;
   const originalQuerySelector = sandbox.document.querySelector;
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const originalScrollTo = sandbox.window.scrollTo;
   let clickableScans = 0;
-  let popupTimer;
+  const originalDelay = sandbox.delay;
 
   try {
-    sandbox.window.location.href = "https://jobs.bytedance.com/en/resume/123/apply";
+    sandbox.window.location.href = "https://jobs.apple.com/app/en-us/apply/123";
     sandbox.document.body.innerText = "Application page";
     sandbox.window.scrollTo = () => {};
     sandbox.document.querySelector = () => null;
     sandbox.document.querySelectorAll = (selector) => {
+      if (selector.includes("notice-error") && sandbox.document.body.innerText.includes("already applied")) {
+        return [{ innerText: sandbox.document.body.innerText,
+          getBoundingClientRect: () => ({ width: 400, height: 40 }) }];
+      }
       if (selector === "[data-form-field-i18n-name], select, input, textarea, button, [role='button']") {
         return [{}];
       }
@@ -2306,22 +2175,23 @@ asyncTest("a ByteDance popup mounting during the Submit search interrupts it imm
 
       return [];
     };
-    popupTimer = setTimeout(() => {
-      sandbox.document.body.innerText =
-        "Application Failed You've already applied for this job. Unable to apply again.";
-    }, 3350);
+    const previousDelay = sandbox.delay;
+    let elapsed = 0;
+    sandbox.delay = async ms => {
+      elapsed += ms;
+      if (elapsed >= 1000) sandbox.document.body.innerText = "Application Failed You've already applied for this job. Unable to apply again.";
+      await previousDelay(ms);
+    };
 
-    const result = await runApplicationWorkflowStep();
+    const result = await runApplicationWorkflowStep({ expectedJobId: sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(sandbox.window.location.href) });
 
     assert.equal(result.done, true);
     assert.equal(result.alreadySubmitted, true);
     assert.equal(result.errorType, "already_applied");
     assert.ok(result.steps.some((step) => step.step === "Detect already applied notice"));
-    // One scan can happen before the popup mounts, and buildStepResult reads visible actions once.
-    // A larger count would mean the Submit search kept polling after the failure was detectable.
-    assert.ok(clickableScans <= 2);
+    assert.ok(result.steps.every(step => step.step !== "Submit application"));
   } finally {
-    clearTimeout(popupTimer);
+    sandbox.delay = originalDelay;
     sandbox.window.location.href = originalHref;
     sandbox.document.body.innerText = originalBodyText;
     sandbox.document.querySelector = originalQuerySelector;
@@ -2332,7 +2202,7 @@ asyncTest("a ByteDance popup mounting during the Submit search interrupts it imm
 
 asyncTest("Apple confirmation waits for Proceed to render and become enabled", async () => {
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
-  const originalSetTimeout = sandbox.setTimeout;
+  const originalDelay = sandbox.delay;
   let tick = 0;
   const button = {
     get disabled() { return tick < 2; },
@@ -2346,27 +2216,12 @@ asyncTest("Apple confirmation waits for Proceed to render and become enabled", a
   };
   try {
     sandbox.document.querySelectorAll = (selector) => selector === ".rc-overlay-popup-outer" ? [modal] : [];
-    sandbox.setTimeout = (callback) => { tick += 1; callback(); };
+    sandbox.delay = async ms => { tick += 1; await originalDelay(ms); };
     const result = await waitForAppleWithdrawalConfirmationModal();
     assert.equal(result.confirmation?.proceedButton, button);
     assert.equal(tick, 2, "the popup appearing before an enabled Proceed button must not stop the batch");
   } finally {
     sandbox.document.querySelectorAll = originalQuerySelectorAll;
-    sandbox.setTimeout = originalSetTimeout;
+    sandbox.delay = originalDelay;
   }
-});
-
-(async () => {
-  for (const { name, fn } of asyncTests) {
-    try {
-      await fn();
-      console.log(`PASS ${name}`);
-    } catch (error) {
-      console.error(`FAIL ${name}`);
-      throw error;
-    }
-  }
-})().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
 });

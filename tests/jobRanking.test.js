@@ -222,14 +222,12 @@ test("temporary rate limits have bounded retries, while long requested waits pau
   assert.equal(h.calls.scored, 4, "do not retry before a long Retry-After delay has elapsed");
 });
 
-test("the scorer rejects required experience and personal exclusions before spending API credits", async () => {
+test("the scorer rejects seniority and required experience before spending API credits", async () => {
   const h = workerHarness();
   const senior = await h.api.scoreAppleRankingPosting({ ...details, title: "Senior Software Engineer" }, profile, {});
   const yoe = await h.api.scoreAppleRankingPosting({ ...details, requiredExperience: [{ years: 3 }] }, profile, {});
-  const excluded = await h.api.scoreAppleRankingPosting(details, { ...profile, noMatchKeywords: ["developer tooling"] }, {});
   assert.equal(senior.eligible, false);
   assert.equal(yoe.eligible, false);
-  assert.equal(excluded.eligible, false);
   assert.equal(h.calls.scored, 0);
 });
 

@@ -18,20 +18,19 @@ that.
 
 ## Testing
 
-- No test framework - `tests/*.test.js` are hand-written Node scripts run via `node tests/x.test.js`,
-  wired together in `package.json`'s `test` script. Run `npm test` (all suites) and `npm run check`
-  (`node --check` syntax validation on background, content and shared library files, plus `vite build`) before calling
-  a change done.
-- `tests/content.test.js` / `tests/genericAutofill.test.js` execute the **real source files** inside a
-  hand-rolled `vm.createContext` sandbox (mirrors `chrome.scripting.executeScript`'s injection
-  semantics) - there's no jsdom, so only pure, DOM-independent functions (label classification, option
-  matchers) get direct unit tests this way. DOM-mutating functions (`fillTextField`,
-  `simulateRealClick`, etc.) have no direct unit tests today - a known, accepted gap; don't feel
-  obligated to close it as a side effect of an unrelated change.
-- Async tests use a manual pattern, not `async` arrows passed straight to a sync `test()` helper: an
-  `asyncTests` array, an `asyncTest(name, fn)` registrar, and a trailing
-  `(async () => { for (...) { await fn() } })().catch(...)` IIFE that sets `process.exitCode = 1` on
-  failure. Mirror this exact shape (see `tests/core.test.js`) rather than inventing a different one.
+- Use Node's built-in `node:test` and `node:assert/strict`. `npm test` discovers `tests/*.test.js`
+  and `tests/*.test.mjs`, including safety and inventory regressions. Run it and `npm run check`
+  (syntax validation plus the production build) before calling a change done.
+- Test callbacks may be async; return/await all work so the runner observes failures. Keep cases
+  that mutate a shared VM sandbox sequential and restore mocked methods in `finally`. Use fresh
+  contexts or virtual clocks for stateful application/polling tests rather than real timer waits.
+- Content/background fixtures load the **real source** into classic-script VM contexts. Fake Chrome
+  tabs, events, messages and storage never control a real browser. The storage suite loads the real
+  IndexedDB adapter against the development-only `fake-indexeddb` implementation.
+- The default runner rejects unmocked fetch requests. API tests must provide explicit response
+  fixtures. Never perform live Apple applications or withdrawals during automated verification.
+- See `docs/testing.md` for fixture boundaries and integration limitations. Do not restore removed
+  platform code merely to satisfy an obsolete test.
 
 ## No blocking popups for ordinary "I don't know the answer" cases
 
