@@ -2,9 +2,9 @@
 
 An unofficial Chrome extension for Apple Careers. Upload your resume, rank filtered jobs, choose which ones to apply for, and review your existing submissions.
 
-![UI guide showing the Setup, Jobs, and Submissions tabs](docs/images/ui-guide.png)
+![UI guide showing labeled capacity, resume setup, job selection, and unified submission filters](docs/images/ui-guide.png)
 
-*Illustration of the extension's controls. Roles and counts are examples.*
+*Illustration of the current controls. Roles, counts, and sync time are fictional examples.*
 
 ## Install
 
@@ -20,7 +20,7 @@ In Chrome, open **Extensions → Developer Mode → Load Unpacked** and select `
 ## Start With Setup
 
 1. Open **Setup → Your Resume → Upload Resume** and choose a PDF.
-2. Under **AI Matching**, enable **LLM Matching**, enter your OpenAI API key, choose a model, and click **Test API Key**.
+2. Under **AI Matching**, check **Enable LLM Matching**, enter your OpenAI API key, choose a model, and click **Test API Key**.
 3. Click **Extract Profile From Resume** if the profile is not ready. Review the extracted profile and **Parsed Resume Text**.
 4. Expand **Application Profile** and check your experience, required application answers, work authorization, and sponsorship settings.
 
@@ -41,13 +41,13 @@ Selected roles are processed in score order after checking available slots. Unse
 
 A live selection counter shows how many slots remain to be covered. It tells you when enough roles are selected and when the selection exceeds available slots. Extra selections are allowed as backups if an application fails. The capacity notice stays visible while you scroll the application queue and is repeated in the confirmation sheet.
 
-**Preparing Batch** loads your selected roles' saved scores. After confirmation, **Checking Submission Capacity** verifies active applications in a temporary tab before applying. This check can take several seconds while Apple loads each submissions page.
+**Preparing Batch** loads your selected roles' saved scores. After confirmation, **Checking Submission Capacity** verifies all active applications before applying. It reuses a suitable submissions tab in the same window and restores its page, or opens and closes a temporary background tab. This check can take several seconds while Apple loads each submissions page.
 
 ### Apply Strong Matches Automatically
 
 Set **After Ranking** to **Auto Apply Strong Matches**, check **I Allow Strong Match Applications After Ranking**, then click **Scan And Rank**. Applications begin only after the full search finishes successfully. Roles with match concerns remain available for manual review.
 
-The header shows **Submitted**, **Open**, and **Queued** counts. The extension uses a conservative target of 50 active submissions and verifies the count before applying.
+The header labels **Submitted**, **Available Slots**, and **Application Queue** separately. **Cached Count** identifies a previously verified count; **Not Verified** and **—** mean current capacity is unknown, not zero. Capacity includes pending reservations, uses a conservative limit of 50 active submissions, and is checked again before applying.
 
 ## Review Existing Submissions
 
@@ -58,9 +58,11 @@ Open **Submissions** in the extension.
 | **Sync Submissions** | Updates saved submissions and the count without new AI matching. Reuses a ready submissions tab in the same window and restores its page, or opens and closes a temporary background tab. Your filtered search stays in place. |
 | **Analyze & Rank All** | Reads all submissions and scores roles against your resume. Reviewable roles appear with the lowest fit first. |
 
-Saved submissions appear as one collection. Use **All**, **Scored**, **Unscored**, or **Protected**, and **Find Job ID Or Title** to locate a role. Check the applications you want to withdraw, click **Review Withdrawal**, and review the confirmation sheet before continuing. Protected roles cannot be selected. A partial update retains older saved roles with a visible warning until the complete inventory is verified.
+Saved submissions load immediately as one deduplicated collection. Use **All**, **Scored**, **Unscored**, or **Protected**, and **Find Job ID Or Title** to locate a role. Check the applications you want to withdraw, click **Review Withdrawal**, and review the confirmation sheet before continuing. Protected roles cannot be selected. A partial update retains older saved roles with a visible warning until the complete inventory is verified.
 
-Visiting Apple's **Submissions → Active** automatically checks the current page without opening tabs, moving through pages, or running AI analysis. When the inventory spans multiple pages, automatic sync is deferred; use **Sync Submissions** to verify all pages and restore your place. The compact sync indicator shows progress, the last successful timestamp, failures with **Retry**, and deferrals while another workflow is running.
+Visiting Apple's **Submissions → Active** automatically checks the current page without opening tabs, moving through pages, or running AI analysis. It can verify the count when the complete inventory fits on one page. For multiple pages, automatic sync is deferred; use **Sync Submissions** to verify all pages and restore your place.
+
+The compact sync indicator shows **Syncing**, the last successful sync time, **Sync Failed** with **Retry**, or **Sync Deferred**. Its last successful timestamp survives panel reopening and worker restarts. An interrupted or failed check leaves capacity unverified until a complete sync succeeds. **Analyze & Rank All** is the separate action for AI scoring.
 
 **Apple withdrawals cannot be undone, and you cannot reapply for a withdrawn role.**
 
@@ -72,7 +74,7 @@ Visiting Apple's **Submissions → Active** automatically checks the current pag
 
 After a manual application is verified, its earlier failure is labeled **Submitted Later** and kept under **Previous Failure**. New application activity is grouped by job and includes each Continue step. Older unassigned activity can contain steps from several roles.
 
-To apply one reviewed role, open its Apple job page and choose **Apply This Role** in the Jobs tab. Review the role and confirm submission. The extension checks available slots, then completes the application stages using your saved profile. It does not require a queue entry or a strong match score. If a step fails, the application stays open and Activity records the job link and reason. Applications with an unknown previous outcome are checked against current submissions before retrying.
+To apply one reviewed role, open its Apple job page and choose **Apply This Role** in the Jobs tab. Review the role and confirm submission. The extension checks available slots, then completes the application stages using your saved profile. It does not require a queue entry or a strong match score. If a step fails, the application stays open and Activity records the job link and reason. A previous unknown Submit outcome requires reconciliation; absence from the submissions list alone does not authorize an automatic retry.
 
 Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.
 
@@ -84,6 +86,6 @@ Reloading restores saved rankings, your Top setting, search text, and View filte
 
 Resume and job data are saved on your device. AI features send the PDF or relevant resume and job information to OpenAI using your key. See [Privacy](PRIVACY.md) and [Storage Details](docs/storage.md).
 
-After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`.
+After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. Reload open Apple Careers pages too so they use the current page reader. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`.
 
 For development, install dependencies with `npm ci`, then run `npm test` and `npm run check`. The default test command discovers every top-level test file, runs all suites with Node's test runner, and blocks unmocked fetch requests. Tests use synthetic Apple pages and in-memory IndexedDB; they do not submit or withdraw real applications. See [Testing](docs/testing.md) for fixtures and coverage limits.
