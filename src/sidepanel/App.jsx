@@ -22,12 +22,21 @@ export function App() {
   const [queueSummary, setQueueSummary] = useState(null);
   if (!loaded) return null;
   const capacity = queueSummary?.capacity;
+  const countVerified = capacity?.known && syncStatus.state !== "failed";
+  const cachedCount = countVerified && (syncStatus.state !== "synced" || syncNow - Number(syncStatus.lastSuccessAt || 0) >= 60000);
   return <main className="app ios-app">
     <div className="ios-chrome"><header><p className="eyebrow">Career Peeler</p><h1>Apple Careers</h1></header>
       <div className="capacity-strip" aria-live="polite">
-        {capacity?.known && syncStatus.state !== "failed" ? <><span><strong>{capacity.submitted}</strong> / 50 Submitted</span><span><strong>{capacity.remaining}</strong> Open</span></> : <span>Count Not Verified</span>}
-        {capacity?.known && syncStatus.state !== "failed" && (syncStatus.state !== "synced" || syncNow - Number(syncStatus.lastSuccessAt || 0) >= 60000) && <span className="muted">Cached</span>}
-        <span><strong>{queueSummary?.queued?.length || 0}</strong> Queued</span>
+        <div className="capacity-metric"><span className="capacity-metric-label">Submitted</span>
+          <strong>{countVerified ? `${capacity.submitted} / 50` : "Not Verified"}</strong>
+          {cachedCount && <span className="capacity-cache">Cached Count</span>}
+        </div>
+        <div className="capacity-metric"><span className="capacity-metric-label">Available Slots</span>
+          <strong aria-label={countVerified ? undefined : "Not Verified"}>{countVerified ? capacity.remaining : "—"}</strong>
+        </div>
+        <div className="capacity-metric"><span className="capacity-metric-label">Application Queue</span>
+          <strong>{queueSummary?.queued?.length || 0} Jobs</strong>
+        </div>
         <HelpTooltip label="Submission Capacity" text={`Uses the latest verified count plus confirmed new applications and pending reservations. Checked ${capacity?.checkedAt ? formatRelativeTime(capacity.checkedAt) : "before applying"}. Automatic checks read the current Active Submissions page without navigating. Explicit Sync verifies all pages. Apple may exempt some roles from its cap.`} />
       </div>
     </div>
