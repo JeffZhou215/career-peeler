@@ -2303,6 +2303,25 @@ async function waitForJobSpecificApplyAction(siteConfig, jobId, timeoutMs = 6000
   return null;
 }
 
+async function readAppleJobApplicability(expectedJobId) {
+  const assertIdentity = () => assertAppleWorkflowIdentity({ expectedJobId });
+  assertIdentity();
+  const site = getSiteConfig();
+  if (getSessionRequiredSignal()) {
+    return { jobId: getJobId(), url: window.location.href, identityVerified: true, canApply: false, alreadySubmitted: false,
+      errorType: "session_or_login_required" };
+  }
+  if (!site?.isJobDetailUrl(getCurrentUrl())) {
+    return { jobId: getJobId(), url: window.location.href, identityVerified: true, canApply: false, alreadySubmitted: false };
+  }
+  const alreadySubmitted = () => Boolean(getSubmittedSignal() || getAlreadyAppliedSignal());
+  let action = null;
+  if (!alreadySubmitted()) action = await waitForJobSpecificApplyAction(site, expectedJobId, 6000, { assertIdentity });
+  assertIdentity();
+  return { jobId: getJobId(), url: window.location.href, identityVerified: true,
+    alreadySubmitted: alreadySubmitted(), canApply: Boolean(action && !isActionDisabled(action)) };
+}
+
 function getLoadingSignal() {
   const candidates = Array.from(
     document.querySelectorAll("[aria-busy='true'], [role='progressbar'], [aria-label], button, div, span")
@@ -4745,6 +4764,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_EXTRACT_JOB") {
+    if (message.verifyApplicability) {
+      readAppleJobApplicability(message.expectedJobId).then(data => sendResponse({ ok: true, data }))
+        .catch(error => sendResponse({ ok: false, error: error.message, data: { errorType: error.code } }));
+      return true;
+    }
     sendResponse({
       ok: true,
       data: extractJobDetails({

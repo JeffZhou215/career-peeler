@@ -61,3 +61,13 @@ test("disclosure layouts do not inherit the legacy evidence grid", async () => {
   assert.doesNotMatch(css, /\.ranking-evidence\s+div\s*\{/);
   assert.match(css, /\.compact-role > details:not\(\[open\]\) > \.compact-role-body/);
 });
+
+test("discovery status is visible in the collapsed role heading rather than hidden inside match details", async () => {
+  const source = await readFile(new URL("../src/sidepanel/components/RankedJobsSection.jsx", import.meta.url), "utf8");
+  assert.match(source, /status=\{`\$\{status\} · \$\{discoveryLabel\}`\}/);
+  for (const discovery of ["Latest Scan", "Historical Cache", "Membership Unknown"]) {
+    assert.ok(source.includes(discovery));
+    const html = renderToStaticMarkup(createElement(CompactRoleCard, { role, status: `Strong Match · ${discovery}` }));
+    assert.ok(html.indexOf(discovery) < html.indexOf("compact-role-body"));
+  }
+});

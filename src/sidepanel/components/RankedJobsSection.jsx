@@ -177,7 +177,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     : listView === "stale" ? view?.staleMatches || [] : jobs;
   const visible = listJobs.filter(matchesSearch);
   const n = Math.min(visible.length, topN, capacity?.known ? capacity.remaining : topN);
-  const latestSearch = Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
+  const latestSearch = view?.latestSearch || Object.values(view?.searches || {}).sort((a, b) => b.startedAt - a.startedAt)[0];
   const canQueue = listView === "ranked" && (selectedIds.length > 0 || n > 0);
 
   const visibleQueued = (view?.queued || []).filter(matchesSearch);
@@ -203,13 +203,18 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     const status = job.stale ? "Saved Score · Update Required" : ["needs_review", "uncertain", "applying"].includes(job.queueStatus) ? "Application Needs Review"
       : job.queueStatus === "queued" ? job.eligible ? "Queued" : "Queued · Match Concerns"
         : job.breakdown ? job.eligible ? "Strong Match" : "Match Concerns" : "Excluded Or Unscored";
-    return <CompactRoleCard key={job.jobId} role={job} status={status} disclosureGroup={disclosureGroup}
+    const discoveryLabel = job.discoveryStatus === "current_scan" ? "Latest Scan"
+      : job.discoveryStatus === "historical_cache" ? "Historical Cache" : "Membership Unknown";
+    return <CompactRoleCard key={job.jobId} role={job} status={`${status} · ${discoveryLabel}`} disclosureGroup={disclosureGroup}
       selectable={!job.stale && Boolean(job.breakdown) && !["needs_review","uncertain","applying"].includes(job.queueStatus)}
       selected={(queued ? selectedQueueIds : selectedIds).includes(job.jobId)} disabled={busy || view?.running || applyOpen}
       actions={job.queueStatus === "queued" && <button type="button" className="secondary"
         aria-label={`Remove ${job.title} From Queue`} disabled={busy || view?.running}
         onClick={() => remove(job.jobId)}>Remove From Queue</button>}
       onSelect={() => (queued ? setSelectedQueueIds : setSelectedIds)(ids => ids.includes(job.jobId) ? ids.filter(id => id !== job.jobId) : [...ids, job.jobId])}>
+      <span className="compact-role-meta">{job.discoveryStatus === "current_scan" ? "Seen In Latest Scan"
+        : job.discoveryStatus === "historical_cache" ? "Not In Latest Filter · Availability Unverified"
+          : "Filter Membership And Availability Unknown"}</span>
       {job.localMatch && <details className="compact-fold"><summary>Local Resume Match</summary><div className="compact-fold-body"><span>{job.localMatch.percentage}% Local Overlap</span><p>{job.localMatch.reasons?.join("; ")}</p></div></details>}
       {!job.eligible && !!job.blockers?.length && <details className="compact-fold">
         <summary>Match Concerns <span className="function-meta">{job.blockers.length}</span></summary><div className="compact-fold-body"><ul>{job.blockers.map((blocker, index) => <li key={index}>
@@ -238,7 +243,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     <CurrentRoleApplication save={save} running={busy || view?.running || applyOpen} setStatusMessage={setStatusMessage} onOpenSetup={onOpenSetup}
       onStarted={() => { setView(current => current ? { ...current, running: true, workflowMode: "current_role", phase: "Checking Apple submission capacity" } : current); refresh().catch(console.error); }} />
     <div className="ranking-controls">
-      <label className="field-label" htmlFor="after-ranking">After Ranking<HelpTooltip label="After Ranking" text="Both modes finish the entire filtered search first. Auto Apply submits strong matches only after checking capacity. Review Then Apply lets you choose scored jobs and acknowledge their concerns." /></label>
+      <label className="field-label" htmlFor="after-ranking">After Ranking<HelpTooltip label="After Ranking" text="Auto Apply uses only strong matches observed in this completed filtered scan. Cached roles remain available for explicit manual selection. Every application checks the live job, apply action, and capacity." /></label>
       <select id="after-ranking" disabled={view?.running} value={profile.afterRanking} onChange={(event) => save({ afterRanking: event.target.value })}><option value="review">Review Then Apply</option><option value="auto">Auto Apply Strong Matches</option></select>
       {profile.afterRanking === "auto" && <label className="checkbox-row consent-row"><input type="checkbox" checked={profile.autoApplyConsent} disabled={view?.running} onChange={(event) => save({autoApplyConsent:event.target.checked})} /><span>I Allow Strong Match Applications After Ranking</span></label>}
       <div className="compact-actions">
