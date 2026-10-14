@@ -1,4 +1,4 @@
-importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js");
+importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js", "lib/appleWorkflowRecovery.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -278,6 +278,8 @@ const scanStateReady = CareerPeelerJobStore
       );
     }
   });
+
+const appleWorkflowReady = scanStateReady.then(() => recoverAppleApplicationSession());
 
 async function saveScanState() {
   syncScanStateLedgerViews();
@@ -1757,6 +1759,9 @@ async function startRetryErrorJobs(tab, userProfile) {
 }
 
 async function stopScan() {
+  scanState.running = false;
+  if (appleRankingActiveRun?.applying) appleRankingActiveRun.stopRequested = true;
+  await cancelAppleApplicationSession();
   await closeOwnedWorkflowTabs();
   await activateListTab();
 
@@ -2183,6 +2188,8 @@ async function resolveKnownSiteStep(activitySteps, id, status, observation) {
 }
 
 async function runApplicationWorkflow(tab, options = {}) {
+  const cancelGeneration = appleWorkflowCancelGeneration;
+  await appleWorkflowReady;
   const closeOnDone = options.closeOnDone !== false;
   const stopIfScanStopped = Boolean(options.stopIfScanStopped);
   const jobContext = options.jobContext || null;
@@ -2201,6 +2208,9 @@ async function runApplicationWorkflow(tab, options = {}) {
   let lastWorkflowUrl = tab?.url || null;
   let validationRecoveryAttempts = 0;
   let previousValidationRecoveryFingerprint = "";
+  let workflowSessionId = options.workflowSessionId || null;
+  let workflowStepId = null;
+  const ownsSession = !workflowSessionId;
   const workflowOutcomeMetadata = () => ({
     submissionAttempted: submissionAttemptCount > 0,
     submissionAttemptCount,
@@ -2246,6 +2256,12 @@ async function runApplicationWorkflow(tab, options = {}) {
       data: { ...workflowOutcomeMetadata(), submitted: false, errorType: "job_identity_mismatch" } };
   }
 
+  try {
+    if (!workflowSessionId) workflowSessionId = await claimAppleApplicationSession([{ ...jobContext, jobId, url: liveTab.url }],
+      { sourceTabId: workflowTabId, sourceWindowId: workflowWindowId, cancelGeneration });
+  } catch (error) {
+    return { ok: false, error: error.message, data: { ...workflowOutcomeMetadata(), submitted: false, errorType: error.code } };
+  }
   registerQuestionAgentTab(workflowTabId);
 
   const steps = [];
@@ -2318,6 +2334,7 @@ async function runApplicationWorkflow(tab, options = {}) {
       }
 
       const previousTabIds = await getOpenTabIds();
+      workflowStepId = await checkpointAppleWorkflowStep(workflowSessionId, { ...jobContext, jobId, url: liveTab.url }, workflowTabId);
       // A lost reply can hide a Submit click. Keep that case distinct from a
       // completed step that explicitly reports no submission attempt.
       workflowStepInFlight = true;
@@ -2325,6 +2342,8 @@ async function runApplicationWorkflow(tab, options = {}) {
       // and replay this mutating command; leave its outcome unknown for review.
       const response = await chrome.tabs.sendMessage(workflowTabId, {
         type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP",
+        workflowSessionId,
+        workflowStepId,
         expectedJobId: jobId,
         allowConfirmation,
         applicationAnswers: { workAuthorized: questionAgentProfile.workAuthorized,
@@ -2368,6 +2387,7 @@ async function runApplicationWorkflow(tab, options = {}) {
       else if (finalSubmitClicks) submissionOutcome = submissionRejected ? "rejected" : "unknown";
       submissionRejected = submissionOutcome === "rejected";
       workflowStepInFlight = false;
+      await checkpointAppleWorkflowResult(workflowSessionId, jobId, workflowStepId, { ...response.data, submissionOutcome });
       if (submissionOutcome === "unknown" && !response.data.done) {
         if (!response.data.pausedForReview) response.data.summary = "Submit outcome is unknown. The workflow stopped without another Submit attempt; check Your Roles before retrying.";
         response.data.pausedForReview = true;
@@ -2569,6 +2589,7 @@ async function runApplicationWorkflow(tab, options = {}) {
       }
     };
   } finally {
+    if (ownsSession && workflowSessionId) await finishAppleApplicationSession(workflowSessionId).catch(console.error);
     for (const tabId of questionAgentTabIds) {
       questionAgentProfilesByTabId.delete(tabId);
       questionAgentJobsByTabId.delete(tabId);
@@ -3080,9 +3101,11 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
     }
     await CareerPeelerJobStore.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
     if (complete) {
+      await quiesceRecoveredAppleWorkflow();
+      const workflow = await reconcileAppleApplicationSession(archive.latestScan);
       const ranking = await readAppleRankingState();
       ranking.capacitySnapshot = archive.latestScan;
-      ranking.reservations = [];
+      ranking.reservations = unresolvedAppleWorkflowReservations(workflow);
       await saveAppleRankingState(ranking, { jobs: [], applicationFailures: [] });
     }
   };
@@ -3104,6 +3127,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
 
   try {
     run.windowId = await getTaskWindowId(tabId);
+    await quiesceRecoveredAppleWorkflow();
     page = await sendPageRequest("APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
     if (page.withdrawalConfirmationOpen) {
       throw new Error("Resolve Apple's open withdrawal confirmation before scanning submissions.");
@@ -3303,6 +3327,8 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
 }
 
 const RECOGNIZED_MESSAGE_TYPES = new Set([
+  "APPLE_CAREERS_RECORD_WORKFLOW_SUBMIT_OUTCOME",
+  "APPLE_CAREERS_AUTHORIZE_WORKFLOW_ACTION",
   "APPLE_CAREERS_OBSERVED_SUBMISSION",
   "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC",
   "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE",
@@ -3340,9 +3366,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  scanStateReady.then(async () => {
+  appleWorkflowReady.then(async () => {
     try {
-      if (message.type === "APPLE_CAREERS_OBSERVED_SUBMISSION") {
+      if (message.type === "APPLE_CAREERS_RECORD_WORKFLOW_SUBMIT_OUTCOME") {
+        sendResponse(await recordAppleSubmitObservation(message, sender));
+      } else if (message.type === "APPLE_CAREERS_AUTHORIZE_WORKFLOW_ACTION") {
+        sendResponse(await authorizeAppleWorkflowAction(message, sender));
+      } else if (message.type === "APPLE_CAREERS_OBSERVED_SUBMISSION") {
         sendResponse(await observeAppleSubmission(message, sender));
       } else if (message.type === "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC") {
         sendResponse(await passivelySyncAppleSubmissions(sender.tab, { confirmed: message.confirmed === true }) || { ok: true });

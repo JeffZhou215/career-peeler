@@ -8,7 +8,7 @@
     "test": "node --require ./tests/helpers/noNetwork.cjs --test --test-timeout=30000 tests/*.test.js tests/*.test.mjs",
     "test:p0": "node --require ./tests/helpers/noNetwork.cjs --test --test-timeout=30000 tests/appleWorkflowSafety.test.js",
     "test:inventory": "node --require ./tests/helpers/noNetwork.cjs --test --test-timeout=30000 tests/appleSubmissionInventory.test.js",
-    "check": "node --check content.js && node --check background.js && node --check lib/appleApplicationSafety.js && node --check lib/core.js && node --check lib/jobRanking.js && node --check lib/appleJobStore.js && node --check lib/appleRankingWorker.js && node --check lib/appleSubmissionSync.js && vite build"
+    "check": "node --check content.js && node --check background.js && node --check lib/appleApplicationSafety.js && node --check lib/core.js && node --check lib/jobRanking.js && node --check lib/appleJobStore.js && node --check lib/appleRankingWorker.js && node --check lib/appleSubmissionSync.js && node --check lib/appleWorkflowRecovery.js && vite build"
   },
   "dependencies": {
     "pdfjs-dist": "^6.4.299"

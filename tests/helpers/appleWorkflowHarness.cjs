@@ -7,10 +7,11 @@ const source = name => fs.readFileSync(path.join(root, name), "utf8");
 const event = () => ({ addListener() {}, removeListener() {} });
 
 function createContentHarness() {
+  const listeners = [];
   const sandbox = {
     URL, console, setTimeout, clearTimeout, Event: class Event {},
     fetch: async () => { throw new Error("Real network requests are forbidden in workflow tests."); },
-    chrome: { runtime: { onMessage: event() } },
+    chrome: { runtime: { onMessage: { addListener: listener => listeners.push(listener) } } },
     document: { body: { innerText: "", scrollHeight: 0 }, title: "Apple Application",
       querySelector: () => null, querySelectorAll: () => [], getElementById: () => null },
     window: { location: new URL("https://jobs.apple.com/app/en-us/apply/200123456-0836"),
@@ -21,6 +22,7 @@ function createContentHarness() {
   vm.runInContext(source("content.js"), sandbox);
   sandbox.delay = async () => {};
   sandbox.waitForCondition = async predicate => Boolean(predicate());
+  sandbox.dispatch = (message, sender = {}) => new Promise(resolve => listeners[0](message, sender, resolve));
   return sandbox;
 }
 
@@ -48,8 +50,9 @@ function installQuestions(sandbox, questions) {
 }
 
 function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete",
-  url: "https://jobs.apple.com/app/en-us/apply/200123456-0836", title: "Apple Role" }]) {
-  const data = {};
+  url: "https://jobs.apple.com/app/en-us/apply/200123456-0836", title: "Apple Role" }], options = {}) {
+  const data = options.data || {};
+  const listeners = [];
   const calls = { checkpoints: [], messages: [], injected: [], removed: [] };
   const get = async keys => Object.fromEntries((typeof keys === "string" ? [keys] : keys || Object.keys(data))
     .filter(key => Object.hasOwn(data, key)).map(key => [key, structuredClone(data[key])]));
@@ -57,6 +60,7 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
     remove: async keys => { for (const key of [].concat(keys)) delete data[key]; },
     patch: async (key, value) => { data[key] = structuredClone(value); },
     getMetadata: async key => structuredClone(data[key]),
+    updateMetadata: async (key, update) => { const value = update(structuredClone(data[key])); data[key] = structuredClone(value); return structuredClone(value); },
     getRecords: async (key, ids, field = null) => {
       const records = field ? data[key]?.[field] : data[key];
       return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
@@ -66,7 +70,7 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
     fetch: async () => { throw new Error("Real network requests are forbidden in workflow tests."); },
     chrome: {
       storage: { local: store, session: store, onChanged: event() },
-      runtime: { onMessage: event(), sendMessage: async () => ({ ok: true }) },
+      runtime: { onMessage: { addListener: listener => listeners.push(listener) }, sendMessage: async () => ({ ok: true }) },
       sidePanel: { setPanelBehavior: async () => {} },
       scripting: { executeScript: async request => { calls.injected.push(request); return []; } },
       tabs: { onActivated: event(), onUpdated: event(),
@@ -74,7 +78,11 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
         query: async () => tabs.map(tab => ({ ...tab })),
         update: async (id, updates) => { const tab = tabs.find(tab => tab.id === id); Object.assign(tab, updates); return { ...tab }; },
         remove: async id => calls.removed.push(id),
-        sendMessage: async (id, message) => { calls.messages.push(message); throw new Error(`Unmocked message: ${message.type}`); }
+        sendMessage: async (id, message) => {
+          calls.messages.push(message);
+          if (options.sendMessage) return options.sendMessage(id, message);
+          throw new Error(`Unmocked message: ${message.type}`);
+        }
       }
     }, CareerPeelerJobStore: store };
   vm.createContext(sandbox);
@@ -88,7 +96,8 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
   vm.runInContext(source("background.js"), sandbox, { filename: "background.js" });
   sandbox.delay = async () => {};
   sandbox.recordAppliedCheckpoint = async job => calls.checkpoints.push(job.jobId);
-  const ready = vm.runInContext("scanStateReady", sandbox);
+  sandbox.dispatch = (message, sender = {}) => new Promise(resolve => listeners[0](message, sender, resolve));
+  const ready = vm.runInContext("appleWorkflowReady", sandbox);
   return { sandbox, calls, data, tabs, ready };
 }
 

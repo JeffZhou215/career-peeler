@@ -127,6 +127,7 @@ function workerHarness() {
       return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
     },
     putRecords: async (key, values) => { store[key] = { ...store[key], ...structuredClone(values) }; },
+    updateMetadata: async (key, update) => { const value = update(structuredClone(store[key])); store[key] = structuredClone(value); return structuredClone(value); },
     getMetadata: async key => structuredClone(store[key])
   };
   const sandbox = {
@@ -174,7 +175,7 @@ function workerHarness() {
       return mocks.workflow;
     }
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") +
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleWorkflowRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") +
     "\nglobalThis.api = { runAppleJobRanking, runAppleJobQueue, getAppleRankingView, appleRankingProfileSignature, scoreAppleRankingPosting, queueTopAppleJobs, refreshAppleJobQueueCount };", sandbox);
   function queuedJob(jobId, score) {
     return { jobId, title: details.title, url: `https://jobs.apple.com/en-us/details/${jobId}/engineer`,

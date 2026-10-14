@@ -189,7 +189,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     ? /^Checking Apple submission/i.test(view.phase || "") ? "Checking Submission Capacity"
       : /^Applying/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Applying This Role" : "Applying Application Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
-    : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
+    : view?.recovery?.stopRequested ? "Application Stopped"
+      : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
       : view?.error ? /Application queue/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Application Needs Review" : "Application Queue Paused" : "Ranking Paused"
       : /Application queue/i.test(view?.phase || "") ? view.workflowMode === "current_role" ? /stopped/i.test(view.phase) ? "Application Stopped" : "Application Finished" : /stopped/i.test(view.phase) ? "Application Queue Stopped" : "Application Queue Finished"
         : /50-application target/i.test(view?.phase || "") ? "Application Limit Reached"
@@ -256,7 +257,9 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     </div>
     {view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
       ? `The previous scan was interrupted on page ${(latestSearch.pageIndex || 0) + 1}. Choose Resume Scan to continue using saved scores.`
-      : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
+      : view?.recovery?.reconciliationRequired
+        ? "The application workflow was interrupted. Sync Submissions, then review your selection before starting again. No applications resumed automatically."
+        : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
     {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}
       {!error && view?.errorJob && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
         Review {view.errorJob.title} (Job ID {view.errorJob.jobId})

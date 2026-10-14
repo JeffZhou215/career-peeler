@@ -516,6 +516,7 @@ test("four synthetic Apple stages use saved answers and confirm exactly one subm
   sandbox.hasVisibleApplicationQuestionControls = () => stage === 2;
   sandbox.document.querySelectorAll = selector => selector === "fieldset, section, div, li" && stage === 2
     ? [authorization.container, sponsorship.container] : [];
+  sandbox.chrome.runtime.sendMessage = message => harness.sandbox.dispatch(message, { tab: harness.tabs[0] });
   mockStep(harness, async message => ({ ok: true, data: await sandbox.runApplicationWorkflowStep(message) }));
   const result = await harness.sandbox.runApplicationWorkflow(harness.tabs[0], { closeOnDone: false,
     jobContext: { jobId: "200123456-0836", site: "apple" }, userProfile: { workAuthorized: "yes", requiresSponsorship: "no" } });
@@ -527,6 +528,9 @@ test("four synthetic Apple stages use saved answers and confirm exactly one subm
   assert.equal(authorization.radios[0].checked, true);
   assert.equal(sponsorship.radios[1].checked, true);
   assert.deepEqual(harness.calls.checkpoints, ["200123456-0836"]);
+  assert.equal(harness.data.appleApplicationWorkflow.status, "completed");
+  assert.equal(harness.data.appleApplicationWorkflow.jobs["200123456-0836"].state, "submitted");
+  assert.equal(harness.data.appleApplicationWorkflow.jobs["200123456-0836"].submissionAttemptCount, 1);
 });
 
 test("confirmed submission remains confirmed if its local history save fails", async () => {

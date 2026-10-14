@@ -2371,7 +2371,11 @@ async function clickAction(pattern, stepName, steps, options = {}) {
     block: "center"
   });
   await delay(200);
+  await options.assertOwnership?.();
   options.assertIdentity?.();
+  if (!pattern.test(getActionLabel(element))) {
+    throw Object.assign(new Error("The application action changed before it could be clicked. Review this step."), { code: "workflow_action_changed" });
+  }
   element.click();
   steps.push({
     step: stepName,
@@ -2439,6 +2443,10 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
   const existingValidation = getVisibleValidationErrors({ submission: true });
   if (existingValidation.length) return blockedSubmissionResult(options.submissionOutcome || "not_attempted", "blocked_by_validation",
     `Submit was not clicked because validation is already visible: ${existingValidation.join("; ")}`);
+  await options.assertOwnership?.("submit");
+  options.assertIdentity?.();
+  const postPermitBlock = checkSubmissionPermission(options);
+  if (postPermitBlock) return postPermitBlock;
   const submissionKey = options.expectedJobId || getJobId();
   const count = Math.max(Number(options.submissionAttemptCount) || 0, appleSubmissionAttempts.get(submissionKey)?.count || 0) + 1;
   // Reserve synchronously before the click; a concurrent/lost-reply request on
@@ -2455,6 +2463,7 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
 
   if (outcome?.type === "submitted") {
     appleSubmissionAttempts.set(submissionKey, { count, outcome: "confirmed" });
+    await reportAppleSubmitObservation(options, "confirmed");
     steps.push({
       step: "Confirm application submitted",
       status: "detected",
@@ -2471,6 +2480,7 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
 
   if (outcome?.type === "already_applied") {
     appleSubmissionAttempts.set(submissionKey, { count, outcome: "confirmed" });
+    await reportAppleSubmitObservation(options, "confirmed");
     const alreadyAppliedSignal = outcome.signal;
     steps.push({
       step: "Detect already applied dialog",
@@ -2491,6 +2501,7 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
   const postClickValidationErrors = outcome?.type === "validation" ? outcome.errors : getVisibleValidationErrors({ submission: true });
   if (postClickValidationErrors.length > 0) {
     appleSubmissionAttempts.set(submissionKey, { count, outcome: "rejected" });
+    await reportAppleSubmitObservation(options, "rejected");
     steps.push({
       step: "Check for validation errors after submitting",
       status: "blocked",
@@ -2644,6 +2655,7 @@ async function clickPrimaryAction(siteConfig, steps, options = {}) {
         timeoutMs: 5000,
         recordMissing: false,
         assertIdentity: options.assertIdentity,
+        assertOwnership: options.assertOwnership,
         shouldStop: () => {
           alreadyAppliedDuringContinueSearch = getAlreadyAppliedSignal();
           return Boolean(alreadyAppliedDuringContinueSearch);
@@ -2708,7 +2720,11 @@ async function clickPrimaryAction(siteConfig, steps, options = {}) {
     block: "center"
   });
   await delay(200);
+  await options.assertOwnership?.();
   options.assertIdentity?.();
+  if ((siteConfig?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primaryButton))) {
+    return clickAndDetectSubmission(primaryButton, steps, options);
+  }
   primaryButton.click();
   steps.push({
     step: "Continue application step",
@@ -2798,6 +2814,7 @@ async function answerSavedWorkQuestion(container, steps, applicationAnswers = {}
   if (select) {
     const option = Array.from(select.options).find(option => !option.disabled && matches(`${option.textContent || ""} ${option.value || ""}`));
     if (!option) return fail("Apple did not offer the explicit saved answer. Review this question manually.");
+    await options.assertOwnership?.();
     options.assertIdentity?.();
     setNativeFormValue(select, option.value);
   } else {
@@ -2810,6 +2827,7 @@ async function answerSavedWorkQuestion(container, steps, applicationAnswers = {}
       option = offered.find(element => matches(getAnswerOptionLabel(element)));
     }
     if (!option || option.isConnected === false || container.isConnected === false) return fail("Apple's answer control changed or did not offer the saved answer. Review it manually.");
+    await options.assertOwnership?.();
     options.assertIdentity?.();
     option.scrollIntoView({ block: "center" });
     option.click();
@@ -3037,7 +3055,7 @@ function getQuestionContainers() {
     .sort((a, b) => normalizeText(a.innerText || "").length - normalizeText(b.innerText || "").length);
 }
 
-function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLabel, options = {}) {
+async function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLabel, options = {}) {
   const selects = Array.from(container.querySelectorAll("select"))
     .filter((element) => isElementVisible(element))
     .filter((element) => !isActionDisabled(element));
@@ -3051,6 +3069,7 @@ function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLab
       continue;
     }
 
+    await options.assertOwnership?.();
     options.assertIdentity?.();
     select.value = option.value;
     select.dispatchEvent(new Event("input", { bubbles: true }));
@@ -3066,11 +3085,11 @@ function selectNativeAnswer(container, stepName, steps, matchesAnswer, answerLab
   return false;
 }
 
-function selectNativeYesAnswer(container, stepName, steps, options = {}) {
+async function selectNativeYesAnswer(container, stepName, steps, options = {}) {
   return selectNativeAnswer(container, stepName, steps, isYesAnswerText, "Yes", options);
 }
 
-function clickAnswerInContainer(container, answerPattern, stepName, steps, options = {}) {
+async function clickAnswerInContainer(container, answerPattern, stepName, steps, options = {}) {
   const candidates = Array.from(
     container.querySelectorAll("label, button, [role='radio'], [role='button'], input[type='radio']")
   ).filter((element) => isElementVisible(element));
@@ -3087,6 +3106,7 @@ function clickAnswerInContainer(container, answerPattern, stepName, steps, optio
     candidate.scrollIntoView({
       block: "center"
     });
+    await options.assertOwnership?.();
     options.assertIdentity?.();
     candidate.click();
     steps.push({
@@ -3156,6 +3176,7 @@ async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, an
       block: "center"
     });
     await delay(150);
+    await options.assertOwnership?.();
     options.assertIdentity?.();
     control.click();
 
@@ -3181,6 +3202,7 @@ async function clickDropdownAnswer(container, stepName, steps, matchesAnswer, an
       block: "center"
     });
     await delay(100);
+    await options.assertOwnership?.();
     options.assertIdentity?.();
     matchedOption.click();
     steps.push({
@@ -3220,11 +3242,11 @@ function hasMeaningfulSelectedDropdownValue(container) {
 }
 
 async function answerYesQuestion(container, stepName, steps, options = {}) {
-  if (selectNativeYesAnswer(container, stepName, steps, options)) {
+  if (await selectNativeYesAnswer(container, stepName, steps, options)) {
     return true;
   }
 
-  if (clickAnswerInContainer(container, /\byes\b/, stepName, steps, options)) {
+  if (await clickAnswerInContainer(container, /\byes\b/, stepName, steps, options)) {
     return true;
   }
 
@@ -3232,11 +3254,11 @@ async function answerYesQuestion(container, stepName, steps, options = {}) {
 }
 
 async function answerNoQuestion(container, stepName, steps, options = {}) {
-  if (selectNativeAnswer(container, stepName, steps, isNoAnswerText, "No", options)) {
+  if (await selectNativeAnswer(container, stepName, steps, isNoAnswerText, "No", options)) {
     return true;
   }
 
-  if (clickAnswerInContainer(container, /\bno\b/, stepName, steps, options)) {
+  if (await clickAnswerInContainer(container, /\bno\b/, stepName, steps, options)) {
     return true;
   }
 
@@ -3658,6 +3680,7 @@ async function openAndReadAgentDropdownOptions(control, options = {}) {
   const before = new Set(getVisibleAgentDropdownOptions());
   control.scrollIntoView({ block: "center" });
   await delay(150);
+  await options.assertOwnership?.();
   options.assertIdentity?.();
   control.click();
 
@@ -3798,6 +3821,8 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
     options.assertIdentity?.();
     let confirmed = false;
     if (["select", "multi_select"].includes(descriptor.kind)) {
+      await options.assertOwnership?.();
+      options.assertIdentity?.();
       if (setNativeSelectValues(descriptor.element, wantedValues)) {
         confirmed = await waitForCondition(
           () => wantedValues.every((wantedValue) =>
@@ -3814,6 +3839,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
       if (!matched.some((option) => !option) && (matched.length === 1 || descriptor.kind === "checkbox_group")) {
         for (const option of matched) {
           option.scrollIntoView({ block: "nearest" });
+          await options.assertOwnership?.();
           options.assertIdentity?.();
           option.click();
         }
@@ -3832,6 +3858,7 @@ async function answerAdditionalChoiceQuestions(steps, options = {}) {
           break;
         }
         option.scrollIntoView({ block: "nearest" });
+        await options.assertOwnership?.();
         options.assertIdentity?.();
         option.click();
         const selected = await waitForCondition(() => {
@@ -3901,6 +3928,7 @@ async function answerOpenTextQuestion(steps, options = {}) {
     return { answered: false, incomplete: true, questionText: label };
   }
 
+  await options.assertOwnership?.();
   options.assertIdentity?.();
   field.focus();
   setNativeFormValue(field, answer);
@@ -4155,10 +4183,41 @@ async function waitForApplicationFormToSettle(options = {}) {
   return { ready: false, alreadyAppliedSignal: getAlreadyAppliedSignal() };
 }
 
+const revokedAppleWorkflows = new Set();
+const executedAppleWorkflowSteps = new Set();
+
+async function reportAppleSubmitObservation(options, submissionOutcome) {
+  if (!options.workflowSessionId) return;
+  (options.assertObservationIdentity || options.assertIdentity)?.();
+  const reply = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_RECORD_WORKFLOW_SUBMIT_OUTCOME",
+    workflowSessionId: options.workflowSessionId, workflowStepId: options.workflowStepId,
+    expectedJobId: options.expectedJobId, identityVerified: true, submissionOutcome });
+  if (!reply?.ok) throw Object.assign(new Error(reply?.error || "The Submit observation could not be saved."), { code: "workflow_owner_revoked" });
+  (options.assertObservationIdentity || options.assertIdentity)?.();
+}
+
+async function assertAppleWorkflowOwnership(options, action = "form") {
+  const assertLive = () => {
+    if (revokedAppleWorkflows.has(options.workflowSessionId)) {
+      throw Object.assign(new Error("The application owner was stopped or restarted."), { code: "workflow_owner_revoked" });
+    }
+    options.assertIdentity?.();
+  };
+  assertLive();
+  const reply = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_AUTHORIZE_WORKFLOW_ACTION", action,
+    workflowSessionId: options.workflowSessionId, workflowStepId: options.workflowStepId,
+    expectedJobId: options.expectedJobId });
+  if (!reply?.ok) throw Object.assign(new Error(reply?.error || "Application ownership could not be verified."),
+    { code: "workflow_owner_revoked" });
+  if (action === "submit") options.submitPermissionGranted = true;
+  assertLive();
+}
+
 async function runApplicationWorkflowStep(options = {}) {
   const steps = [];
   const bound = { ...options, steps };
   bound.assertIdentity = () => assertAppleWorkflowIdentity(bound);
+  if (bound.workflowSessionId) bound.assertOwnership = action => assertAppleWorkflowOwnership(bound, action);
   bound.assertObservationIdentity = () => assertAppleWorkflowIdentity({ ...bound,
     allowConfirmation: Boolean(bound.allowConfirmation || steps.some(step => step.step === "Submit application" && step.status === "clicked")) }, true);
   try {
@@ -4167,8 +4226,8 @@ async function runApplicationWorkflowStep(options = {}) {
     bound.assertObservationIdentity();
     return { ...result, expectedJobId: String(bound.expectedJobId), identityVerified: true };
   } catch (error) {
-    if (!/^job_identity_/.test(error.code || "")) throw error;
-    const unknown = bound.submissionOutcome === "unknown" || steps.some(step => step.step === "Submit application" && step.status === "clicked");
+    if (!/^(job_identity_|workflow_)/.test(error.code || "")) throw error;
+    const unknown = bound.submitPermissionGranted || bound.submissionOutcome === "unknown" || steps.some(step => step.step === "Submit application" && step.status === "clicked");
     return buildStepResult({ clicked: false, done: false, pausedForReview: true,
       errorType: error.code, steps, expectedJobId: String(bound.expectedJobId || ""), identityVerified: false,
       submissionOutcome: unknown ? "unknown" : bound.submissionOutcome || "not_attempted", summary: error.message });
@@ -4288,6 +4347,7 @@ async function runBoundApplicationWorkflowStep(options) {
       block: "center"
     });
     await delay(200);
+    await options.assertOwnership?.();
     options.assertIdentity();
     submitResume.click();
     steps.push({
@@ -4610,6 +4670,11 @@ async function runBoundApplicationWorkflowStep(options) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "APPLE_CAREERS_REVOKE_WORKFLOW") {
+    revokedAppleWorkflows.add(message.workflowSessionId);
+    sendResponse({ ok: true, workflowSessionId: message.workflowSessionId });
+    return true;
+  }
   if (message?.type === "APPLE_CAREERS_VERIFY_WORKFLOW_IDENTITY") {
     try {
       assertAppleWorkflowIdentity(message, true);
@@ -4707,7 +4772,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP") {
+    if (!message.workflowSessionId || !message.workflowStepId || executedAppleWorkflowSteps.has(message.workflowStepId)) {
+      sendResponse({ ok: false, error: "A unique active application owner is required." });
+      return true;
+    }
+    executedAppleWorkflowSteps.add(message.workflowStepId);
     runApplicationWorkflowStep({
+      workflowSessionId: message.workflowSessionId,
+      workflowStepId: message.workflowStepId,
       expectedJobId: message.expectedJobId,
       allowConfirmation: message.allowConfirmation,
       applicationAnswers: message.applicationAnswers,

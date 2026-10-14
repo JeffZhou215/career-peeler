@@ -19,6 +19,7 @@ npm run check
 | Content | Posting/experience parsing, local matching, required/optional controls, answer verification, duplicate notices and validation recovery |
 | Background | Apple-only URL gates, retry/error ledgers, public-state privacy, activity, tab ownership, cached postings and recovery messages |
 | Safety | Saved answers, Submit caps and unknown outcomes, workflow identity, one synthetic four-stage application, IPC privacy |
+| MV3 Recovery | Durable claims/intent, worker recreation, cancellation, exact identity, late page revocation, reconciliation, reserved unknown outcomes and completed bookkeeping |
 | Inventory | Confirmed empty versus unknown, pagination, stale counts, later applications and final-withdrawal reconciliation |
 | Ranking | Complete scans, cached scores, slot limits, reserved outcomes, queue edits and changed postings |
 | IndexedDB | Real migration/transaction code, retained profile and protected roles, rollback, cleanup retry, concurrent contexts, record patches and notifications |
@@ -30,6 +31,6 @@ New current-behavior tests belong in top-level `.test.js` or `.test.mjs` files a
 
 ## Limits
 
-The suite does not verify authenticated Apple DOM variants, real server application outcomes, service-worker termination/restart, native Chrome debugger input, real PDF rendering, or actual browser cross-context scheduling. The zero-account fixture is synthetic; Apple's real empty-list representation remains an outstanding integration test. `fake-indexeddb` verifies storage logic, not disk persistence/quota behavior in Chrome. No real Apple submissions, withdrawals, account navigation, or OpenAI requests are performed.
+The suite does not verify authenticated Apple DOM variants, real server application outcomes, native Chrome service-worker termination, native Chrome debugger input, real PDF rendering, or actual browser cross-context scheduling. Worker-restart tests recreate the real scripts against shared saved state and synthetic message boundaries; see `docs/mv3-application-recovery.md` for required Chrome integration scenarios. The zero-account fixture is synthetic; Apple's real empty-list representation remains an outstanding integration test. `fake-indexeddb` verifies storage logic, not disk persistence/quota behavior in Chrome. No real Apple submissions, withdrawals, account navigation, or OpenAI requests are performed.
 
 Legacy employer names may appear in negative support gates or historical-ledger fixtures. Those tests assert that retired hosts are rejected or that old records cannot inflate Apple's capacity; they do not restore support.

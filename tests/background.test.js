@@ -50,6 +50,7 @@ const jobStore = {
   remove: async keys => { for (const key of [].concat(keys)) delete storageData[key]; },
   patch: async (key, value) => { storageData[key] = structuredClone(value); },
   getMetadata: async key => structuredClone(storageData[key]),
+  updateMetadata: async (key, update) => { const value = update(structuredClone(storageData[key])); storageData[key] = structuredClone(value); return structuredClone(value); },
   getRecords: async (key, ids, field = null) => {
     const records = field ? storageData[key]?.[field] : storageData[key];
     return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
@@ -232,7 +233,7 @@ const {
 
 const { test, before } = require("node:test");
 const asyncTest = test;
-before(async () => { await scanStateReady; });
+before(async () => { await vm.runInNewContext("appleWorkflowReady", sandbox); });
 
 test("getSiteConfig supports Apple and rejects retired employer hosts", () => {
   assert.equal(getSiteConfig("https://jobs.apple.com/en-us/search")?.id, "apple");

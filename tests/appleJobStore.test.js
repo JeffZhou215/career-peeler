@@ -9,6 +9,43 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const rankingKey = "appleJobRanking";
 const appliedKey = "appleCareersAppliedJobs";
 const reviewsKey = "appleSubmittedRoleReviews";
+const workflowKey = "appleApplicationWorkflow";
+
+test("workflow ownership claims are atomic across IndexedDB contexts and survive adapter restart", async () => {
+  const h = storageHarness();
+  try {
+    const first = h.context(), second = h.context();
+    const claim = owner => prior => {
+      if (prior?.owner) throw new Error("Already owned");
+      return { owner, status: "running", jobs: { "200123456-0836": { state: "not_started" } } };
+    };
+    const results = await Promise.allSettled([first.updateMetadata(workflowKey, claim("one")), second.updateMetadata(workflowKey, claim("two"))]);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    const saved = await h.context().getMetadata(workflowKey);
+    assert.ok(["one", "two"].includes(saved.owner));
+    assert.equal(saved.jobs["200123456-0836"].state, "not_started");
+    assert.equal(h.data[workflowKey], undefined, "workflow state belongs in IndexedDB");
+  } finally { h.close(); }
+});
+
+test("Submit intent and cancellation commit atomically and ranking writes cannot erase the journal", async () => {
+  const h = storageHarness();
+  try {
+    const store = h.context();
+    await store.updateMetadata(workflowKey, () => ({ status: "running", stopRequested: false, attempts: 0, outcome: "not_attempted" }));
+    await store.updateMetadata(workflowKey, state => ({ ...state, attempts: 1, outcome: "unknown" }));
+    await assert.rejects(store.updateMetadata(workflowKey, state => {
+      state.attempts++;
+      throw new Error("Synthetic permission failure");
+    }), /Synthetic/);
+    await store.updateMetadata(workflowKey, state => ({ ...state, status: "cancelled", stopRequested: true }));
+    await store.set({ [rankingKey]: { jobs: {}, searches: {}, reservations: [] } });
+    await store.patch(rankingKey, { jobs: {}, searches: {}, reservations: [], phase: "Stale UI write" }, {});
+    assert.deepEqual(plain(await h.context().getMetadata(workflowKey)), {
+      status: "cancelled", stopRequested: true, attempts: 1, outcome: "unknown"
+    });
+  } finally { h.close(); }
+});
 
 function storageHarness(seed = {}, { abortMigration = false } = {}) {
   const indexedDB = new IDBFactory();
