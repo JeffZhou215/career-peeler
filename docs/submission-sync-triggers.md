@@ -1,5 +1,7 @@
 # Apple Submission Synchronization Triggers
 
+This records the earlier removal of passive synchronization in `7b48a84`. It is superseded by the safe current-page checks described in [automatic-submission-sync.md](automatic-submission-sync.md); automatic checks now never create tabs or paginate.
+
 ## Root Cause And Call Paths
 
 Three unsolicited triggers reached the same inventory workflow:

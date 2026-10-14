@@ -5,10 +5,11 @@ import { FunctionSection } from "./FunctionSection";
 import { CompactRoleCard } from "./CompactRoleCard";
 import { fingerprintText, resolveResumeProfileText } from "../lib/profile";
 import { getActiveTab, sendMessageWithFallback } from "../lib/format";
+import { submissionCollection, filterSubmissions, retainSubmissionSelection } from "../lib/submissionCollection.mjs";
+import { SubmissionSyncIndicator } from "./SubmissionSyncIndicator";
 import { withdrawSubmittedRolesSequentially } from "../lib/submittedWithdrawals.mjs";
 
 const SAVED_REVIEWS_KEY = "appleSubmittedRoleReviews";
-const SAVED_SCORES_KEY = "appleSubmittedRoleScoresCache";
 
 function rankSubmittedRoles(roles) {
   const activeRoles = roles.filter((role) => role.active !== false).map(role => ({ ...role,
@@ -22,7 +23,7 @@ function rankSubmittedRoles(roles) {
   return [...lowMatches, ...protectedRoles];
 }
 
-export function SubmittedApplicationsSection({ profile, setStatusMessage, embedded = false }) {
+export function SubmittedApplicationsSection({ profile, setStatusMessage, embedded = false, syncStatus, syncNow }) {
   const roleGroupId = useId();
   const [roles, setRoles] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -31,15 +32,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [withdrawProgress, setWithdrawProgress] = useState(null);
   const [error, setError] = useState("");
-  const [reviewContext, setReviewContext] = useState(null);
   const [postingCacheStats, setPostingCacheStats] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [savedPages, setSavedPages] = useState({});
-  const [savedSnapshot, setSavedSnapshot] = useState(null);
-  const [savedCompleteSnapshot, setSavedCompleteSnapshot] = useState(null);
+  const [savedArchive, setSavedArchive] = useState({});
+  const savedArchiveRef = useRef({});
   const [analysisRunning, setAnalysisRunning] = useState(false);
-  const [savedView, setSavedView] = useState("all");
-  const [analysisProgress, setAnalysisProgress] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("all");
   const confirmationRef = useRef(null);
   const [stopRequested, setStopRequested] = useState(false);
   const activeAnalysisIdRef = useRef(null);
@@ -49,105 +47,22 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     () => roles.filter((role) => selectedIds.includes(role.jobId)),
     [roles, selectedIds]
   );
-  const normalizedSearch = searchQuery.trim().toLowerCase();
-  const visibleRoles = roles.filter((role) =>
-    !normalizedSearch ||
-    String(role.title || "").toLowerCase().includes(normalizedSearch) ||
-    String(role.jobId || "").toLowerCase().includes(normalizedSearch)
-  );
-  const lowMatchRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal === false && Number.isFinite(role.score));
-  const unscoredRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal === false && !Number.isFinite(role.score));
-  const protectedRoles = visibleRoles.filter((role) => role.protectedFromBatchWithdrawal !== false);
-  const savedPageIndices = Object.keys(savedPages).map(Number).sort((left, right) => left - right);
+  const collection = submissionCollection(savedArchive);
+  const savedSnapshot = savedArchive.latestScan;
+  const visibleRoles = filterSubmissions(roles, statusFilter, searchQuery);
+  const hiddenSelectedCount = selectedRoles.filter(role => !visibleRoles.some(visible => visible.jobId === role.jobId)).length;
 
-  function showReview(review, tabId = null) {
-    if (!review) return;
-    setRoles(rankSubmittedRoles(review.roles || []));
-    setSelectedIds([]);
-    setSavedView(`page:${review.pageIndex}`);
-    setReviewContext({ tabId, pageIndex: review.pageIndex, pageCount: review.pageCount });
-    setError(review.warning || "");
-    setPostingCacheStats({
-      fetched: review.descriptionsFetched || 0,
-      reused: review.descriptionsReused || 0,
-      unavailable: review.descriptionsUnavailable || 0,
-      saveFailed: Boolean(review.cacheSaveFailed),
-      scoresReused: review.scoresReused || 0,
-      scoresFetched: review.scoresFetched || 0
-    });
-    setSavedPages((current) => ({ ...current, [review.pageIndex]: review }));
+  function showArchive(archive) {
+    const next = submissionCollection(archive);
+    savedArchiveRef.current = archive;
+    setSavedArchive(archive);
+    setRoles(next.roles);
+    setSelectedIds(current => retainSubmissionSelection(current, next.roles));
   }
 
-  function showAllReviews(reviews) {
-    const byId = new Map();
-    for (const review of reviews) {
-      for (const role of review.roles || []) {
-        if (role.active !== false) byId.set(String(role.jobId), { ...role, sourcePageIndex: review.pageIndex });
-      }
-    }
-    setRoles(rankSubmittedRoles(Array.from(byId.values())));
-    setSelectedIds([]);
-    setSavedView("all");
-    setReviewContext(null);
-    setSavedPages((current) => Object.assign({}, current,
-      ...reviews.map((review) => ({ [review.pageIndex]: review }))));
-    setPostingCacheStats({
-      fetched: reviews.reduce((sum, review) => sum + (review.descriptionsFetched || 0), 0),
-      reused: reviews.reduce((sum, review) => sum + (review.descriptionsReused || 0), 0),
-      unavailable: reviews.reduce((sum, review) => sum + (review.descriptionsUnavailable || 0), 0),
-      saveFailed: reviews.some((review) => review.cacheSaveFailed),
-      scoresReused: reviews.reduce((sum, review) => sum + (review.scoresReused || 0), 0),
-      scoresFetched: reviews.reduce((sum, review) => sum + (review.scoresFetched || 0), 0)
-    });
-  }
-
-  function showSnapshot(snapshot) {
-    if (!snapshot?.roles) return;
-    setRoles(rankSubmittedRoles(snapshot.roles));
-    setSelectedIds([]);
-    setSavedView("all");
-    setReviewContext(null);
-    setPostingCacheStats(null);
-    setError([snapshot.complete ? "" : "This saved ranking is partial; the last scan did not reach every submissions page.", snapshot.warning].filter(Boolean).join(" "));
-  }
-
-  async function showCurrentPageFromStorage(cancelled = () => false) {
-    const tab = await getActiveTab();
-    if (!tab?.id || !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
-      throw new Error("Open Apple Careers → Your Roles → Submissions → Active to load this page.");
-    }
-    const response = await sendMessageWithFallback(tab.id, { type: "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE" });
-    if (!response?.ok) throw new Error(response?.error || "Apple's current submissions page could not be read.");
-    if (cancelled() || activeAnalysisIdRef.current) return;
-    const stored = await jobStore.get([SAVED_REVIEWS_KEY, SAVED_SCORES_KEY]);
-    const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
-    const page = response.data;
-    const oldById = new Map((archive.pages?.[page.pageIndex]?.roles || []).map((role) => [String(role.jobId), role]));
-    const scoreCache = stored[SAVED_SCORES_KEY] || {};
-    const roles = page.roles.filter((role) => role.active !== false).map((role) => {
-      const prior = oldById.get(String(role.jobId));
-      const cached = scoreCache[String(role.jobId).split("-")[0]]?.result;
-      const score = prior?.title === role.title && Number.isFinite(prior.score) ? prior : cached;
-      return score && Number.isFinite(score.score)
-        ? { ...role, score: score.score, reason: score.reason, matchBasis: score.matchBasis,
-            descriptionAvailable: score.descriptionAvailable, scoreSource: "previous_review" }
-        : role;
-    });
-    const review = {
-      ...(archive.pages?.[page.pageIndex] || {}),
-      pageIndex: page.pageIndex,
-      pageCount: page.pageCount,
-      roles,
-      updatedAt: Date.now()
-    };
-    const pages = { ...(archive.pages || {}), [page.pageIndex]: review };
-    try {
-      await jobStore.set({ [SAVED_REVIEWS_KEY]: { ...archive, version: 1, pages, lastPageIndex: page.pageIndex } });
-    } catch (_error) {
-      review.cacheSaveFailed = true;
-    }
-    if (!cancelled() && !activeAnalysisIdRef.current) showReview(review, tab.id);
-    return review;
+  async function reloadArchive() {
+    const stored = await jobStore.get(SAVED_REVIEWS_KEY);
+    showArchive(stored[SAVED_REVIEWS_KEY] || {});
   }
 
   useEffect(() => {
@@ -155,34 +70,24 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     async function loadSavedResults() {
       const stored = await jobStore.get(SAVED_REVIEWS_KEY);
       if (cancelled || activeAnalysisIdRef.current) return;
-      const archive = stored[SAVED_REVIEWS_KEY] || { version: 1, pages: {} };
-      setSavedPages(archive.pages || {});
-      setSavedSnapshot(archive.latestScan || null);
-      setSavedCompleteSnapshot(archive.lastCompleteScan || (archive.latestScan?.complete ? archive.latestScan : null));
-      if (archive.latestScan?.roles) {
-        showSnapshot(archive.latestScan);
-      } else {
-        const previousPages = Object.values(archive.pages || {});
-        if (previousPages.length > 1) {
-          showAllReviews(previousPages.sort((left, right) => (left.updatedAt || 0) - (right.updatedAt || 0)));
-          setError("These saved pages predate the combined snapshot. Apple will verify every selected role before withdrawal.");
-        } else if (previousPages[0]) {
-          showReview(previousPages[0]);
-        }
-      }
+      showArchive(stored[SAVED_REVIEWS_KEY] || {});
     }
     loadSavedResults().catch(error => { if (!cancelled) setError(error?.message || "Saved submissions could not be loaded from the job database."); });
     function handleProgress(message) {
       if (message?.type !== "APPLE_CAREERS_SUBMITTED_ROLES_PROGRESS" ||
         message.analysisId !== activeAnalysisIdRef.current) return;
-      setAnalysisProgress(message.scope === "all" ? { page: message.data.pagesRead, total: message.data.pageCount } : { page: message.data.pageIndex, total: message.data.pageCount });
-      if (message.scope === "all") {
-        allScanReviewsRef.current.set(message.data.review.pageIndex, message.data.review);
-        showAllReviews(Array.from(allScanReviewsRef.current.values()));
-        setStatusMessage(`Scanned ${message.data.pagesRead} of ${message.data.pageCount} Apple submissions pages.`);
-      } else {
-        showReview(message.data, message.tabId);
-      }
+      if (message.scope !== "all" || !message.data?.review) return;
+      allScanReviewsRef.current.set(message.data.review.pageIndex, message.data.review);
+      const reviews = Array.from(allScanReviewsRef.current.values());
+      const prior = savedArchiveRef.current;
+      showArchive({ ...prior, lastCompleteScan: prior.lastCompleteScan || (prior.latestScan?.complete ? prior.latestScan : null),
+        pages: { ...prior.pages, ...Object.fromEntries(reviews.map(review => [review.pageIndex, review])) },
+        latestScan: { ...(prior.latestScan || {}), complete: false, roles: reviews.flatMap(review => review.roles || []),
+          updatedAt: Date.now(), pagesRead: reviews.length, pageCount: message.data.pageCount } });
+      setPostingCacheStats({ reused: reviews.reduce((sum, review) => sum + (review.descriptionsReused || 0), 0),
+        fetched: reviews.reduce((sum, review) => sum + (review.descriptionsFetched || 0), 0),
+        scoresReused: reviews.reduce((sum, review) => sum + (review.scoresReused || 0), 0),
+        scoresFetched: reviews.reduce((sum, review) => sum + (review.scoresFetched || 0), 0) });
     }
     const storageListener = (changes, area) => { if ((area === "local" || area === "indexeddb") && changes[SAVED_REVIEWS_KEY] && !activeAnalysisIdRef.current && !busyRef.current) loadSavedResults().catch(console.error); };
     jobStore.onChanged.addListener(storageListener);
@@ -193,29 +98,6 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       jobStore.onChanged.removeListener(storageListener);
     };
   }, []);
-
-  async function loadCurrentPage() {
-    setBusy(true);
-    setError("");
-    try {
-      const review = await showCurrentPageFromStorage();
-      if (review) setStatusMessage(`Loaded ${review.roles.length} roles on Apple page ${review.pageIndex} from saved results. No OpenAI matching was run.`);
-      return review;
-    } catch (loadError) {
-      setError(loadError?.message || "Could not load this Apple submissions page.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function showAllSavedPages() {
-    if (savedSnapshot?.roles?.length) {
-      showSnapshot(savedSnapshot);
-      return;
-    }
-    showAllReviews(Object.values(savedPages).sort((left, right) => (left.updatedAt || 0) - (right.updatedAt || 0)));
-    setError("Saved pages may include roles that have since moved or been withdrawn. Open a page and refresh it before selecting withdrawals.");
-  }
 
   async function analyzeAllRoles() {
     setBusy(true);
@@ -228,13 +110,11 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       }
       allScanReviewsRef.current = new Map();
       setSelectedIds([]);
-      setReviewContext(null);
       const analysisId = crypto.randomUUID();
       activeAnalysisIdRef.current = analysisId;
       setAnalysisRunning(true);
-      setAnalysisProgress(null);
       setStopRequested(false);
-      setStatusMessage("Scanning Apple submissions one page at a time...");
+      setStatusMessage("Analyzing All Submissions…");
       const response = await chrome.runtime.sendMessage({
         type: "APPLE_CAREERS_ANALYZE_ALL_SUBMITTED_ROLES",
         tabId: tab.id,
@@ -242,17 +122,11 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
         analysisId
       });
       if (!response?.ok) throw new Error(response?.error || "Could not scan all Apple submissions.");
-      showAllReviews(response.data.reviews || []);
-      const stored = await jobStore.get(SAVED_REVIEWS_KEY);
-      setSavedSnapshot(stored[SAVED_REVIEWS_KEY]?.latestScan || null);
-      setSavedCompleteSnapshot(stored[SAVED_REVIEWS_KEY]?.lastCompleteScan || null);
-      setSavedPages(stored[SAVED_REVIEWS_KEY]?.pages || {});
+      await reloadArchive();
       setError(response.data.warning || "");
-      setStatusMessage(`${response.data.stopped ? "Stopped after" : "Scanned"} ${response.data.pagesRead} of ${response.data.pageCount} pages. Select roles from the saved ranking to queue withdrawals.`);
+      setStatusMessage(response.data.stopped ? "Analysis Stopped. Saved Results Remain Available." : "Submissions Analyzed. Review The Lowest Matches Before Selecting Withdrawals.");
     } catch (scanError) {
-      const stored = await jobStore.get(SAVED_REVIEWS_KEY).catch(() => ({}));
-      setSavedSnapshot(stored[SAVED_REVIEWS_KEY]?.latestScan || null);
-      setSavedCompleteSnapshot(stored[SAVED_REVIEWS_KEY]?.lastCompleteScan || null);
+      await reloadArchive().catch(() => {});
       setError(scanError?.message || "The all-submissions scan stopped.");
       setStatusMessage("All-submissions scan stopped. Saved pages remain available.");
     } finally {
@@ -269,51 +143,9 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       const tab = await getActiveTab();
       const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY", tab });
       if (!response?.ok) throw new Error(response?.error || "Could not sync submissions.");
-      const stored = await jobStore.get(SAVED_REVIEWS_KEY);
-      const archive = stored[SAVED_REVIEWS_KEY];
-      if (archive?.latestScan) { setSavedSnapshot(archive.latestScan); setSavedPages(archive.pages || {}); showSnapshot(archive.latestScan); }
-      setStatusMessage("Active submissions synced. Saved matching scores were reused.");
+      await reloadArchive();
     } catch (failure) { setError(failure.message); }
     finally { setBusy(false); }
-  }
-
-  async function analyzeRoles() {
-    setBusy(true);
-    setError("");
-    setConfirmationOpen(false);
-    setStatusMessage("Reading Apple’s active submitted roles...");
-
-    try {
-      const tab = await getActiveTab();
-      if (!tab?.id || !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
-        throw new Error("Open Apple Careers → Profile → Your Roles, then choose Submissions and Active.");
-      }
-
-      setSelectedIds([]);
-      const analysisId = crypto.randomUUID();
-      activeAnalysisIdRef.current = analysisId;
-      setAnalysisRunning(true);
-      setAnalysisProgress(null);
-      setStopRequested(false);
-      setStatusMessage("Matching submissions on the visible Apple page with your saved profile...");
-      const response = await chrome.runtime.sendMessage({
-        type: "APPLE_CAREERS_ANALYZE_SUBMITTED_ROLES",
-        tabId: tab.id,
-        userProfile: profile,
-        analysisId
-      });
-      if (!response?.ok) throw new Error(response?.error || "Could not score the submitted roles.");
-      showReview(response.data, tab.id);
-      setStatusMessage(`${response.data.roles.length} submissions saved from page ${response.data.pageIndex}. ${response.data.warning || "Select roles you want to review for withdrawal."}`);
-    } catch (analyzeError) {
-      setError(analyzeError?.message || "Could not analyze Apple submitted roles.");
-      setStatusMessage("Analysis stopped. Saved results remain available for review.");
-    } finally {
-      activeAnalysisIdRef.current = null;
-      setAnalysisRunning(false);
-      setStopRequested(false);
-      setBusy(false);
-    }
   }
 
   async function stopAnalysis() {
@@ -339,30 +171,14 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     if (!confirmationOpen && dialog.open) dialog.close();
   }, [confirmationOpen]);
 
-  async function changeSavedView(value) {
-    if (value === "current") {
-      if (await loadCurrentPage()) setSavedView("current");
-    } else if (value === "complete") {
-      showSnapshot(savedCompleteSnapshot);
-      setSavedView("complete");
-      setError("This is the last complete saved scan. Apple will verify each selected role before withdrawal.");
-    } else if (value.startsWith("page:")) {
-      showReview(savedPages[value.slice(5)]);
-    } else {
-      showAllSavedPages();
-      setSavedView("all");
-    }
-  }
-
   function renderRoleCard(role, protectedFromBatch = false) {
     const protectedLabel = String(role.jobId).split("-")[0] === "200654506"
       ? "Interview In Progress · Protected"
       : role.favorite === true ? "Starred · Protected" : "Star Status Unknown · Protected";
     return <CompactRoleCard key={role.jobId} role={role} disclosureGroup={`${roleGroupId}-submissions`}
-      status={protectedFromBatch ? protectedLabel : role.submittedDate ? `Submitted ${role.submittedDate}` : "Submitted"}
+      status={protectedFromBatch ? protectedLabel : role.availabilityUnknown ? "Saved · Availability Unverified" : role.submittedDate ? `Submitted ${role.submittedDate}` : "Submitted"}
       selectable={!protectedFromBatch} selected={selectedIds.includes(role.jobId)}
       disabled={busy || confirmationOpen} onSelect={() => toggleRole(role.jobId)}>
-      {role.sourcePageIndex && <span className="submitted-role-id">Saved Page {role.sourcePageIndex}</span>}
       <span className="submitted-role-id">{role.scoreSource === "previous_review" ? "Saved Score" : role.descriptionAvailable ? "Scored Against Job Description" : "Review Posting Manually"}</span>
     </CompactRoleCard>;
   }
@@ -435,9 +251,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     await jobStore.set({ ...(ranking ? { appleJobRanking: ranking } : {}), [SAVED_REVIEWS_KEY]: { ...archive, pages,
       ...(snapshot ? { latestScan: snapshot } : {}),
       ...(completeSnapshot ? { lastCompleteScan: completeSnapshot } : {}) } });
-    setSavedPages(pages);
-    if (snapshot) setSavedSnapshot(snapshot);
-    if (completeSnapshot) setSavedCompleteSnapshot(completeSnapshot);
+    await reloadArchive();
     return snapshot;
   }
 
@@ -459,7 +273,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
       if (!lock?.ok) throw new Error(lock?.error || "Another workflow is running.");
       lockAcquired = true;
       const tab = await getActiveTab();
-      if (!tab?.id || (reviewContext?.tabId && tab.id !== reviewContext.tabId)) {
+      if (!tab?.id) {
         throw new Error("Return to the Apple tab containing your submissions.");
       }
       if (!/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
@@ -551,11 +365,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
                 setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
                 throw new Error(`${role.title}: Apple confirmed the withdrawal, but its current page could not be read. ${refreshError?.message || "Sign in again to continue."}`);
               }
-              const snapshot = await removeSavedRole(role.jobId, page);
-              setRoles((current) => rankSubmittedRoles(snapshot?.roles || current.filter((item) => String(item.jobId) !== String(role.jobId))));
+              await removeSavedRole(role.jobId, page);
               setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
-              setReviewContext(null);
-              setSavedView("all");
               setStatusMessage(`${confirmedCount} of ${targets.length} withdrawn${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
             }
           });
@@ -611,28 +422,25 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   return (
     <FunctionSection embedded={embedded} title="Review Your Submissions" meta={analysisRunning ? "Scanning" : `${roles.length} Saved`}
       running={analysisRunning}
-      headerAction={analysisRunning && <button type="button" className="danger" onClick={stopAnalysis} disabled={stopRequested}>Stop</button>}
       help="Open Apple Your Roles → Submissions → Active. Scan all pages once, then use saved results without repeating matching. Select roles across pages; Apple checks every role before withdrawal. No roles are selected automatically.">
-      {roles.some(role => Number.isFinite(role.score)) && (savedSnapshot?.scorePolicyVersion !== 2 || !savedSnapshot?.matchSignature || savedSnapshot.matchSignature !== fingerprintText(resolveResumeProfileText(profile) + "|" + profile.userYearsOfExperience)) && <p className="muted" role="status">Saved Scores Need Updating For The Current Resume Or Matching Rules. Scan And Match All To Update Them.</p>}
+      <SubmissionSyncIndicator status={syncStatus} now={syncNow} onRetry={syncSubmissions} disabled={busy || syncStatus?.state === "syncing"} />
+      {roles.some(role => Number.isFinite(role.score)) && (savedSnapshot?.scorePolicyVersion !== 2 || !savedSnapshot?.matchSignature || savedSnapshot.matchSignature !== fingerprintText(resolveResumeProfileText(profile) + "|" + profile.userYearsOfExperience)) && <p className="muted" role="status">Saved Scores Need Updating For The Current Resume Or Matching Rules. Analyze & Rank All To Update Them.</p>}
       <div className="compact-actions">
-        <button type="button" className="primary" onClick={analyzeAllRoles} disabled={busy}>Scan And Match All</button>
-        <button type="button" className="secondary" onClick={syncSubmissions} disabled={busy}>Sync Submissions</button>
+        <button type="button" className="primary" onClick={analyzeAllRoles} disabled={busy || syncStatus?.state === "syncing"}>Analyze & Rank All</button>
+        <button type="button" className="secondary" onClick={syncSubmissions} disabled={busy || syncStatus?.state === "syncing"}>Sync Submissions</button>
       </div>
       {analysisRunning && <div className="compact-progress" role="status">
         <span><strong>{stopRequested ? "Stopping…" : "Scanning Submissions"}</strong>
-          <span className="compact-role-meta">{analysisProgress ? `Page ${analysisProgress.page} Of ${analysisProgress.total} · ` : ""}{roles.length} Saved</span>
+          <span className="compact-role-meta">{roles.length} Saved · Matching</span>
         </span>
         <button type="button" className="danger" onClick={stopAnalysis} disabled={stopRequested}>Stop</button>
       </div>}
-      <label className="saved-view-control"><span>View</span>
-        <select aria-label="Saved Roles View" value={savedView} disabled={busy} onChange={(event) => changeSavedView(event.target.value)}>
-          <option value="all">All Saved Roles</option>
-          <option value="current">Current Page</option>
-          {!savedSnapshot?.complete && savedCompleteSnapshot?.roles?.length > 0 && <option value="complete">Last Complete Scan</option>}
-          {savedPageIndices.map((pageIndex) => <option key={pageIndex} value={`page:${pageIndex}`}>Saved Page {pageIndex} · {savedPages[pageIndex].roles.length} Roles</option>)}
-        </select>
-        <HelpTooltip label="Saved Roles" text="Choose all saved roles, the live current page using saved scores, or one saved page. Loading saved results does not run OpenAI matching. The last complete scan is available if a newer scan stopped early." />
-      </label>
+      {collection.partial && <p className="muted submission-data-status" role="status">Partial Update · Older Saved Roles May Be Included. Sync Submissions To Verify The Full Inventory.</p>}
+      {collection.warning && collection.warning !== error && <p className="muted submission-data-status">{collection.warning}</p>}
+      <div className="submission-filters" role="group" aria-label="Submission Status Filter">
+        {[["all", "All"], ["scored", "Scored"], ["unscored", "Unscored"], ["protected", "Protected"]].map(([value, label]) =>
+          <button type="button" key={value} aria-pressed={statusFilter === value} onClick={() => setStatusFilter(value)}>{label}</button>)}
+      </div>
       {postingCacheStats && <details className="compact-fold"><summary>Scan Details<HelpTooltip label="Scan Details" text="Descriptions and scores are cached locally. These counts show which results were reused and which needed new reads or matching." /></summary>
         <div className="compact-fold-body"><span>{postingCacheStats.reused} Descriptions Reused · {postingCacheStats.fetched} Fetched</span>
           <span>{postingCacheStats.scoresReused} Scores Reused · {postingCacheStats.scoresFetched} Matched</span>
@@ -646,20 +454,12 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
           placeholder="Find Job ID Or Title" aria-label="Find Submitted Roles By Job ID Or Title" disabled={busy} />
         <div className="compact-list-heading"><strong>Submitted Roles</strong><span>Lowest Fit First</span></div>
         {!visibleRoles.length && <p className="muted">No submitted roles match that title or job ID.</p>}
-        {!!lowMatchRoles.length && <ol className="submitted-role-list compact-role-list">{lowMatchRoles.map((role) => renderRoleCard(role))}</ol>}
-        {!!unscoredRoles.length && <details className="compact-fold"><summary>Unscored Roles <span className="function-meta">{unscoredRoles.length}</span>
-          <HelpTooltip label="Unscored Roles" text="These roles could not be scored. Review each posting manually before selecting it for withdrawal." /></summary>
-          <ol className="submitted-role-list compact-role-list">{unscoredRoles.map((role) => renderRoleCard(role))}</ol>
-        </details>}
-        {!!protectedRoles.length && <details className="compact-fold" open={normalizedSearch ? true : undefined}><summary>Protected Roles <span className="function-meta">{protectedRoles.length}</span>
-          <HelpTooltip label="Protected Roles" text="Starred roles and job 200654506 are excluded from the withdrawal ranking and cannot be selected. Job 200654506 remains protected even if unstarred. Unknown star status is also protected." /></summary>
-          <ol className="submitted-role-list compact-role-list">{protectedRoles.map((role) => renderRoleCard(role, true))}</ol>
-        </details>}
-        <div className="compact-selection-bar"><span>{selectedIds.length} Selected</span>
+        <ol className="submitted-role-list compact-role-list">{visibleRoles.map(role => renderRoleCard(role, role.protectedFromBatchWithdrawal))}</ol>
+        <div className="compact-selection-bar"><span>{selectedIds.length} Selected{hiddenSelectedCount ? ` · ${hiddenSelectedCount} Hidden By Filters` : ""}</span>
           <button type="button" className="danger-button" disabled={busy || !selectedRoles.length} onClick={() => setConfirmationOpen(true)}>Review Withdrawal</button>
           <HelpTooltip label="Review Withdrawal" text="Review every selected job title and ID before confirming. Apple withdrawals cannot be undone, and you cannot reapply to those roles." />
         </div>
-      </> : !analysisRunning && <p className="muted">No saved submissions yet.</p>}
+      </> : !analysisRunning && <p className="muted">{savedArchive.latestScan?.complete && !collection.partial ? "No Active Submissions." : "No Saved Submissions Yet."}</p>}
       <dialog ref={confirmationRef} className="submitted-history-confirm ios-sheet" aria-labelledby="withdraw-confirm-title"
         onCancel={(event) => { if (busy) event.preventDefault(); else setConfirmationOpen(false); }} onClose={() => setConfirmationOpen(false)}>
         <h3 id="withdraw-confirm-title">Confirm Application Withdrawals</h3>

@@ -210,7 +210,7 @@ test("the Submissions panel persists final-withdrawal capacity only with confirm
     h.data[reviewsKey] = { latestScan: old, lastCompleteScan: old, pages: { 1: page(old.roles) } };
     h.data.appleJobRanking = { capacitySnapshot: old, jobs: {}, reservations: [{ jobId: "200000002" }] };
     const ui = { jobStore: h.sandbox.CareerPeelerJobStore, SAVED_REVIEWS_KEY: reviewsKey,
-      setSavedPages() {}, setSavedSnapshot() {}, setSavedCompleteSnapshot() {} };
+      reloadArchive: async () => {} };
     vm.runInNewContext(method, ui);
     await ui.removeSavedRole("200000001", { ...page([]), accountVerified: confirmed });
     const state = await h.sandbox.readAppleRankingState();

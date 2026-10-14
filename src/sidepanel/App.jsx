@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { HelpTooltip } from "./components/HelpTooltip";
+import { useSubmissionSyncStatus } from "./hooks/useSubmissionSyncStatus";
 import { useUserProfile } from "./hooks/useUserProfile";
 import { SubmittedApplicationsSection } from "./components/SubmittedApplicationsSection";
 import { RankedJobsSection } from "./components/RankedJobsSection";
@@ -15,6 +16,7 @@ function TabIcon({ tab }) {
 }
 export function App() {
   const { profile, loaded, save } = useUserProfile();
+  const { status: syncStatus, now: syncNow } = useSubmissionSyncStatus();
   const [tab, setTab] = useState("jobs");
   const [statusMessage, setStatusMessage] = useState("");
   const [queueSummary, setQueueSummary] = useState(null);
@@ -23,14 +25,15 @@ export function App() {
   return <main className="app ios-app">
     <div className="ios-chrome"><header><p className="eyebrow">Career Peeler</p><h1>Apple Careers</h1></header>
       <div className="capacity-strip" aria-live="polite">
-        {capacity?.known ? <><span><strong>{capacity.submitted}</strong> / 50 Submitted</span><span><strong>{capacity.remaining}</strong> Open</span></> : <span>Count Not Verified</span>}
+        {capacity?.known && syncStatus.state !== "failed" ? <><span><strong>{capacity.submitted}</strong> / 50 Submitted</span><span><strong>{capacity.remaining}</strong> Open</span></> : <span>Count Not Verified</span>}
+        {capacity?.known && syncStatus.state !== "failed" && (syncStatus.state !== "synced" || syncNow - Number(syncStatus.lastSuccessAt || 0) >= 60000) && <span className="muted">Cached</span>}
         <span><strong>{queueSummary?.queued?.length || 0}</strong> Queued</span>
-        <HelpTooltip label="Submission Capacity" text={`Uses the latest verified count plus confirmed new applications and pending reservations. Checked ${capacity?.checkedAt ? formatRelativeTime(capacity.checkedAt) : "before applying"}. Updates after detected manual submissions and when returning to Your Roles. Apple may exempt some roles from its cap.`} />
+        <HelpTooltip label="Submission Capacity" text={`Uses the latest verified count plus confirmed new applications and pending reservations. Checked ${capacity?.checkedAt ? formatRelativeTime(capacity.checkedAt) : "before applying"}. Automatic checks read the current Active Submissions page without navigating. Explicit Sync verifies all pages. Apple may exempt some roles from its cap.`} />
       </div>
     </div>
     <div className="ios-workspace">
       <section role="tabpanel" id="jobs-panel" aria-labelledby="jobs-tab" hidden={tab !== "jobs"}><RankedJobsSection embedded profile={profile} save={save} setStatusMessage={setStatusMessage} onSummaryChange={setQueueSummary} onOpenSetup={() => setTab("setup")} /></section>
-      <section role="tabpanel" id="submissions-panel" aria-labelledby="submissions-tab" hidden={tab !== "submissions"}><SubmittedApplicationsSection embedded profile={profile} setStatusMessage={setStatusMessage} /></section>
+      <section role="tabpanel" id="submissions-panel" aria-labelledby="submissions-tab" hidden={tab !== "submissions"}><SubmittedApplicationsSection embedded syncStatus={syncStatus} syncNow={syncNow} profile={profile} setStatusMessage={setStatusMessage} /></section>
       <section role="tabpanel" id="setup-panel" aria-labelledby="setup-tab" hidden={tab !== "setup"}><AppleSetupSection profile={profile} save={save} /></section>
       {statusMessage && <section className="status compact-status" aria-live="polite"><span>{statusMessage}</span><button type="button" className="status-dismiss" aria-label="Dismiss Status" onClick={() => setStatusMessage("")}>×</button></section>}
       <AppleActivity view={queueSummary} />

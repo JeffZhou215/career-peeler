@@ -279,7 +279,7 @@ const scanStateReady = CareerPeelerJobStore
     }
   });
 
-const appleWorkflowReady = scanStateReady.then(() => recoverAppleApplicationSession());
+const appleWorkflowReady = scanStateReady.then(() => recoverAppleApplicationSession()).then(() => recoverAppleSubmissionSync());
 
 async function saveScanState() {
   syncScanStateLedgerViews();
@@ -3107,6 +3107,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       ranking.capacitySnapshot = archive.latestScan;
       ranking.reservations = unresolvedAppleWorkflowReservations(workflow);
       await saveAppleRankingState(ranking, { jobs: [], applicationFailures: [] });
+      await completeAppleSubmissionSync(inventory);
     }
   };
   const publish = async (review) => {
@@ -3331,6 +3332,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_AUTHORIZE_WORKFLOW_ACTION",
   "APPLE_CAREERS_OBSERVED_SUBMISSION",
   "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC",
+  "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY",
   "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE",
   "APPLE_CAREERS_GET_JOB_RANKING",
   "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
@@ -3374,6 +3376,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await authorizeAppleWorkflowAction(message, sender));
       } else if (message.type === "APPLE_CAREERS_OBSERVED_SUBMISSION") {
         sendResponse(await observeAppleSubmission(message, sender));
+      } else if (message.type === "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY") {
+        sendResponse(await passivelySyncAppleSubmissions(sender.tab, message.signature));
       } else if (message.type === "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC") {
         // Already-injected older content scripts may still send this passive
         // request after an extension update. It must never start a workflow.

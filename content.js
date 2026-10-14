@@ -4726,6 +4726,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "APPLE_CAREERS_PEEK_SUBMITTED_HISTORY_PAGE") {
+    const session = getSessionRequiredSignal();
+    if (session) { sendResponse({ ok: false, error: session }); return false; }
+    try { assertAppleActiveSubmittedRolesPage(); }
+    catch (_) { sendResponse({ ok: true, data: { activeContext: false } }); return false; }
+    try { sendResponse({ ok: true, data: collectCurrentAppleSubmittedHistoryPage() }); }
+    catch (error) { sendResponse({ ok: false, error: error.message }); }
+    return false;
+  }
+
   if (message?.type === "APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE") {
     goToAppleSubmittedHistoryPage(message.pageIndex)
       .then((data) => sendResponse({ ok: true, data }))
@@ -4879,9 +4889,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 if (document.body && chrome.runtime?.id && getSiteConfig()?.id === "apple") {
   let observedId = null;
   let observationTimer = null;
+  let lastCapacitySignature = null;
+  let lastCapacityRequestAt = 0;
   const observe = () => {
     observationTimer = null;
     if (!chrome.runtime?.id) return;
+    if (/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
+      try {
+        const page = collectCurrentAppleSubmittedHistoryPage();
+        const signature = `${page.pageIndex}|${page.pageCount}|${page.roles.map(role => role.jobId).join("|")}`;
+        if (signature !== lastCapacitySignature || Date.now() - lastCapacityRequestAt >= 60000) {
+          lastCapacitySignature = signature;
+          lastCapacityRequestAt = Date.now();
+          chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY", signature }).catch(() => {});
+        }
+      } catch (_) { /* A route alone does not prove a ready Active list. */ }
+    } else {
+      lastCapacitySignature = null;
+    }
     const jobId = getJobId();
     if (isSupportedJobDetailUrl(getCurrentUrl()) && jobId && observedId !== jobId) {
       const submittedAction = Array.from(document.querySelectorAll("a, button, [role='button']")).find(element =>

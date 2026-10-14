@@ -15,7 +15,7 @@ const settle = async () => { await new Promise(resolve => setImmediate(resolve))
 
 async function syncHarness(tabs = [tab(1)], options = {}) {
   const h = createBackgroundHarness(tabs, { ...options, sendMessage: options.sendMessage || (async (_id, message) => {
-    if (message.type === "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE") return { ok: true, data: inventory.pages[1] };
+    if (["APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE", "APPLE_CAREERS_PEEK_SUBMITTED_HISTORY_PAGE"].includes(message.type)) return { ok: true, data: inventory.pages[1] };
     if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") return { ok: true, data: inventory };
     throw new Error(`Unexpected message: ${message.type}`);
   }) });
@@ -26,7 +26,7 @@ async function syncHarness(tabs = [tab(1)], options = {}) {
 }
 
 for (const url of [rolesUrl, searchUrl]) {
-  test(`manual page load and SPA navigation cannot request sync (${url})`, async () => {
+  test(`unconfirmed Active context cannot request automatic sync (${url})`, async () => {
     const content = createContentHarness({ observe: true, url });
     content.getSubmittedSignal = () => true; // A transient success marker cannot authorize a full sync.
     await content.flushObservationTimers();
@@ -39,7 +39,7 @@ for (const url of [rolesUrl, searchUrl]) {
   });
 }
 
-test("manual navigation, repeated activation, and worker restart do not synchronize or create tabs", async () => {
+test("manual navigation and repeated activation only peek once; pagination remains deferred across restart", async () => {
   const h = await syncHarness([tab(1, searchUrl)]);
   h.data.appleSubmittedRoleReviews = { latestScan: { complete: true, roles: [role("200123456-0836")] } };
   const cached = structuredClone(h.data.appleSubmittedRoleReviews);
@@ -53,10 +53,14 @@ test("manual navigation, repeated activation, and worker restart do not synchron
   for (const worker of [h, restarted]) {
     assert.deepEqual(worker.calls.created, []);
     assert.deepEqual(worker.calls.updated, []);
-    assert.deepEqual(worker.calls.messages, []);
+    assert.ok(worker.calls.messages.every(message => message.type === "APPLE_CAREERS_PEEK_SUBMITTED_HISTORY_PAGE"));
+    assert.ok(worker.calls.messages.length <= 1);
     assert.deepEqual(worker.calls.removed, []);
   }
   assert.deepEqual(h.data.appleSubmittedRoleReviews, cached);
+  assert.equal(h.data.appleSubmissionSyncStatus.state, "deferred");
+  assert.equal(h.data.appleSubmissionSyncStatus.reason, "pagination");
+  assert.equal(h.data.appleSubmissionSyncStatus.lastSuccessAt, undefined);
 });
 
 test("legacy passive sync messages, including confirmed=true, are harmless after an update", async () => {
@@ -80,7 +84,8 @@ test("a read-only current-page request cannot paginate or request full synchroni
   assert.equal(result.ok, true);
   assert.equal(result.data.pageIndex, 2);
   await content.flushObservationTimers();
-  assert.deepEqual(content.observationCalls.messages, []);
+  assert.equal(content.observationCalls.messages[0].type, "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY");
+  assert.equal(content.observationCalls.messages.length, 1);
 });
 
 test("visible Submitted markers still report identified roles without requesting a full sync", async () => {
@@ -111,6 +116,8 @@ test("explicit Sync reuses a suitable submissions tab, preserving ownership and 
   const capacity = await h.sandbox.appleRankingCapacity(await h.sandbox.readAppleRankingState());
   assert.equal(capacity.submitted, 2);
   assert.equal(capacity.remaining, 48);
+  assert.equal(h.data.appleSubmissionSyncStatus.state, "synced");
+  assert.ok(h.data.appleSubmissionSyncStatus.lastSuccessAt);
 });
 
 test("explicit Sync from a filtered search uses and closes one inactive temporary tab in the same window", async () => {
@@ -185,6 +192,7 @@ test("a failed explicit reused-tab read invalidates capacity without closing the
       : { ok: false, error: "Session expired during pagination" } });
   const result = await h.sandbox.refreshAppleJobQueueCount(h.tabs[0]);
   assert.equal(result.ok, false);
+  assert.equal(h.data.appleSubmissionSyncStatus.state, "failed");
   assert.equal((await h.sandbox.appleRankingCapacity(await h.sandbox.readAppleRankingState())).known, false);
   assert.deepEqual(h.calls.removed, []);
   assert.deepEqual(h.calls.created, []);

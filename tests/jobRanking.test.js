@@ -133,7 +133,7 @@ function workerHarness(options = {}) {
   };
   const sandbox = {
     ...core, CareerPeelerRanking: ranking, CareerPeelerApplicationSafety: safety, CareerPeelerJobStore: adapter,
-    appleWithdrawalBatchUntil: 0, console: { error() {} }, URL,
+    console: { error() {} }, URL,
     Date: class extends Date { static now() { return clock; } },
     APPLE_SUBMITTED_ROLE_REVIEWS_KEY: "reviews", APPLIED_JOBS_KEY: "applied", USER_PROFILE_KEY: "profile",
     APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY: "details", submittedRoleAnalysisRuns: new Map(),
@@ -142,6 +142,7 @@ function workerHarness(options = {}) {
       get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, structuredClone(store[key])])),
       set: async (updates) => Object.assign(store, structuredClone(updates))
     } }, tabs: {
+      onActivated: { addListener() {} }, onUpdated: { addListener() {} },
       query: async () => mocks.capacityTabs || [],
       create: async ({ url }) => ({ id: 42, url }),
       remove: async (id) => calls.removed.push(id)
@@ -192,7 +193,7 @@ function workerHarness(options = {}) {
       return mocks.workflow;
     }
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleWorkflowRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") +
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleWorkflowRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleSubmissionSync.js"), "utf8") +
     "\nglobalThis.api = { runAppleJobRanking, runAppleJobQueue, getAppleRankingView, appleRankingProfileSignature, scoreAppleRankingPosting, queueTopAppleJobs, refreshAppleJobQueueCount, appleAutoApplyJobs, appleRankingDiscovery, appleRankingSearchUrl };", sandbox);
   function queuedJob(jobId, score) {
     return { jobId, title: details.title, url: `https://jobs.apple.com/en-us/details/${jobId}/engineer`,
