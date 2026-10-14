@@ -75,7 +75,10 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
   url: "https://jobs.apple.com/app/en-us/apply/200123456-0836", title: "Apple Role" }], options = {}) {
   const data = options.data || {};
   const listeners = [];
-  const calls = { checkpoints: [], messages: [], injected: [], removed: [], created: [], updated: [] };
+  const intervals = new Map();
+  let intervalId = 0;
+  const calls = { checkpoints: [], messages: [], injected: [], removed: [], created: [], updated: [],
+    intervalDelays: [], clearedIntervals: [], platformReads: 0 };
   const get = async keys => Object.fromEntries((typeof keys === "string" ? [keys] : keys || Object.keys(data))
     .filter(key => Object.hasOwn(data, key)).map(key => [key, structuredClone(data[key])]));
   const store = { get, set: async updates => Object.assign(data, structuredClone(updates)),
@@ -89,10 +92,13 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
     },
     putRecords: async (key, records) => { data[key] = { ...data[key], ...structuredClone(records) }; } };
   const sandbox = { URL, console, setTimeout, clearTimeout,
+    setInterval: (callback, delay) => { calls.intervalDelays.push(delay); intervals.set(++intervalId, callback); return intervalId; },
+    clearInterval: id => { calls.clearedIntervals.push(id); intervals.delete(id); },
     fetch: async () => { throw new Error("Real network requests are forbidden in workflow tests."); },
     chrome: {
       storage: { local: store, session: store, onChanged: event() },
-      runtime: { onMessage: { addListener: listener => listeners.push(listener) }, sendMessage: async () => ({ ok: true }) },
+      runtime: { onMessage: { addListener: listener => listeners.push(listener) }, sendMessage: async () => ({ ok: true }),
+        getPlatformInfo: async () => { calls.platformReads++; return options.getPlatformInfo ? options.getPlatformInfo() : { os: "mac", arch: "arm64" }; } },
       sidePanel: { setPanelBehavior: async () => {} },
       scripting: { executeScript: async request => { calls.injected.push(request); return []; } },
       tabs: { onActivated: event(), onUpdated: event(),
@@ -125,7 +131,7 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
   sandbox.recordAppliedCheckpoint = async job => calls.checkpoints.push(job.jobId);
   sandbox.dispatch = (message, sender = {}) => new Promise(resolve => listeners[0](message, sender, resolve));
   const ready = vm.runInContext("appleWorkflowReady", sandbox);
-  return { sandbox, calls, data, tabs, ready };
+  return { sandbox, calls, data, tabs, ready, intervals };
 }
 
 module.exports = { createContentHarness, createBackgroundHarness, radioQuestion, installQuestions };

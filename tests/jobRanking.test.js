@@ -115,9 +115,11 @@ test("OpenAI 429 errors preserve the actionable provider message and retry metad
 
 function workerHarness(options = {}) {
   let clock = 100000;
+  let intervalId = 0;
+  const intervals = new Map();
   const store = options.store || {};
   const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [], capacityReads: [], capacityTabs: [],
-    collected: [], next: [], updated: [] };
+    collected: [], next: [], updated: [], workerPulses: 0, intervalsStarted: [], intervalsCleared: [] };
   const mocks = { pages: [], activeRoles: [], live: details, workflow: { ok: true, data: { submitted: true } } };
   const adapter = {
     get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(store[key])])),
@@ -167,11 +169,19 @@ function workerHarness(options = {}) {
   const sandbox = {
     ...core, CareerPeelerRanking: ranking, CareerPeelerApplicationSafety: safety, CareerPeelerJobStore: adapter,
     console: { error() {} }, URL,
+    setInterval: (callback, interval) => {
+      const id = ++intervalId;
+      intervals.set(id, { callback, interval, nextAt: clock + interval });
+      calls.intervalsStarted.push(interval);
+      return id;
+    },
+    clearInterval: id => { intervals.delete(id); calls.intervalsCleared.push(id); },
     Date: class extends Date { static now() { return clock; } },
     APPLE_SUBMITTED_ROLE_REVIEWS_KEY: "reviews", APPLIED_JOBS_KEY: "applied", USER_PROFILE_KEY: "profile",
     APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY: "details", submittedRoleAnalysisRuns: new Map(),
     scanState: core.createIdleState(), currentScanActivitySteps: [],
-    chrome: { storage: { session: adapter, local: {
+    chrome: { runtime: { getPlatformInfo: async () => { calls.workerPulses++; return { os: "mac", arch: "arm64" }; } },
+      storage: { session: adapter, local: {
       get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, structuredClone(store[key])])),
       set: async (updates) => Object.assign(store, structuredClone(updates))
     } }, tabs: {
@@ -188,7 +198,9 @@ function workerHarness(options = {}) {
       sendMessage: searchMessage,
       remove: async (id) => calls.removed.push(id)
     } },
-    delay: async (ms) => { clock += ms; }, waitForTabComplete: async () => {}, activateTab: async () => {},
+    delay: async (ms) => { clock += ms; for (const timer of intervals.values()) {
+      while (clock >= timer.nextAt) { timer.nextAt += timer.interval; await timer.callback(); }
+    } }, waitForTabComplete: async () => {}, activateTab: async () => {},
     initializeKnownSiteScanActivity: async () => {}, saveScanState: async () => {},
     closeOwnedWorkflowTabs: async () => {}, finishKnownSiteScanRun: async () => {},
     createActiveWorkflowTab: async (url) => { mocks.currentJobUrl = url; return { id: 99, url }; },
@@ -231,6 +243,7 @@ function workerHarness(options = {}) {
       assert.equal(persisted.jobs[ranking.idOf(options.jobContext.jobId)].queueStatus, "applying");
       assert.ok(persisted.reservations.some((role) => role.jobId === options.jobContext.jobId));
       calls.applied.push(options.jobContext.jobId);
+      if (mocks.onApplied) await mocks.onApplied(options.jobContext, options);
       return mocks.workflow;
     }
   };
@@ -311,6 +324,74 @@ test("an uncertain outcome reserves its slot and stops before the next job", asy
   assert.equal(h.store.appleJobRanking.jobs["100"].queueStatus, "uncertain");
   assert.equal(h.store.appleJobRanking.jobs["101"].queueStatus, "queued");
   assert.equal(h.store.appleJobRanking.reservations.length, 1);
+});
+
+test("confirmed submissions stay confirmed when subsequent journal or ranking bookkeeping fails", async () => {
+  for (const boundary of ["journal", "ranking"]) {
+    const h = workerHarness();
+    h.store.appleJobRanking = { jobs: { "100": h.queuedJob("100", 95), "101": h.queuedJob("101", 85) },
+      searches: {}, reservations: [] };
+    let confirmed = false;
+    let failed = false;
+    const adapter = h.sandbox.CareerPeelerJobStore;
+    const operation = boundary === "journal" ? "updateMetadata" : "patch";
+    const original = adapter[operation];
+    h.mocks.onApplied = async (job, options) => {
+      // The real workflow durably checkpoints Apple's confirmation before returning.
+      await adapter.updateMetadata("appleApplicationWorkflow", journal => {
+        assert.equal(journal.id, options.workflowSessionId);
+        journal.jobs[job.jobId].state = "submitted";
+        journal.jobs[job.jobId].submissionOutcome = "confirmed";
+        return journal;
+      });
+      confirmed = true;
+    };
+    adapter[operation] = async (...args) => {
+      if (confirmed && !failed && args[0] === (boundary === "journal" ? "appleApplicationWorkflow" : "appleJobRanking")) {
+        failed = true;
+        throw new Error(`Synthetic ${boundary} bookkeeping write failed after confirmed submission.`);
+      }
+      return original(...args);
+    };
+    await h.api.runAppleJobQueue({ sourceTabId: 1, selectedJobIds: new Set(["100", "101"]) }, profile);
+    assert.equal(failed, true, `${boundary} failure must occur after the application returned confirmed`);
+    assert.deepEqual(h.calls.applied, ["100"], "bookkeeping failure pauses before another application");
+    const state = h.store.appleJobRanking;
+    assert.equal(state.jobs["100"].queueStatus, "submitted", "known confirmation cannot become uncertain");
+    assert.equal(state.jobs["101"].queueStatus, "queued");
+    assert.ok(state.reservations.some(item => item.jobId === "100"), "confirmed application still consumes its capacity slot");
+    assert.equal(state.applicationFailures["100"].errorType, "submission_bookkeeping_failed");
+    assert.equal(state.applicationFailures["100"].submissionOutcomeUnknown, false);
+    assert.equal(state.applicationFailures["100"].status, "submitted");
+    assert.equal(h.store.appleApplicationWorkflow.jobs["100"].state, "submitted");
+    assert.equal(state.lastBatchSummary.submitted, 1);
+    assert.equal(state.phase, "Application queue paused");
+    assert.match(state.error, /bookkeeping|confirmed/i);
+    assert.equal((await h.api.getAppleRankingView(profile)).capacity.submitted, 1);
+    assert.equal((await h.api.getAppleRankingView(profile)).capacity.remaining, 49);
+    assert.deepEqual(h.calls.intervalsStarted, [20000]);
+    assert.equal(h.calls.intervalsCleared.length, 1, "worker activity ends when the batch pauses");
+    const pulses = h.calls.workerPulses;
+    await h.sandbox.delay(60000);
+    assert.equal(h.calls.workerPulses, pulses, "no application worker activity remains after the batch exits");
+  }
+});
+
+test("a multi-job selected queue keeps worker activity scoped to the active batch and releases it after completion", async () => {
+  const h = workerHarness();
+  h.store.appleJobRanking = { jobs: { "100": h.queuedJob("100", 95), "101": h.queuedJob("101", 85) },
+    searches: {}, reservations: [] };
+  h.mocks.onApplied = async () => { await h.sandbox.delay(45000); };
+  await h.api.runAppleJobQueue({ sourceTabId: 1, selectedJobIds: new Set(["100", "101"]) }, profile);
+  assert.deepEqual(h.calls.applied, ["100", "101"]);
+  assert.equal(h.store.appleJobRanking.lastBatchSummary.submitted, 2);
+  assert.deepEqual(h.calls.intervalsStarted, [20000]);
+  assert.ok(h.calls.workerPulses >= 5, "long active Apple replies retain extension API activity");
+  assert.equal(h.calls.intervalsCleared.length, 1);
+  const pulses = h.calls.workerPulses;
+  await h.sandbox.delay(60000);
+  assert.equal(h.calls.workerPulses, pulses, "completed queues do not leave an idle worker timer");
+  assert.equal((await h.api.getAppleRankingView(profile)).capacity.remaining, 48);
 });
 
 test("a changed posting is not submitted using an old score", async () => {

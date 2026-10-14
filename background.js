@@ -1760,7 +1760,10 @@ async function startRetryErrorJobs(tab, userProfile) {
 
 async function stopScan() {
   scanState.running = false;
-  if (appleRankingActiveRun?.applying) appleRankingActiveRun.stopRequested = true;
+  if (appleRankingActiveRun?.applying) {
+    appleRankingActiveRun.stopRequested = true;
+    appleRankingActiveRun.releaseWorkerActivity?.();
+  }
   await cancelAppleApplicationSession();
   await closeOwnedWorkflowTabs();
   await activateListTab();
