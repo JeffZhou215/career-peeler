@@ -7,9 +7,9 @@ const roles = [
   { jobId: "200", title: "Second role" }
 ];
 const operation = { batchId: "confirmed-batch", requestId: "withdrawal-request" };
-const acknowledged = role => ({ ok: true, data: { ...operation, jobId: role.jobId, identityVerified: true,
+const acknowledged = role => ({ ok: true, data: { ...operation, jobId: role.jobId, identityVerified: true, inventoryVerified: true, proofVersion: 2, outcome: "inactive",
   withdrawn: [{ jobId: role.jobId }], failed: [] } });
-const confirmedStatus = role => ({ ...operation, jobId: role.jobId, identityVerified: true,
+const confirmedStatus = role => ({ ...operation, jobId: role.jobId, identityVerified: true, inventoryVerified: true, proofVersion: 2, outcome: "inactive",
   withdrawalConfirmed: true, active: false, confirmationOpen: false });
 
 test("a lost response is verified without replaying the first withdrawal", async () => {
@@ -119,6 +119,9 @@ test("stale or unbound success responses stop without reconciling or removing an
     { ok: true, data: { ...acknowledged(roles[0]).data, batchId: "other-batch" } },
     { ok: true, data: { ...acknowledged(roles[0]).data, requestId: "other-request" } },
     { ok: true, data: { ...acknowledged(roles[0]).data, identityVerified: false } },
+    { ok: true, data: { ...acknowledged(roles[0]).data, proofVersion: undefined } },
+    { ok: true, data: { ...acknowledged(roles[0]).data, inventoryVerified: false } },
+    { ok: true, data: { ...acknowledged(roles[0]).data, outcome: "active" } },
     { ok: true, data: { ...acknowledged(roles[0]).data, jobId: "200" } },
     acknowledged({ jobId: "100-other-location" }),
     { ok: true, data: { ...operation, identityVerified: true, withdrawn: roles, failed: [] } }

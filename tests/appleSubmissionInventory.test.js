@@ -34,6 +34,9 @@ function contentInventory({ roles = [], authenticated = true, loading = false, e
 async function workerInventory(result = { ok: true, data: inventory([]) }) {
   const h = createBackgroundHarness();
   await h.ready;
+  // These tests model current-version count synchronization; upgrade recovery
+  // has separate coverage with a deliberately missing withdrawal journal.
+  h.data.appleWithdrawalWorkflow = { version: 1, records: {} };
   h.sandbox.createTaskTab = async () => ({ id: 42 });
   h.sandbox.waitForTabComplete = async () => {};
   h.sandbox.sendMessageWithFallback = async () => {

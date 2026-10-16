@@ -32,6 +32,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [confirmationSelection, setConfirmationSelection] = useState([]);
   const confirmationSelectionRef = useRef(null);
+  const confirmationReviewedAtRef = useRef(null);
   const withdrawalInFlightRef = useRef(false);
   const [withdrawProgress, setWithdrawProgress] = useState(null);
   const [error, setError] = useState("");
@@ -171,6 +172,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     if (busyRef.current || !selectedRoles.length) return;
     const reviewed = selectedRoles.map(({ jobId, title }) => ({ jobId: String(jobId), title }));
     confirmationSelectionRef.current = reviewed;
+    confirmationReviewedAtRef.current = Date.now();
     setConfirmationSelection(reviewed);
     setConfirmationOpen(true);
   }
@@ -278,6 +280,8 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     withdrawalInFlightRef.current = true;
     const targets = confirmationSelectionRef.current.map(({ jobId, title }) => ({ jobId, title }));
     confirmationSelectionRef.current = null;
+    const reviewedAt = confirmationReviewedAtRef.current;
+    confirmationReviewedAtRef.current = null;
     const batchId = crypto.randomUUID();
     let lockAcquired = false;
     const pending = new Map(targets.map((role) => [String(role.jobId), role]));
@@ -297,7 +301,7 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
         throw new Error("Open Apple Careers → Your Roles → Submissions → Active before withdrawing.");
       }
       const lock = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE", active: true,
-        batchId, tabId: tab.id, roles: targets, confirmed: true });
+        batchId, tabId: tab.id, roles: targets, confirmed: true, reviewedAt });
       if (!lock?.ok) throw new Error(lock?.error || "Another workflow is running.");
       lockAcquired = true;
       const readApplePage = async (type, payload = {}) => {
@@ -376,16 +380,28 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
               setStatusMessage(`Withdrawing ${confirmedCount + 1} of ${targets.length}: ${role.title}...`);
             },
             onRoleConfirmed: async ({ verifiedAfterInterruption }) => {
-              confirmedCount += 1;
+              const receipt = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT",
+                batchId, requestId, jobId: role.jobId });
+              if (!receipt?.ok || receipt.data?.jobId !== role.jobId || receipt.data.batchId !== batchId ||
+                  receipt.data.requestId !== requestId || receipt.data.outcome !== "inactive" || receipt.data.inventoryVerified !== true) {
+                throw new Error(receipt?.error || "The withdrawal lacks durable verified inventory proof. Sync Submissions before retrying.");
+              }
               setStatusMessage(`Updating the visible submissions page after ${role.title}...`);
               try {
                 page = await readSettledPage();
               } catch (refreshError) {
+                confirmedCount += 1;
                 await removeSavedRole(role.jobId);
                 setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
                 setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
                 throw new Error(`${role.title}: Apple confirmed the withdrawal, but its current page could not be read. ${refreshError?.message || "Sign in again to continue."}`);
               }
+              if (page.roles.some(item => String(item.jobId) === String(role.jobId) && item.active === true)) {
+                await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME", batchId, requestId,
+                  jobId: role.jobId, reason: "The exact selected job is still active before local withdrawal records could be updated." });
+                throw new Error("Apple still shows this exact job as active. Sync Submissions before reviewing another attempt.");
+              }
+              confirmedCount += 1;
               await removeSavedRole(role.jobId, page);
               setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
               setStatusMessage(`${confirmedCount} of ${targets.length} withdrawn${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);

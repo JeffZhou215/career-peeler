@@ -24,7 +24,8 @@ export async function withdrawSubmittedRolesSequentially(roles, {
         sendError = error;
       }
 
-      const acknowledged = response?.ok && matchesOperation(response.data) && response.data.identityVerified === true &&
+      const acknowledged = response?.ok && matchesOperation(response.data) && response.data.identityVerified === true && response.data.inventoryVerified === true &&
+        response.data.proofVersion === 2 && response.data.outcome === "inactive" &&
         String(response.data.jobId) === String(role.jobId) &&
         response.data.withdrawn?.length === 1 && !response.data.failed?.length &&
         String(response.data.withdrawn[0].jobId) === String(role.jobId);
@@ -47,7 +48,8 @@ export async function withdrawSubmittedRolesSequentially(roles, {
           throw new Error(`${role.title || role.jobId}: Apple's confirmation is still open. Resolve it in Apple Careers before retrying.`);
         }
         if (!matchesOperation(status) || String(status?.jobId) !== String(role.jobId) ||
-          status?.identityVerified !== true || status?.withdrawalConfirmed !== true || status?.active !== false) {
+          status?.identityVerified !== true || status?.inventoryVerified !== true || status?.proofVersion !== 2 ||
+          status?.outcome !== "inactive" || status?.withdrawalConfirmed !== true || status?.active !== false) {
           throw new Error(`${role.title || role.jobId}: ${failure} The role is still active or its status is uncertain; the batch stopped.`);
         }
         verifiedAfterInterruption = true;

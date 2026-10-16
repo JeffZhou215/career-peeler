@@ -20,6 +20,9 @@ async function syncHarness(tabs = [tab(1)], options = {}) {
     throw new Error(`Unexpected message: ${message.type}`);
   }) });
   await h.ready;
+  // Ordinary current-version Sync reuses tabs; legacy initialization is tested
+  // independently with no journal and requires a fresh background inventory.
+  h.data.appleWithdrawalWorkflow ??= { version: 1, records: {} };
   h.sandbox.waitForTabComplete = async () => {};
   h.sandbox.callOpenAi = async () => { assert.fail("Capacity checks must not invoke LLM analysis"); };
   return h;

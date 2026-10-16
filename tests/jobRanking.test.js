@@ -247,7 +247,7 @@ function workerHarness(options = {}) {
       return mocks.workflow;
     }
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleWorkflowRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleSubmissionSync.js"), "utf8") +
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../lib/appleWorkflowRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleWithdrawalRecovery.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleRankingWorker.js"), "utf8") + "\n" + fs.readFileSync(path.join(__dirname, "../lib/appleSubmissionSync.js"), "utf8") +
     "\nglobalThis.api = { startAppleJobRanking, runAppleJobRanking, runAppleJobQueue, getAppleRankingView, appleRankingProfileSignature, scoreAppleRankingPosting, queueTopAppleJobs, refreshAppleJobQueueCount, appleAutoApplyJobs, appleRankingDiscovery, appleRankingSearchUrl };", sandbox);
   function queuedJob(jobId, score) {
     return { jobId, title: details.title, url: `https://jobs.apple.com/en-us/details/${jobId}/engineer`,

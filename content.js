@@ -1320,21 +1320,21 @@ async function waitForAppleSubmittedHistoryPage(pageIndex, previousFirstJobId, t
   while (Date.now() < deadline) {
     let page;
     try { page = collectCurrentAppleSubmittedHistoryPage(); } catch (_) { stableReads = 0; }
-    if (page?.pageIndex === pageIndex) {
+    if (page && (pageIndex === null || page.pageIndex === pageIndex)) {
       const roles = page.roles;
-      const signature = `${page.inventoryState}|${roles.map((role) => role.jobId).join("|")}`;
+      const signature = `${page.pageIndex}|${page.pageCount}|${page.hasNextPage}|${page.inventoryState}|${page.withdrawalConfirmationOpen}|${roles.map((role) => role.jobId).join("|")}`;
       stableReads = signature === lastSignature ? stableReads + 1 : 1;
       lastSignature = signature;
       if ((page.inventoryState === "confirmed_empty" || roles[0]?.jobId !== previousFirstJobId) && stableReads >= 3) {
         return page;
       }
-    }
+    } else { stableReads = 0; lastSignature = ""; }
     await delay(300);
   }
   throw new Error("Apple's submissions page did not finish loading. Sign in again if your session expired.");
 }
 
-async function goToAppleSubmittedHistoryPage(targetPageIndex) {
+async function goToAppleSubmittedHistoryPage(targetPageIndex, { deadline = Infinity } = {}) {
   let page = collectCurrentAppleSubmittedHistoryPage();
   const target = Number(targetPageIndex);
   if (!Number.isInteger(target) || target < 1 || target > page.pageCount) {
@@ -1348,26 +1348,40 @@ async function goToAppleSubmittedHistoryPage(targetPageIndex) {
     }
     const previousFirstJobId = page.roles[0]?.jobId;
     button.click();
-    page = await waitForAppleSubmittedHistoryPage(page.pageIndex + (forward ? 1 : -1), previousFirstJobId);
+    page = await waitForAppleSubmittedHistoryPage(page.pageIndex + (forward ? 1 : -1), previousFirstJobId,
+      Math.min(15000, Math.max(0, deadline - Date.now())));
   }
   return page;
 }
 
-async function advanceAppleSubmittedHistoryPage() {
+async function advanceAppleSubmittedHistoryPage({ deadline = Infinity } = {}) {
   const page = collectCurrentAppleSubmittedHistoryPage();
   if (!page.hasNextPage) return { advanced: false, page };
   const button = document.querySelector('#profile-roles-pagination button[aria-label="Next Page"]');
   button.click();
-  return { advanced: true, page: await waitForAppleSubmittedHistoryPage(page.pageIndex + 1, page.roles[0]?.jobId) };
+  return { advanced: true, page: await waitForAppleSubmittedHistoryPage(page.pageIndex + 1, page.roles[0]?.jobId,
+    Math.min(15000, Math.max(0, deadline - Date.now()))) };
 }
 
-async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true, restoreOriginalPage = false } = {}) {
-  const startingPage = collectCurrentAppleSubmittedHistoryPage();
+async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true, restoreOriginalPage = false, deadline = Infinity } = {}) {
+  const readStartedAt = Date.now();
+  let startingPage;
+  try { startingPage = collectCurrentAppleSubmittedHistoryPage(); }
+  catch (error) {
+    if (getSessionRequiredSignal()) throw error;
+    // Proceed can close before Apple's replacement list has finished rendering.
+    // Wait for a valid stable page without interpreting the gap as an empty list.
+    startingPage = await waitForAppleSubmittedHistoryPage(null, undefined,
+      Math.min(15000, Math.max(0, deadline - Date.now())));
+  }
   if (startingPage.withdrawalConfirmationOpen) {
     throw new Error("Resolve Apple's withdrawal confirmation before refreshing submissions.");
   }
   try {
-    let page = await goToAppleSubmittedHistoryPage(1);
+    await goToAppleSubmittedHistoryPage(1, { deadline });
+    // Already being on page one does not mean its SPA inventory has settled.
+    let page = await waitForAppleSubmittedHistoryPage(1, undefined,
+      Math.min(15000, Math.max(0, deadline - Date.now())));
     const expectedPageCount = page.pageCount;
     const pages = [];
     while (pages.length < 100) {
@@ -1379,18 +1393,65 @@ async function collectAllAppleSubmittedHistoryPages({ restoreFirstPage = true, r
         if (page.pageIndex !== page.pageCount || pages.length !== page.pageCount) {
           throw new Error("Apple's submissions pagination changed before every page could be refreshed.");
         }
-        if (restoreFirstPage && !restoreOriginalPage) await goToAppleSubmittedHistoryPage(1);
-        const inventory = { pages, pageCount: page.pageCount };
+        if (restoreFirstPage && !restoreOriginalPage) await goToAppleSubmittedHistoryPage(1, { deadline });
+        const inventory = { pages, pageCount: page.pageCount, readStartedAt, readCompletedAt: Date.now() };
         return { ...inventory, ...CareerPeelerApplicationSafety.validateSubmittedHistoryInventory(inventory) };
       }
-      const next = await advanceAppleSubmittedHistoryPage();
+      const next = await advanceAppleSubmittedHistoryPage({ deadline });
       if (!next.advanced) break;
       page = next.page;
     }
     throw new Error("Apple's active submissions could not be refreshed across every page.");
   } finally {
-    if (restoreOriginalPage) await goToAppleSubmittedHistoryPage(startingPage.pageIndex);
+    if (restoreOriginalPage) await goToAppleSubmittedHistoryPage(startingPage.pageIndex, { deadline });
   }
+}
+
+async function openAppleActiveSubmissionsForInventory() {
+  if (getSiteId() !== "apple" || !/^\/app\/[^/]+\/profile\/roles\/?$/i.test(window.location.pathname)) {
+    throw new Error("Open Apple's Your Roles page to verify active submissions.");
+  }
+  try { assertAppleActiveSubmittedRolesPage(); return; } catch (_) {}
+  const deadline = Date.now() + 10000;
+  // These menu attributes come from the supplied Apple DOM. Navigation occurs
+  // only in the fresh background tab belonging to an explicit workflow.
+  const submissions = document.querySelector('button[data-autom="Submissions"]');
+  if (!submissions || !isElementVisible(submissions) || submissions.disabled) throw new Error("Apple's Submissions menu could not be verified.");
+  submissions.click();
+  while (Date.now() < deadline) {
+    const active = document.querySelector('button[data-autom="Active"]');
+    if (active && isElementVisible(active) && !active.disabled && active.getAttribute("aria-disabled") !== "true") {
+      active.click();
+      return;
+    }
+    await delay(150);
+  }
+  throw new Error("Apple's Active submissions view could not be opened. The withdrawal remains unknown.");
+}
+
+async function collectStableAppleSubmittedHistoryInventory({ timeoutMs = 45000, notBefore = Date.now() } = {}) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let previous = null;
+  let lastError = null;
+  // At most three complete passes: a changing inventory may settle for passes
+  // two and three, but never becomes successful merely because retries ran out.
+  for (let attempt = 0; attempt < 3 && Date.now() < deadline; attempt++) {
+    try {
+      const current = await collectAllAppleSubmittedHistoryPages({ restoreFirstPage: false,
+        restoreOriginalPage: false, deadline });
+      if (previous) {
+        try {
+          return CareerPeelerApplicationSafety.validateWithdrawalInventoryEvidence({ ...current, passes: [previous, current] },
+            { notBefore, now: Date.now() });
+        } catch (error) { lastError = error; }
+      }
+      previous = current;
+    } catch (error) {
+      previous = null;
+      lastError = error;
+    }
+  }
+  throw new Error(lastError?.message || "Apple's active submissions did not produce two complete, stable inventory reads. The withdrawal outcome is unknown.");
 }
 
 function findSubmittedRoleCard(jobId) {
@@ -1457,40 +1518,19 @@ function getAppleWithdrawalSuccessMessage(title) {
 }
 
 async function waitForSubmittedRoleWithdrawal(jobId, title, expectedPageIndex, beforeCount, hadNextPage, timeoutMs = 15000, successIsFresh = () => true) {
-  const deadline = Date.now() + timeoutMs;
-  const targetCount = hadNextPage ? beforeCount : Math.max(0, beforeCount - 1);
-  let lastSignature = "";
-  let stableReads = 0;
-  let sawSuccess = false;
-  while (Date.now() < deadline) {
-    const error = getAppleWithdrawalFailureMessage();
-    if (error) return { withdrawn: false, error };
-    sawSuccess ||= successIsFresh() && Boolean(getAppleWithdrawalSuccessMessage(title));
-    let page;
-    try { page = collectCurrentAppleSubmittedHistoryPage(); } catch (_) {
-      stableReads = 0;
-      await delay(300);
-      continue;
-    }
-    const pageIndex = page.pageIndex;
-    const ids = page.roles.filter((role) => role.active).map((role) => String(role.jobId));
-    const signature = `${pageIndex}|${ids.join("|")}`;
-    stableReads = signature === lastSignature ? stableReads + 1 : 1;
-    lastSignature = signature;
-    if (pageIndex !== expectedPageIndex) {
-      if (sawSuccess && (ids.length > 0 || page.inventoryState === "confirmed_empty") && stableReads >= 3 && !findAppleWithdrawalConfirmationModal()) {
-        return { withdrawn: true, pageChangedTo: pageIndex };
-      }
-      await delay(300);
-      continue;
-    }
-    if (sawSuccess && !ids.includes(String(jobId)) && ids.length >= targetCount && stableReads >= 3 &&
-      !findAppleWithdrawalConfirmationModal()) {
-      return { withdrawn: true };
-    }
-    await delay(300);
+  // The other parameters remain for existing callers; title alerts, expected
+  // page number and page-card counts are deliberately not outcome evidence.
+  const notBefore = Date.now();
+  try {
+    if (!/^\d+(?:-\d+)?$/.test(String(jobId || ""))) throw new Error("The exact selected Apple job ID is unavailable.");
+    const inventory = await collectStableAppleSubmittedHistoryInventory({ timeoutMs, notBefore });
+    const active = inventory.roles.some(role => role.jobId === String(jobId));
+    return active ? { withdrawn: false, outcome: "active", inventory,
+      error: "Apple's complete active-submission inventory still contains the selected job. The withdrawal was not confirmed." }
+      : { withdrawn: true, outcome: "inactive", inventory };
+  } catch (error) {
+    return { withdrawn: false, outcome: "unknown", error: error?.message || "The withdrawal outcome could not be verified." };
   }
-  return { withdrawn: false, error: getAppleWithdrawalFailureMessage() || "Apple did not finish updating the submissions list after this withdrawal." };
 }
 
 function findAppleWithdrawalConfirmationModal() {
@@ -1562,14 +1602,42 @@ function findAppleWithdrawalOperation(message) {
   return operation;
 }
 
+async function submitAppleWithdrawalInventory(operation, inventory) {
+  const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY",
+    jobId: operation.jobId, batchId: operation.batchId, requestId: operation.requestId, inventory });
+  const data = response?.data;
+  if (!response?.ok || data?.jobId !== operation.jobId || data.batchId !== operation.batchId ||
+      data.requestId !== operation.requestId || data.inventoryVerified !== true || data.proofVersion !== 2 ||
+      !["active", "inactive"].includes(data.outcome)) {
+    throw new Error(response?.error || "Apple's exact withdrawal inventory could not be durably verified.");
+  }
+  if (data.outcome === "inactive") {
+    const current = collectCurrentAppleSubmittedHistoryPage();
+    if (current.roles.some(role => role.jobId === operation.jobId && role.active === true)) {
+      await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME",
+        jobId: operation.jobId, batchId: operation.batchId, requestId: operation.requestId,
+        reason: "The exact selected job reappeared active before its withdrawal result was accepted." });
+      throw new Error("Apple's current page contradicts the withdrawal proof. Sync Submissions again.");
+    }
+  }
+  return data;
+}
+
 async function getAppleWithdrawalStatus(message) {
   const operation = findAppleWithdrawalOperation(message);
-  const result = await operation.promise;
-  const confirmed = result.identityVerified === true && result.withdrawn.length === 1;
-  return { jobId: operation.jobId, batchId: operation.batchId, requestId: operation.requestId,
-    identityVerified: confirmed, withdrawalConfirmed: confirmed,
-    confirmationOpen: Boolean(findAppleWithdrawalConfirmationModal()),
-    active: confirmed ? false : findSubmittedRoleCard(operation.jobId) ? true : null };
+  await operation.promise;
+  if (findAppleWithdrawalConfirmationModal()) return { jobId: operation.jobId, batchId: operation.batchId,
+    requestId: operation.requestId, outcome: "unknown", confirmationOpen: true, active: null,
+    withdrawalConfirmed: false, identityVerified: false };
+  try {
+    const inventory = await collectStableAppleSubmittedHistoryInventory();
+    const verified = await submitAppleWithdrawalInventory(operation, inventory);
+    return { ...verified, confirmationOpen: false };
+  } catch (error) {
+    return { jobId: operation.jobId, batchId: operation.batchId, requestId: operation.requestId,
+      outcome: "unknown", confirmationOpen: Boolean(findAppleWithdrawalConfirmationModal()), active: null,
+      withdrawalConfirmed: false, identityVerified: false, error: error?.message };
+  }
 }
 
 function withdrawAppleSubmittedRoles(requestedRoles = [], expectedPageIndex, { batchId, requestId } = {}) {
@@ -1616,11 +1684,15 @@ function withdrawAppleSubmittedRoles(requestedRoles = [], expectedPageIndex, { b
       const result = await waitForSubmittedRoleWithdrawal(role.jobId, match.title, expectedPageIndex,
         pageBefore.roles.filter(item => item.active).length, pageBefore.hasNextPage, 15000,
         () => operation.guard.successUpdated);
-      if (!result.withdrawn) throw new Error(result.error || "Apple did not confirm this exact withdrawal.");
-      return { ...identity, identityVerified: true, outcomeUnknown: false,
+      if (!result.inventory) throw new Error(result.error || "Apple did not confirm a complete withdrawal inventory.");
+      const verified = await submitAppleWithdrawalInventory(operation, result.inventory);
+      if (verified.outcome === "active") return { ...identity, ...verified, outcomeUnknown: false,
+        withdrawn: [], failed: [{ jobId: role.jobId, title: role.title,
+          error: "Apple confirmed this job is still active. Review a new withdrawal selection before another attempt." }] };
+      return { ...identity, ...verified, outcomeUnknown: false,
         withdrawn: [{ jobId: role.jobId, title: role.title }], failed: [] };
     } catch (error) {
-      return { ...identity, identityVerified: false, outcomeUnknown: operation.guard.proceeded || error?.outcomeUnknown === true,
+      return { ...identity, identityVerified: false, outcome: "unknown", outcomeUnknown: operation.guard.proceeded || error?.outcomeUnknown === true,
         withdrawn: [], failed: [{ jobId: role.jobId, title: role.title,
           error: `${error?.message || "The withdrawal could not be verified."} ${operation.guard.proceeded || error?.outcomeUnknown === true ? "The outcome is unknown; reconcile in Apple Careers before retrying." : "No bound final confirmation was accepted."}` }] };
     } finally {
@@ -4882,6 +4954,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     goToAppleSubmittedHistoryPage(message.pageIndex)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not open the Apple submissions page." }));
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_GET_STABLE_SUBMITTED_HISTORY_INVENTORY") {
+    Promise.resolve().then(async () => {
+      if (message.openActive) await openAppleActiveSubmissionsForInventory();
+      return collectStableAppleSubmittedHistoryInventory({ notBefore: Number.isFinite(message.notBefore) ? message.notBefore : Date.now() });
+    }).then(data => sendResponse({ ok: true, data }))
+      .catch(error => sendResponse({ ok: false, error: error?.message || "Apple's complete stable inventory is unavailable." }));
     return true;
   }
 

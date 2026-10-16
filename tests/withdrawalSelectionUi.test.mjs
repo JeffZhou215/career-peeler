@@ -20,7 +20,7 @@ function harness(options = {}) {
   let liveRoles = roles.map(role => ({ ...role }));
   const sandbox = {
     selectedRoles: roles.slice(0, 2).map(role => ({ ...role })), confirmationSelection: [], confirmationOpen: false,
-    confirmationSelectionRef: { current: null },
+    confirmationSelectionRef: { current: null }, confirmationReviewedAtRef: { current: null },
     busyRef: { current: false }, withdrawalInFlightRef: { current: false },
     crypto: { randomUUID: () => `request-${++uuid}` },
     Date: class extends Date { static now() { return clock; } },
@@ -50,6 +50,13 @@ function harness(options = {}) {
           if (options.rankingWait) await options.rankingWait;
           return { ok: true, data: { running: false } };
         }
+        if (message.type === "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME") return { ok: true };
+        if (message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT" && options.activeAfterReceipt) {
+          liveRoles = roles.map(role => ({ ...role }));
+        }
+        if (message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT") return options.receiptFailure
+          ? { ok: false, error: "Durable withdrawal proof is missing." }
+          : { ok: true, data: { ...message, outcome: "inactive", inventoryVerified: true, proofVersion: 2 } };
         assert.equal(message.type, "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE");
         return { ok: true };
       } },
@@ -58,7 +65,7 @@ function harness(options = {}) {
         assert.equal(tabId, appleTab.id);
         if (message.type === "APPLE_CAREERS_GET_WITHDRAWAL_STATUS") {
           return { ok: true, data: { batchId: message.batchId, requestId: message.requestId, jobId: message.jobId,
-            identityVerified: true, withdrawalConfirmed: true, active: false, confirmationOpen: false } };
+            identityVerified: true, inventoryVerified: true, proofVersion: 2, outcome: "inactive", withdrawalConfirmed: true, active: false, confirmationOpen: false } };
         }
         assert.equal(message.type, "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES");
         const role = message.roles[0];
@@ -68,7 +75,7 @@ function harness(options = {}) {
         }
         liveRoles = liveRoles.filter(current => current.jobId !== role.jobId);
         if (options.loseFirstReply && mutations.length === 1) throw new Error("message channel closed");
-        return { ok: true, data: { batchId: message.batchId, requestId: message.requestId, jobId: role.jobId, identityVerified: true,
+        return { ok: true, data: { batchId: message.batchId, requestId: message.requestId, jobId: role.jobId, identityVerified: true, inventoryVerified: true, proofVersion: 2, outcome: "inactive",
           withdrawn: [{ jobId: role.jobId }], failed: [] } };
       } }
     }
@@ -169,4 +176,26 @@ test("a cache error after successful withdrawal reports the known success and pr
   await h.sandbox.confirm();
   assert.deepEqual(h.mutations, [roles[0].jobId]);
   assert.match(h.sandbox.error, /Batch stopped after 1 of 2.*Cache persistence failed/);
+});
+
+
+test("a missing durable worker receipt cannot remove cached roles or count success", async () => {
+  const h = harness({ receiptFailure: true });
+  h.sandbox.review();
+  await h.sandbox.confirm();
+  assert.deepEqual(h.saved, []);
+  assert.deepEqual(h.mutations, [roles[0].jobId]);
+  assert.deepEqual(Array.from(h.sandbox.selectedIds), roles.slice(0, 2).map(role => role.jobId));
+  assert.match(h.sandbox.error, /0 of 2.*Durable withdrawal proof is missing/);
+});
+
+
+test("a selected role reappearing active after its receipt is not removed or counted", async () => {
+  const h = harness({ activeAfterReceipt: true });
+  h.sandbox.review();
+  await h.sandbox.confirm();
+  assert.deepEqual(h.saved, []);
+  assert.deepEqual(h.mutations, [roles[0].jobId]);
+  assert.match(h.sandbox.error, /0 of 2.*still shows this exact job as active/);
+  assert.equal(h.requests.filter(message => message.type === "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME").length, 1);
 });

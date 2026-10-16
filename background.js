@@ -1,4 +1,4 @@
-importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js", "lib/appleWorkflowRecovery.js");
+importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js", "lib/appleWorkflowRecovery.js", "lib/appleWithdrawalRecovery.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -2696,6 +2696,7 @@ async function setAppleWithdrawalBatch(message, sender) {
   }
   const roles = message.roles;
   if (message.confirmed !== true || !message.batchId || !Number.isInteger(message.tabId) ||
+      !Number.isFinite(message.reviewedAt) || message.reviewedAt <= 0 ||
       !Array.isArray(roles) || !roles.length || roles.some(role =>
         !/^\d+(?:-\d+)?$/.test(role?.jobId || "") || String(role.jobId).split("-")[0] === "200654506") ||
       new Set(roles.map(role => role.jobId)).size !== roles.length) {
@@ -2705,9 +2706,15 @@ async function setAppleWithdrawalBatch(message, sender) {
   appleWithdrawalBatchId = message.batchId;
   appleWithdrawalBatchUntil = Date.now() + 30 * 60000;
   const selection = { batchId: message.batchId, tabId: message.tabId,
-    jobIds: new Set(roles.map(role => role.jobId)), usedJobIds: new Set(), documentId: null };
+    jobIds: new Set(roles.map(role => role.jobId)), usedJobIds: new Set(), documentId: null, reviewedAt: message.reviewedAt };
   appleWithdrawalSelection = selection;
   try {
+    const journal = await CareerPeelerJobStore.getMetadata(APPLE_WITHDRAWAL_WORKFLOW_KEY);
+    const archive = (await CareerPeelerJobStore.get(APPLE_SUBMITTED_ROLE_REVIEWS_KEY))[APPLE_SUBMITTED_ROLE_REVIEWS_KEY];
+    if (journal === undefined && archive) {
+      throw new Error("Sync Submissions once after updating withdrawal recovery, then review your selection again. Earlier unknown outcomes were not persisted by older versions.");
+    }
+    await assertAppleWithdrawalRetryAllowed(roles.map(role => role.jobId), selection.reviewedAt);
     const tab = await chrome.tabs.get(message.tabId);
     if (!/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(tab.url || "")) {
       throw new Error("Open Apple's active submissions page before confirming withdrawals.");
@@ -2762,6 +2769,8 @@ async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expecte
   let finalInputMayHaveRun = false;
   const blockerKey = `__careerPeelerWithdrawal_${requestId}`;
   try {
+    if (stage === "open") await assertAppleWithdrawalRetryAllowed([roleId], selection.reviewedAt);
+    else await beginAppleWithdrawalIntent({ ...identity, tabId, documentId, reviewedAt: selection.reviewedAt });
     await attachDebugger(tabId); attached = true;
     // A navigation destroys content's old capture guard. Block input in any new
     // document for the duration of this click, before that page's handlers load.
@@ -2807,6 +2816,93 @@ async function dispatchTrustedAppleWithdrawalClick(sender, jobId, stage, expecte
       await detachDebugger(tabId);
     }
   }
+}
+
+// Use a fresh document instead of treating a cached, already-open DOM as a new
+// server inventory. The temporary tab stays inactive in the source window.
+async function readFreshAppleWithdrawalInventory(sourceTabId, notBefore = 0) {
+  const startedAt = Date.now();
+  const source = await chrome.tabs.get(sourceTabId);
+  let tab;
+  try {
+    tab = await createTaskTab("https://jobs.apple.com/app/en-us/profile/roles", source.windowId, false);
+    await waitForTabComplete(tab.id);
+    const result = await sendMessageWithFallback(tab.id, { type: "APPLE_CAREERS_GET_STABLE_SUBMITTED_HISTORY_INVENTORY",
+      notBefore: Math.max(notBefore, startedAt), openActive: true });
+    if (!result?.ok) throw new Error(result?.error || "Apple's fresh active inventory is unavailable. The withdrawal remains unknown.");
+    return CareerPeelerApplicationSafety.validateWithdrawalInventoryEvidence(result.data,
+      { notBefore: Math.max(notBefore, startedAt) });
+  } finally {
+    if (tab?.id) await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+function assertAppleWithdrawalReportSender(sender, record, message) {
+  if (!record || record.jobId !== message.jobId || record.batchId !== message.batchId || record.requestId !== message.requestId ||
+      record.documentId !== sender.documentId || record.tabId !== sender.tab?.id || Number(sender.frameId || 0) !== 0 ||
+      !/^https:\/\/jobs\.apple\.com\/app\/[^/]+\/profile\/roles\/?(?:[?#]|$)/i.test(sender.url || sender.tab?.url || "")) {
+    throw new Error("The inventory result does not belong to the exact withdrawal operation.");
+  }
+}
+
+async function reportAppleWithdrawalInventory(message, sender) {
+  const record = await readAppleWithdrawalRecord(message.jobId);
+  assertAppleWithdrawalReportSender(sender, record, message);
+  const primary = CareerPeelerApplicationSafety.validateWithdrawalInventoryEvidence(message.inventory,
+    { notBefore: Math.max(record.intentAt, record.inventoryReadCompletedAt || 0, record.uncertainAt || 0) });
+  const fresh = await readFreshAppleWithdrawalInventory(sender.tab.id, record.intentAt);
+  const primaryActive = primary.roles.some(role => role.jobId === record.jobId);
+  const freshActive = fresh.roles.some(role => role.jobId === record.jobId);
+  // Contradictory active evidence cannot be overridden by an absence snapshot.
+  const invalidate = async reason => {
+    await invalidateAppleWithdrawalResolution({ jobId: record.jobId, batchId: record.batchId, requestId: record.requestId }, reason);
+    throw new Error(reason);
+  };
+  if (primaryActive && !freshActive) return invalidate("Apple's active inventories contradict each other. The withdrawal remains unknown; sync submissions again.");
+  if (!freshActive) {
+    let current;
+    try {
+      current = await chrome.tabs.sendMessage(sender.tab.id, { type: "APPLE_CAREERS_PEEK_SUBMITTED_HISTORY_PAGE" },
+        { documentId: sender.documentId });
+    } catch (_) { return invalidate("The original Apple page could not be checked for contradictory activity. Sync Submissions again."); }
+    const page = current?.data;
+    if (!current?.ok || page?.accountVerified !== true || page.withdrawalConfirmationOpen !== false || !Array.isArray(page.roles)) {
+      return invalidate("Apple's original Active page is no longer verified. The withdrawal remains unknown.");
+    }
+    if (page.roles.some(role => role.jobId === record.jobId && role.active === true)) {
+      return invalidate("The selected job is still active on Apple's original page. The withdrawal remains unknown; sync submissions again.");
+    }
+  }
+  const records = await resolveAppleWithdrawalInventory(fresh, { jobIds: [record.jobId], expectedOperation: {
+    jobId: record.jobId, batchId: record.batchId, requestId: record.requestId, documentId: record.documentId
+  } });
+  const verified = records[record.jobId];
+  return { ok: true, data: { jobId: record.jobId, batchId: record.batchId, requestId: record.requestId,
+    outcome: verified.outcome, identityVerified: true, inventoryVerified: true, proofVersion: 2,
+    withdrawalConfirmed: verified.outcome === "inactive", active: verified.outcome === "active",
+    verifiedAt: verified.verifiedAt } };
+}
+
+async function invalidateAppleWithdrawalOutcome(message, sender) {
+  const record = await readAppleWithdrawalRecord(message.jobId);
+  if (sender.tab) assertAppleWithdrawalReportSender(sender, record, message);
+  if (!record || record.batchId !== message.batchId || record.requestId !== message.requestId) {
+    throw new Error("This revocation does not belong to the exact withdrawal operation.");
+  }
+  await invalidateAppleWithdrawalResolution(message, String(message.reason || "Contradictory Apple inventory requires reconciliation.").slice(0, 500));
+  return { ok: true };
+}
+
+async function verifyAppleWithdrawalReceipt(message) {
+  const record = await readAppleWithdrawalRecord(message.jobId);
+  if (!record || record.batchId !== message.batchId || record.requestId !== message.requestId ||
+      record.outcome !== "inactive" || !Number.isFinite(record.verifiedAt) ||
+      !Number.isFinite(record.inventoryReadStartedAt) || Date.now() - record.inventoryReadStartedAt > 60000 ||
+      record.verifiedAt > Date.now()) {
+    throw new Error("Apple has not durably confirmed this exact withdrawal. Sync Submissions before retrying.");
+  }
+  return { ok: true, data: { jobId: record.jobId, batchId: record.batchId, requestId: record.requestId,
+    outcome: "inactive", proofVersion: 2, inventoryVerified: true, verifiedAt: record.verifiedAt } };
 }
 
 async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, shouldStop, windowId } = {}) {
@@ -3364,6 +3460,9 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_REQUEST_SUBMISSION_SYNC",
   "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY",
   "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE",
+  "APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY",
+  "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME",
+  "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT",
   "APPLE_CAREERS_GET_JOB_RANKING",
   "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
   "APPLE_CAREERS_START_JOB_RANKING",
@@ -3414,6 +3513,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, ignored: true });
       } else if (message.type === "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE") {
         sendResponse(await setAppleWithdrawalBatch(message, sender));
+      } else if (message.type === "APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY") {
+        sendResponse(await reportAppleWithdrawalInventory(message, sender));
+      } else if (message.type === "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME") {
+        sendResponse(await invalidateAppleWithdrawalOutcome(message, sender));
+      } else if (message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT") {
+        if (sender.tab) throw new Error("Verify withdrawal receipts from the extension panel.");
+        sendResponse(await verifyAppleWithdrawalReceipt(message));
       } else if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
         sendResponse({ ok: true, data: await getAppleRankingView(message.userProfile, message.topN) });
       } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {

@@ -34,6 +34,9 @@ async function interactionHarness(options = {}) {
   delete content.CareerPeelerAppleWithdrawalSafety;
   vm.runInContext(safetySource, content, { filename: "lib/appleWithdrawalSafety.js" });
   content.delay = ms => new Promise(resolve => dom.schedule(resolve, ms));
+  // Content and worker share browser wall time. Without this, virtual page reads
+  // appear to come from the future to the worker's freshness validator.
+  background.sandbox.Date = content.Date;
   content.findSubmittedRoleCard = dom.readRole;
   content.getAppleHistoryPageIndex = () => dom.state.pageIndex;
   content.collectCurrentAppleSubmittedHistoryPage = () => {
@@ -42,8 +45,16 @@ async function interactionHarness(options = {}) {
       protectedFromWithdrawal: role.favorite.checked
     }));
     return { roles, pageIndex: dom.state.pageIndex, pageCount: 1, hasNextPage: false,
-      inventoryState: roles.length ? "confirmed_nonempty" : "confirmed_empty" };
+      accountVerified: true, withdrawalConfirmationOpen: Boolean(dom.findConfirmation()),
+      inventoryState: roles.length ? "confirmed" : "confirmed_empty" };
   };
+  if (options.inventoryUnavailable) content.collectStableAppleSubmittedHistoryInventory = async () => {
+    throw new Error("Apple's active inventory could not be read completely.");
+  };
+  // Native temporary-tab creation is covered separately. Keep this end-to-end
+  // IPC test on the real repeated-pass collector without real browser tabs.
+  background.sandbox.readFreshAppleWithdrawalInventory = async (_sourceTabId, notBefore) =>
+    content.collectStableAppleSubmittedHistoryInventory({ notBefore });
   const calls = { commands: [], contentMessages: [], attached: 0, detached: 0 };
   const browser = { dom, documentId: sender.documentId, pageContext: null };
   background.sandbox.attachDebugger = async () => { calls.attached++; };
@@ -93,10 +104,11 @@ async function interactionHarness(options = {}) {
       } else if (options.removeRoleWithoutSuccess) {
         role.card.remove();
       }
+      options.onProceed?.({ dom, content, background, calls });
     };
   };
   const review = await background.sandbox.dispatch({ type: "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE",
-    active: true, confirmed: true, batchId, tabId: tab.id,
+    active: true, confirmed: true, batchId, tabId: tab.id, reviewedAt: dom.clock,
     roles: [{ jobId: jobA, title: role.title.textContent }] });
   assert.equal(review.ok, true);
   const request = { type: "APPLE_CAREERS_WITHDRAW_SUBMITTED_ROLES", expectedPageIndex: 1,
@@ -189,8 +201,8 @@ test("the actual navigation-blocker script prevents a CDP release from activatin
   assert.equal(h.calls.attached, h.calls.detached);
 });
 
-test("an accepted Proceed with no fresh success/list reconciliation is unknown rather than confirmed", async () => {
-  const h = await interactionHarness({ confirmWithdrawal: false });
+test("an accepted Proceed with unavailable inventory is unknown rather than confirmed", async () => {
+  const h = await interactionHarness({ confirmWithdrawal: false, inventoryUnavailable: true });
   const response = await settle(h.dom, h.content.dispatch(h.request), 25000);
   assert.equal(response.data.withdrawn.length, 0);
   assert.equal(response.data.identityVerified, false);
@@ -202,15 +214,14 @@ test("an accepted Proceed with no fresh success/list reconciliation is unknown r
   assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 1);
 });
 
-test("an old exact-title success alert plus list removal cannot fabricate a fresh withdrawal confirmation", async () => {
+test("complete stable exact-ID absence confirms withdrawal without a fresh title notification", async () => {
   const h = await interactionHarness({ confirmWithdrawal: false, removeRoleWithoutSuccess: true });
   h.dom.document.body.appendChild(new h.dom.Node("div", { id: "global-alert", role: "alert" },
     "Engineer 1 submission has been successfully withdrawn"));
   const response = await settle(h.dom, h.content.dispatch(h.request), 25000);
-  assert.equal(response.data.withdrawn.length, 0);
-  assert.equal(response.data.identityVerified, false);
-  assert.equal(response.data.outcomeUnknown, true);
-  assert.match(response.data.failed[0].error, /outcome is unknown/i);
+  assert.equal(response.data.withdrawn.length, 1);
+  assert.equal(response.data.identityVerified, true);
+  assert.equal(response.data.outcomeUnknown, false);
   assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 1);
 });
 
@@ -236,9 +247,9 @@ test("a restarted worker cannot reuse the old page's open permission for Proceed
   assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 0);
 });
 
-test("reinserted or restyled identical stale success cannot confirm an uncertain withdrawal", async () => {
+test("reinserted or restyled identical stale success cannot replace complete inventory proof", async () => {
   let stale;
-  const h = await interactionHarness({ confirmWithdrawal: false,
+  const h = await interactionHarness({ confirmWithdrawal: false, inventoryUnavailable: true,
     onCommand: ({ dom, method }) => {
       if (method !== "Runtime.evaluate" || dom.state.modal || !stale) return;
       dom.roles.get(jobA).card.remove();
@@ -252,4 +263,116 @@ test("reinserted or restyled identical stale success cannot confirm an uncertain
   assert.equal(response.data.withdrawn.length, 0);
   assert.equal(response.data.outcomeUnknown, true);
   assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 1);
+});
+
+test("a delayed matching-title alert cannot confirm withdrawal while the exact job remains active", async () => {
+  const h = await interactionHarness({ confirmWithdrawal: false, onProceed: ({ dom }) => {
+    dom.schedule(() => dom.document.body.appendChild(new dom.Node("div", { id: "global-alert", role: "alert" },
+      "Engineer 1 submission has been successfully withdrawn")), 300);
+  } });
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.ok(h.dom.roles.get(jobA).card.isConnected);
+  assert.equal(response.data.withdrawn.length, 0);
+  assert.equal(response.data.outcomeUnknown, false);
+  assert.equal(response.data.outcome, "active");
+  const status = await settle(h.dom, h.content.dispatch({ type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", jobId: jobA, batchId, requestId }));
+  assert.equal(status.data.withdrawalConfirmed, false);
+  assert.equal(status.data.active, true);
+  assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 1);
+});
+
+test("identical titles never substitute another job's withdrawal for selected exact-ID evidence", async () => {
+  const h = await interactionHarness({ confirmWithdrawal: false, onProceed: ({ dom }) => {
+    const other = dom.roles.get(jobB);
+    other.card.remove();
+    dom.document.body.appendChild(new dom.Node("div", { id: "global-alert", role: "alert" },
+      "Engineer 1 submission has been successfully withdrawn"));
+  } });
+  h.dom.roles.get(jobB).title.textContent = h.dom.roles.get(jobA).title.textContent;
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 0);
+  assert.equal(response.data.outcomeUnknown, false);
+  assert.equal(response.data.outcome, "active");
+  assert.ok(h.dom.roles.get(jobA).card.isConnected);
+});
+
+test("a lost worker inventory-report acknowledgement cannot turn verified page absence into confirmed success", async () => {
+  const h = await interactionHarness();
+  const dispatch = h.content.chrome.runtime.sendMessage;
+  h.content.chrome.runtime.sendMessage = message => message.type === "APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY"
+    ? Promise.reject(new Error("Worker terminated before durable inventory acknowledgement.")) : dispatch(message);
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 0);
+  assert.equal(response.data.outcomeUnknown, true);
+  assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 1);
+  const record = await h.background.sandbox.readAppleWithdrawalRecord(jobA);
+  assert.equal(record.outcome, "unknown");
+});
+
+test("a live selected-ID contradiction prevents cached operation status from claiming inactivity", async () => {
+  const h = await interactionHarness();
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 1);
+  h.dom.document.body.appendChild(h.dom.roles.get(jobA).card);
+  const status = await settle(h.dom, h.content.dispatch({ type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", jobId: jobA, batchId, requestId }));
+  assert.equal(status.data.withdrawalConfirmed, false);
+  assert.equal(status.data.active, true);
+});
+
+test("a selected job reappearing after fresh inventory proof revokes prior success before status is returned", async () => {
+  const h = await interactionHarness();
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 1);
+  const originalFreshRead = h.background.sandbox.readFreshAppleWithdrawalInventory;
+  h.background.sandbox.readFreshAppleWithdrawalInventory = async (...args) => {
+    const evidence = await originalFreshRead(...args);
+    h.dom.document.body.appendChild(h.dom.roles.get(jobA).card);
+    return evidence;
+  };
+  const status = await settle(h.dom, h.content.dispatch({ type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", jobId: jobA, batchId, requestId }));
+  assert.ok(h.dom.roles.get(jobA).card.isConnected);
+  assert.equal(status.data.outcome, "unknown");
+  assert.equal(status.data.withdrawalConfirmed, false);
+  assert.equal((await h.background.sandbox.readAppleWithdrawalRecord(jobA)).outcome, "unknown");
+  const receipt = await h.background.sandbox.dispatch({ type: "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT", jobId: jobA, batchId, requestId });
+  assert.equal(receipt.ok, false);
+});
+
+test("contradictory later active inventory revokes an earlier inactive receipt rather than retaining stale success", async () => {
+  const h = await interactionHarness();
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 1);
+  const selected = h.dom.roles.get(jobA).card;
+  h.dom.document.body.appendChild(selected);
+  h.background.sandbox.readFreshAppleWithdrawalInventory = async (_sourceTabId, notBefore) => {
+    selected.remove();
+    try { return await h.content.collectStableAppleSubmittedHistoryInventory({ notBefore }); }
+    finally { h.dom.document.body.appendChild(selected); }
+  };
+  const status = await settle(h.dom, h.content.dispatch({ type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", jobId: jobA, batchId, requestId }));
+  assert.equal(status.data.outcome, "unknown");
+  assert.equal(status.data.withdrawalConfirmed, false);
+  assert.equal((await h.background.sandbox.readAppleWithdrawalRecord(jobA)).outcome, "unknown");
+  const receipt = await h.background.sandbox.dispatch({ type: "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT", jobId: jobA, batchId, requestId });
+  assert.equal(receipt.ok, false);
+});
+
+test("active contradiction arriving with the worker acknowledgement revokes its just-issued inactive receipt", async () => {
+  const h = await interactionHarness();
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 1);
+  const dispatch = h.content.chrome.runtime.sendMessage;
+  h.content.chrome.runtime.sendMessage = async message => {
+    const result = await dispatch(message);
+    if (message.type === "APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY" && result.data?.outcome === "inactive") {
+      h.dom.document.body.appendChild(h.dom.roles.get(jobA).card);
+    }
+    return result;
+  };
+  const status = await settle(h.dom, h.content.dispatch({ type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", jobId: jobA, batchId, requestId }));
+  assert.equal(status.data.outcome, "unknown");
+  assert.equal(status.data.withdrawalConfirmed, false);
+  assert.equal((await h.background.sandbox.readAppleWithdrawalRecord(jobA)).outcome, "unknown");
+  const receipt = await h.background.sandbox.dispatch({ type: "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT", jobId: jobA, batchId, requestId });
+  assert.equal(receipt.ok, false);
 });
