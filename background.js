@@ -2850,8 +2850,18 @@ async function reportAppleWithdrawalInventory(message, sender) {
   assertAppleWithdrawalReportSender(sender, record, message);
   const primary = CareerPeelerApplicationSafety.validateWithdrawalInventoryEvidence(message.inventory,
     { notBefore: Math.max(record.intentAt, record.inventoryReadCompletedAt || 0, record.uncertainAt || 0) });
-  const fresh = await readFreshAppleWithdrawalInventory(sender.tab.id, record.intentAt);
   const primaryActive = primary.roles.some(role => role.jobId === record.jobId);
+  let reconciliationNotBefore = record.intentAt;
+  if (primaryActive) {
+    // Positive, verified activity contradicts any old inactive receipt now.
+    // Persist that revocation before fresh-tab navigation can fail or the worker
+    // can terminate; a later agreeing inventory may resolve active, never replay.
+    const unresolved = await invalidateAppleWithdrawalResolution({ jobId: record.jobId,
+      batchId: record.batchId, requestId: record.requestId, documentId: record.documentId },
+    "The selected job is still active in Apple's verified inventory. Fresh reconciliation is required.");
+    reconciliationNotBefore = Math.max(reconciliationNotBefore, unresolved.uncertainAt);
+  }
+  const fresh = await readFreshAppleWithdrawalInventory(sender.tab.id, reconciliationNotBefore);
   const freshActive = fresh.roles.some(role => role.jobId === record.jobId);
   // Contradictory active evidence cannot be overridden by an absence snapshot.
   const invalidate = async reason => {
@@ -2903,6 +2913,12 @@ async function verifyAppleWithdrawalReceipt(message) {
   }
   return { ok: true, data: { jobId: record.jobId, batchId: record.batchId, requestId: record.requestId,
     outcome: "inactive", proofVersion: 2, inventoryVerified: true, verifiedAt: record.verifiedAt } };
+}
+
+async function finalizeAppleWithdrawal(message, sender) {
+  if (sender.tab) throw new Error("Update saved withdrawal records from the extension panel.");
+  const data = await commitAppleWithdrawalCleanup(message);
+  return { ok: true, data };
 }
 
 async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, shouldStop, windowId } = {}) {
@@ -3463,6 +3479,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY",
   "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME",
   "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT",
+  "APPLE_CAREERS_FINALIZE_WITHDRAWAL",
   "APPLE_CAREERS_GET_JOB_RANKING",
   "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
   "APPLE_CAREERS_START_JOB_RANKING",
@@ -3520,6 +3537,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT") {
         if (sender.tab) throw new Error("Verify withdrawal receipts from the extension panel.");
         sendResponse(await verifyAppleWithdrawalReceipt(message));
+      } else if (message.type === "APPLE_CAREERS_FINALIZE_WITHDRAWAL") {
+        sendResponse(await finalizeAppleWithdrawal(message, sender));
       } else if (message.type === "APPLE_CAREERS_GET_JOB_RANKING") {
         sendResponse({ ok: true, data: await getAppleRankingView(message.userProfile, message.topN) });
       } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {

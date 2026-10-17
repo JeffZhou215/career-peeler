@@ -203,77 +203,6 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
     </CompactRoleCard>;
   }
 
-  async function removeSavedRole(jobId, livePage = null) {
-    const stored = await jobStore.get(SAVED_REVIEWS_KEY);
-    const archive = stored[SAVED_REVIEWS_KEY];
-    if (!archive) return;
-    const pages = Object.fromEntries(Object.entries(archive.pages || {}).map(([pageIndex, review]) => [
-      pageIndex,
-      { ...review, roles: (review.roles || []).filter((role) => String(role.jobId) !== String(jobId)) }
-    ]));
-    const snapshot = archive.latestScan
-      ? { ...archive.latestScan, scannedAt: archive.latestScan.scannedAt || archive.latestScan.updatedAt,
-          roles: (archive.latestScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() }
-      : null;
-    const completeSnapshot = archive.lastCompleteScan
-      ? { ...archive.lastCompleteScan,
-          scannedAt: archive.lastCompleteScan.scannedAt || archive.lastCompleteScan.updatedAt,
-          roles: (archive.lastCompleteScan.roles || []).filter((role) => String(role.jobId) !== String(jobId)),
-          updatedAt: Date.now() }
-      : null;
-    const confirmedEmpty = livePage?.accountVerified === true && livePage.inventoryState === "confirmed_empty" &&
-      livePage.pageIndex === 1 && livePage.pageCount === 1 && livePage.hasNextPage === false &&
-      livePage.withdrawalConfirmationOpen === false && livePage.roles?.length === 0;
-    if (confirmedEmpty) {
-      for (const saved of [snapshot, completeSnapshot]) {
-        if (saved) Object.assign(saved, { roles: [], complete: true, inventoryState: "confirmed_empty",
-          accountVerified: true, pagesRead: 1, pageCount: 1, warning: null, scannedAt: Date.now(), updatedAt: Date.now() });
-      }
-      for (const key of Object.keys(pages)) delete pages[key];
-      pages[1] = { ...livePage, roles: [], updatedAt: Date.now() };
-    } else if (livePage?.roles?.length) {
-      const savedById = new Map((snapshot?.roles || []).map((role) => [String(role.jobId), role]));
-      const currentRoles = livePage.roles.filter((role) =>
-        role.active !== false && String(role.jobId) !== String(jobId)
-      ).map((role) => {
-        const saved = savedById.get(String(role.jobId));
-        const merged = saved?.title === role.title
-          ? { ...role, score: saved.score, reason: saved.reason, matchBasis: saved.matchBasis,
-              descriptionAvailable: saved.descriptionAvailable, scoreSource: saved.scoreSource }
-          : role;
-        savedById.set(String(role.jobId), { ...saved, ...merged, sourcePageIndex: livePage.pageIndex });
-        return merged;
-      });
-      pages[livePage.pageIndex] = {
-        ...(pages[livePage.pageIndex] || {}), pageIndex: livePage.pageIndex,
-        pageCount: livePage.pageCount, roles: currentRoles, updatedAt: Date.now()
-      };
-      if (snapshot) snapshot.roles = Array.from(savedById.values());
-    }
-    const ranking = (await jobStore.get("appleJobRanking")).appleJobRanking;
-    if (ranking) {
-      const baseId = String(jobId).split("-")[0];
-      ranking.withdrawnIds = [...new Set([...(ranking.withdrawnIds || []), baseId])];
-      ranking.reservations = (ranking.reservations || []).filter((role) => String(role.jobId).split("-")[0] !== baseId);
-      if (ranking.jobs?.[baseId]) {
-        ranking.jobs[baseId].queueStatus = "withdrawn";
-        ranking.jobs[baseId].eligible = false;
-      }
-      if (ranking.capacitySnapshot) ranking.capacitySnapshot = { ...ranking.capacitySnapshot,
-        roles: ranking.capacitySnapshot.roles.filter((role) => String(role.jobId) !== String(jobId)), updatedAt: Date.now() };
-      if (confirmedEmpty) {
-        ranking.reservations = [];
-        ranking.capacitySnapshot = { ...(ranking.capacitySnapshot || {}), complete: true,
-          inventoryState: "confirmed_empty", accountVerified: true, roles: [], pagesRead: 1, pageCount: 1,
-          warning: null, scannedAt: Date.now(), updatedAt: Date.now() };
-      }
-    }
-    await jobStore.set({ ...(ranking ? { appleJobRanking: ranking } : {}), [SAVED_REVIEWS_KEY]: { ...archive, pages,
-      ...(snapshot ? { latestScan: snapshot } : {}),
-      ...(completeSnapshot ? { lastCompleteScan: completeSnapshot } : {}) } });
-    await reloadArchive();
-    return snapshot;
-  }
 
   async function withdrawSelected() {
     if (withdrawalInFlightRef.current || !confirmationOpen || !confirmationSelectionRef.current?.length) return;
@@ -380,30 +309,30 @@ export function SubmittedApplicationsSection({ profile, setStatusMessage, embedd
               setStatusMessage(`Withdrawing ${confirmedCount + 1} of ${targets.length}: ${role.title}...`);
             },
             onRoleConfirmed: async ({ verifiedAfterInterruption }) => {
-              const receipt = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT",
-                batchId, requestId, jobId: role.jobId });
-              if (!receipt?.ok || receipt.data?.jobId !== role.jobId || receipt.data.batchId !== batchId ||
-                  receipt.data.requestId !== requestId || receipt.data.outcome !== "inactive" || receipt.data.inventoryVerified !== true) {
-                throw new Error(receipt?.error || "The withdrawal lacks durable verified inventory proof. Sync Submissions before retrying.");
-              }
               setStatusMessage(`Updating the visible submissions page after ${role.title}...`);
-              try {
-                page = await readSettledPage();
-              } catch (refreshError) {
-                confirmedCount += 1;
-                await removeSavedRole(role.jobId);
-                setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
-                setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
-                throw new Error(`${role.title}: Apple confirmed the withdrawal, but its current page could not be read. ${refreshError?.message || "Sign in again to continue."}`);
-              }
-              if (page.roles.some(item => String(item.jobId) === String(role.jobId) && item.active === true)) {
+              let refreshError = null;
+              try { page = await readSettledPage(); }
+              catch (error) { refreshError = error; }
+              if (!refreshError && page.roles.some(item => String(item.jobId) === String(role.jobId) && item.active === true)) {
                 await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME", batchId, requestId,
                   jobId: role.jobId, reason: "The exact selected job is still active before local withdrawal records could be updated." });
                 throw new Error("Apple still shows this exact job as active. Sync Submissions before reviewing another attempt.");
               }
+              // The worker checks the current durable outcome and commits local
+              // cleanup together. A receipt checked before this awaited page read
+              // could have been revoked by recovery or contradictory evidence.
+              const finalized = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_FINALIZE_WITHDRAWAL",
+                batchId, requestId, jobId: role.jobId, livePage: refreshError ? null : page });
+              if (!finalized?.ok || finalized.data?.jobId !== role.jobId || finalized.data.batchId !== batchId ||
+                  finalized.data.requestId !== requestId || finalized.data.outcome !== "inactive" ||
+                  finalized.data.cleanupConfirmed !== true || finalized.data.proofVersion !== 3) {
+                throw new Error(finalized?.error || "The withdrawal proof changed before saved records could be updated. Sync Submissions again.");
+              }
               confirmedCount += 1;
-              await removeSavedRole(role.jobId, page);
+              setRoles((current) => rankSubmittedRoles(current.filter((item) => String(item.jobId) !== String(role.jobId))));
               setSelectedIds((current) => current.filter((jobId) => String(jobId) !== String(role.jobId)));
+              await reloadArchive();
+              if (refreshError) throw new Error(`${role.title}: Apple confirmed the withdrawal, but its current page could not be read. ${refreshError?.message || "Sign in again to continue."}`);
               setStatusMessage(`${confirmedCount} of ${targets.length} withdrawn${verifiedAfterInterruption ? " · verified after Apple refreshed the page" : ""}.`);
             }
           });

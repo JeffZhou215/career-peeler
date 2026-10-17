@@ -1,10 +1,11 @@
 {
   "name": "career-peeler",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "release:private": "npm test && npm run check && node scripts/package-private-release.mjs",
     "test": "node --require ./tests/helpers/noNetwork.cjs --test --test-timeout=30000 tests/*.test.js tests/*.test.mjs",
     "test:p0": "node --require ./tests/helpers/noNetwork.cjs --test --test-timeout=30000 tests/appleWorkflowSafety.test.js",
     "test:inventory": "node --require ./tests/helpers/noNetwork.cjs --test --test-timeout=30000 tests/appleSubmissionInventory.test.js",

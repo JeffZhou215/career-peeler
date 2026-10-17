@@ -138,6 +138,39 @@ test('a stale inactive receipt cannot authorize removing local active records', 
   await assert.rejects(h.sandbox.verifyAppleWithdrawalReceipt(h.identity), /not durably confirmed/);
 });
 
+test('an active report durably revokes success before a delayed fresh read and cannot itself authorize retry', async () => {
+  const h = await harness();
+  await h.sandbox.resolveAppleWithdrawalInventory(evidence([], h.clock));
+  assert.equal((await h.sandbox.verifyAppleWithdrawalReceipt(h.identity)).ok, true);
+  let finishFreshRead;
+  let freshReadStarted;
+  const started = new Promise(resolve => { freshReadStarted = resolve; });
+  h.sandbox.readFreshAppleWithdrawalInventory = async (_tabId, notBefore) => {
+    const record = await h.sandbox.readAppleWithdrawalRecord(jobId);
+    assert.equal(record.outcome, 'unknown');
+    assert.ok(notBefore >= record.uncertainAt);
+    freshReadStarted();
+    await new Promise(resolve => { finishFreshRead = resolve; });
+    return h.sandbox.CareerPeelerApplicationSafety.validateWithdrawalInventoryEvidence(evidence([jobId], h.clock), { notBefore });
+  };
+  const message = { type: 'APPLE_CAREERS_REPORT_WITHDRAWAL_INVENTORY', ...h.identity,
+    inventory: evidence([jobId], h.clock) };
+  const sender = { tab: source, url: source.url, frameId: 0, documentId: h.identity.documentId };
+  const report = h.sandbox.reportAppleWithdrawalInventory(message, sender);
+  await started;
+  assert.equal((await h.sandbox.readAppleWithdrawalRecord(jobId)).outcome, 'unknown');
+  await assert.rejects(h.sandbox.verifyAppleWithdrawalReceipt(h.identity), /not durably confirmed/);
+  await assert.rejects(h.sandbox.assertAppleWithdrawalRetryAllowed([jobId], ++h.clock.now), /unresolved withdrawal/);
+  finishFreshRead();
+  const result = await report;
+  assert.equal(result.data.outcome, 'active');
+  assert.equal(result.data.withdrawalConfirmed, false);
+  await assert.rejects(h.sandbox.verifyAppleWithdrawalReceipt(h.identity), /not durably confirmed/);
+  await assert.rejects(h.sandbox.assertAppleWithdrawalRetryAllowed([jobId], h.identity.reviewedAt), /Review and confirm/);
+  await assert.rejects(h.sandbox.beginAppleWithdrawalIntent({ ...h.identity, reviewedAt: ++h.clock.now }), /newly reviewed batch/);
+  assert.equal(h.calls.messages.some(message => /WITHDRAW.*CLICK/.test(message.type)), false);
+});
+
 test('fresh background inventory uses the verified Submissions and Active menu selectors', async () => {
   const dom = createAppleWithdrawalDom();
   const content = createContentHarness({ url: source.url });

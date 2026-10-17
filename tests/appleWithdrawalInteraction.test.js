@@ -319,6 +319,29 @@ test("a live selected-ID contradiction prevents cached operation status from cla
   assert.equal(status.data.active, true);
 });
 
+test("validated active evidence revokes an old inactive receipt even when the independent inventory read fails", async () => {
+  const h = await interactionHarness();
+  const response = await settle(h.dom, h.content.dispatch(h.request));
+  assert.equal(response.data.withdrawn.length, 1);
+  h.dom.document.body.appendChild(h.dom.roles.get(jobA).card);
+  h.background.sandbox.readFreshAppleWithdrawalInventory = async () => {
+    // Check inside the awaited browser operation, before its failure is known.
+    assert.equal((await h.background.sandbox.readAppleWithdrawalRecord(jobA)).outcome, "unknown");
+    throw new Error("Fresh Apple document network failure");
+  };
+  const status = await settle(h.dom, h.content.dispatch({ type: "APPLE_CAREERS_GET_WITHDRAWAL_STATUS", jobId: jobA, batchId, requestId }));
+  assert.equal(status.data.outcome, "unknown");
+  assert.equal(status.data.withdrawalConfirmed, false);
+  assert.equal((await h.background.sandbox.readAppleWithdrawalRecord(jobA)).outcome, "unknown");
+  const receipt = await h.background.sandbox.dispatch({ type: "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT", jobId: jobA, batchId, requestId });
+  assert.equal(receipt.ok, false);
+  const restarted = createBackgroundHarness([{ ...tab }], { data: h.background.data });
+  await restarted.ready;
+  assert.equal((await restarted.sandbox.readAppleWithdrawalRecord(jobA)).outcome, "unknown");
+  await assert.rejects(restarted.sandbox.assertAppleWithdrawalRetryAllowed([jobA], h.dom.clock + 1), /unresolved withdrawal/);
+  assert.equal(h.dom.calls.clicks.filter(click => click.stage === "proceed").length, 1);
+});
+
 test("a selected job reappearing after fresh inventory proof revokes prior success before status is returned", async () => {
   const h = await interactionHarness();
   const response = await settle(h.dom, h.content.dispatch(h.request));

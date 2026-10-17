@@ -1,45 +1,63 @@
-# Career Peeler Privacy
+# Career Peeler Privacy Policy
 
-Career Peeler is an unofficial Apple Careers application assistant. It has no developer-operated backend, advertising, analytics, or tracking.
+Last updated: October 17, 2026
 
-## Local Data
+Career Peeler is an unofficial Chrome extension for Apple Careers. It helps you compare jobs with your resume, manage a local application queue, assist with applications you authorize, and review active submissions. It is not affiliated with Apple or OpenAI.
 
-Chrome local storage retains the selected PDF, its full parsed text, structured candidate profile, profile settings, required application answers, API key and small live status records. The extension's local IndexedDB database, `CareerPeelerJobs`, retains job descriptions, scores, search checkpoints, submission snapshots, the application queue, application history, activity and failure logs. Small database error reports use Chrome session storage.
+Career Peeler has no developer-operated backend, advertising, analytics, or tracking service. The developer does not receive your resume, application profile, API key, job history, or application answers through the extension.
 
-Existing job data is migrated automatically from Chrome local storage. The original job keys are removed only after the database transaction commits and its migration marker is read back. If migration fails, those original records remain intact. Existing queue states and withdrawal protections are preserved. Old records from retired integrations are not automatically erased.
+## Information Stored On Your Device
 
-PDF text extraction runs locally using the bundled PDF.js parser. Local extension data is not separately encrypted by Career Peeler. Anyone with access to your unlocked Chrome profile may access extension data.
+The extension stores the following inside your Chrome profile:
 
-## OpenAI Requests
+- **Chrome local storage:** your uploaded PDF resume and filename, parsed resume text, structured CandidateProfile and edits, matching preferences, experience setting, required application answers, OpenAI API key and its validation status, small progress records, and submission synchronization status/timestamps.
+- **IndexedDB (`CareerPeelerJobs`):** job descriptions and qualifications, matching scores and evidence, search identities and scan checkpoints, saved submissions, application queue/history, activity/error logs, submission capacity snapshots and reservations, and durable application/withdrawal recovery records. Withdrawal records associate an exact job ID with its reviewed operation and confirmed or unresolved outcome.
+- **Chrome session storage:** small database-write failure reports used to surface storage problems.
 
-OpenAI is the only LLM provider. You supply the key and enable LLM Matching. Requests go directly to OpenAI:
+Data is retained across side-panel reopening and browser/service-worker restarts until replaced, removed through available controls, or the extension is uninstalled. Replacing a resume invalidates matching results when relevant; it does not immediately erase all historical job records. Data from retired integrations on an upgraded installation is not automatically erased.
 
-- Key validation sends only the credential to the models endpoint.
-- Candidate profile extraction sends the selected PDF directly to OpenAI.
-- Job ranking and submission review send resume evidence and full job descriptions and qualifications.
-- Required question resolution may send the question, available options, job context, and relevant resume/contact data. Unresolved required open-text questions may use OpenAI hosted web search for public company or role context.
+PDF.js runs locally to extract readable PDF text. Career Peeler does not apply additional encryption to its local data. Someone with access to your unlocked Chrome profile may be able to read it. Do not use a shared Chrome profile for private application data.
 
-Saved gender, race/ethnicity, veteran, and disability answers are resolved locally and are excluded from AI requests. Optional application questions are skipped.
+## Information Sent To OpenAI
 
-## Apple Workflows
+OpenAI is the only AI provider integrated into Career Peeler. You provide your own API key; requests go directly over HTTPS to `api.openai.com`. OpenAI API usage may incur charges on your account.
 
-Confirmed application actions can fill required answers and click Continue and Submit. Reviewed queue application requires acknowledgement, and automatic mode requires explicit permission before the full filtered scan starts. The active submission count is checked before applying. Known failures before submission are skipped; unconfirmed submission outcomes pause the queue.
+Depending on the feature you enable or request, the extension sends:
 
-Confirmed withdrawal batches click Apple's Withdraw and Proceed actions sequentially. Withdrawals are irreversible and prevent reapplication. Roles marked as protected cannot be selected for batch withdrawal.
+- **Key validation:** your API credential in the authorization header when checking the models endpoint.
+- **CandidateProfile extraction:** the uploaded PDF, including its contents and filename, to extract a structured profile.
+- **Job ranking and submission analysis:** resume text/profile evidence (including explicit profile edits), experience settings, and relevant job descriptions, responsibilities and qualifications.
+- **Unresolved required application questions:** the question, observed answer choices, relevant job/page context, resume evidence and relevant saved contact/profile values. For required open-text questions, OpenAI's hosted web search may be used for public company or role context.
 
-Detected submission success and returning to Your Roles may refresh the local count without another click. Passive reconciliation reads submissions in a background tab and does not run during ranking, applying, or withdrawing.
+The separately saved gender, race/ethnicity, veteran and disability answers are resolved locally and are excluded from AI question requests. Optional questions are skipped. Information you put inside the PDF, resume text or other resume/profile evidence can still be included in extraction or matching requests; avoid including unnecessary sensitive information.
 
-## Permissions
+OpenAI processes requests under its own terms and privacy/data policies. The extension does not control OpenAI's retention or account settings and does not promise immediate deletion of information already sent to OpenAI.
 
-- `storage`: retain the local data described above.
-- `unlimitedStorage`: retain full job descriptions, rankings and resume data across large searches, removing normal Chrome storage quotas and protecting IndexedDB from eviction. Data stays on the device inside this extension's storage.
-- `tabs`: manage Apple workflow tabs in the initiating window.
-- `scripting`: restore the Apple content script when needed after navigation or reload.
-- `sidePanel`: display the persistent interface.
-- `debugger`: briefly send trusted clicks to exact Apple withdrawal controls when Apple rejects ordinary DOM clicks. The extension verifies the job and confirmation stage and detaches afterward. Chrome may display its debugging banner.
+## Information Read From And Sent To Apple
 
-Host access is limited to `jobs.apple.com`, Apple careers pages, and `api.openai.com`. There is no all-sites access or generic autofill.
+The extension reads supported Apple Careers pages, including search results, job descriptions, application forms and your Active Submissions list. It uses your existing browser session; it does not request or store your Apple password. Chrome and Apple manage authentication cookies.
 
-## Control
+Applications you explicitly authorize may fill required form answers, click Continue and perform final Submit actions. The PDF in Setup is used for matching; applications use the resume already saved in your Apple Careers account. Review that saved resume and your application answers before permitting submissions.
 
-You can replace the saved resume, edit profile settings, stop workflows, remove queued jobs, and inspect failures. Chrome's developer tools can inspect Chrome storage and the IndexedDB database separately. Chrome extension removal removes both storage areas. Application and withdrawal data already transmitted to Apple remains subject to Apple's policies; OpenAI requests are subject to OpenAI's policies.
+Withdrawals require selecting roles and explicitly confirming the intended batch. They cannot be undone on Apple Careers. The extension checks exact job IDs and protects starred or otherwise protected roles. Unresolved outcomes are retained for reconciliation; they are not automatically retried.
+
+When you visit an existing Active Submissions tab, automatic synchronization reads that current page without opening another tab, paging through it, or running AI analysis. If a complete inventory cannot be established from that page, synchronization can be deferred and cached/unknown status remains visible. Explicit Sync, authorized application capacity checks, and withdrawal reconciliation may use temporary Apple tabs in the same Chrome window to verify the complete inventory. These tabs are closed afterward where possible. Explicit Analyze & Rank All is separate and may navigate submission pages and send matching requests to OpenAI.
+
+Information entered or submitted to Apple is governed by Apple's policies. Removing local extension data does not withdraw applications or delete data already held by Apple.
+
+## Permissions And Host Access
+
+- **`storage`:** save preferences, profile/resume data, credentials, and small status records.
+- **`unlimitedStorage`:** retain full descriptions, scores and durable workflow data across large searches without normal extension storage quotas, and reduce IndexedDB eviction risk.
+- **`tabs`:** identify appropriate Apple tabs and manage tabs used by authorized workflows in the initiating window.
+- **`scripting`:** restore packaged Apple content scripts when needed after navigation or extension reload.
+- **`sidePanel`:** display Career Peeler's persistent interface.
+- **`debugger`:** briefly send browser-trusted clicks to the exact Apple withdrawal controls after validating the selected job and confirmation stage. Chrome may show a debugging banner. The extension does not expose a general-purpose remote-debugging interface.
+
+Host access is restricted to `https://jobs.apple.com/*`, `https://www.apple.com/careers/*`, and `https://api.openai.com/*`. There is no all-sites permission. All executable extension code is packaged locally; AI responses are handled as data.
+
+## Your Controls
+
+You can replace the PDF, edit the profile and saved answers, stop workflows, remove queued jobs, and inspect activity or unresolved outcomes. Stopping cannot undo an action already accepted by Apple. You can inspect Chrome extension storage and IndexedDB using Chrome developer tools. Uninstalling the extension removes its local extension storage, subject to Chrome's behavior; it does not remove information previously sent to Apple or OpenAI.
+
+For product/privacy questions, open an issue at [Career Peeler Support](https://github.com/JeffZhou215/career-peeler/issues). Issues are public: do not include API keys, resumes, private application details, or unredacted logs. The private-release publisher must also provide a working support contact in the Chrome Web Store listing.

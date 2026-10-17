@@ -35,11 +35,13 @@ function harness(options = {}) {
     selectedIds: roles.slice(0, 2).map(role => role.jobId),
     setRoles: () => {}, rankSubmittedRoles: value => value,
     getActiveTab: options.getActiveTab || (async () => appleTab),
-    removeSavedRole: async jobId => { saved.push(jobId); if (options.saveFailure) throw new Error("Cache persistence failed."); },
+    reloadArchive: async () => {},
     withdrawSubmittedRolesSequentially,
     sendMessageWithFallback: async (_tabId, message) => {
       requests.push(message);
       assert.equal(message.type, "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE");
+      if (options.activeAfterReceipt && mutations.length) liveRoles = roles.map(role => ({ ...role }));
+      if (options.failPageAfterWithdrawal && mutations.length) throw new Error("Apple page unavailable.");
       return { ok: true, data: { pageIndex: 1, pageCount: 1, hasNextPage: false, roles: liveRoles,
         withdrawalConfirmationOpen: false } };
     },
@@ -51,12 +53,13 @@ function harness(options = {}) {
           return { ok: true, data: { running: false } };
         }
         if (message.type === "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME") return { ok: true };
-        if (message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT" && options.activeAfterReceipt) {
-          liveRoles = roles.map(role => ({ ...role }));
+        if (message.type === "APPLE_CAREERS_FINALIZE_WITHDRAWAL") {
+          if (options.receiptFailure) return { ok: false, error: "Durable withdrawal proof is missing." };
+          if (options.revokeDuringPageRead) return { ok: false, error: "The withdrawal proof changed before saved records could be updated." };
+          if (options.saveFailure) return { ok: false, error: "Cache persistence failed." };
+          saved.push(message.jobId);
+          return { ok: true, data: { ...message, outcome: "inactive", cleanupConfirmed: true, proofVersion: 3 } };
         }
-        if (message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT") return options.receiptFailure
-          ? { ok: false, error: "Durable withdrawal proof is missing." }
-          : { ok: true, data: { ...message, outcome: "inactive", inventoryVerified: true, proofVersion: 2 } };
         assert.equal(message.type, "APPLE_CAREERS_WITHDRAWAL_BATCH_STATE");
         return { ok: true };
       } },
@@ -170,12 +173,13 @@ test("a lost reply is reconciled with the same batch, request, and full job ID w
   assert.deepEqual(h.saved, roles.slice(0, 2).map(role => role.jobId));
 });
 
-test("a cache error after successful withdrawal reports the known success and prevents the next action", async () => {
+test("a cleanup transaction failure does not count or remove the role and prevents the next action", async () => {
   const h = harness({ saveFailure: true });
   h.sandbox.review();
   await h.sandbox.confirm();
   assert.deepEqual(h.mutations, [roles[0].jobId]);
-  assert.match(h.sandbox.error, /Batch stopped after 1 of 2.*Cache persistence failed/);
+  assert.deepEqual(h.saved, []);
+  assert.match(h.sandbox.error, /Batch stopped after 0 of 2.*Cache persistence failed/);
 });
 
 
@@ -198,4 +202,27 @@ test("a selected role reappearing active after its receipt is not removed or cou
   assert.deepEqual(h.mutations, [roles[0].jobId]);
   assert.match(h.sandbox.error, /0 of 2.*still shows this exact job as active/);
   assert.equal(h.requests.filter(message => message.type === "APPLE_CAREERS_INVALIDATE_WITHDRAWAL_OUTCOME").length, 1);
+});
+
+
+test("revocation during page stabilization blocks atomic cleanup rather than trusting an earlier success", async () => {
+  const h = harness({ revokeDuringPageRead: true });
+  h.sandbox.review();
+  await h.sandbox.confirm();
+  assert.deepEqual(h.saved, []);
+  assert.deepEqual(h.mutations, [roles[0].jobId]);
+  assert.match(h.sandbox.error, /0 of 2.*proof changed/);
+  assert.equal(h.requests.some(message => message.type === "APPLE_CAREERS_VERIFY_WITHDRAWAL_RECEIPT"), false);
+  assert.equal(h.requests.filter(message => message.type === "APPLE_CAREERS_FINALIZE_WITHDRAWAL").length, 1);
+});
+
+test("a failed page read can preserve a known success only after atomic cleanup succeeds", async () => {
+  const h = harness({ failPageAfterWithdrawal: true });
+  h.sandbox.review();
+  await h.sandbox.confirm();
+  assert.deepEqual(h.saved, [roles[0].jobId]);
+  assert.deepEqual(h.mutations, [roles[0].jobId]);
+  assert.match(h.sandbox.error, /1 of 2.*current page could not be read/);
+  const finalize = h.requests.find(message => message.type === "APPLE_CAREERS_FINALIZE_WITHDRAWAL");
+  assert.equal(finalize.livePage, null);
 });

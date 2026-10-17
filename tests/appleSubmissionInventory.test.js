@@ -204,27 +204,23 @@ test("successful final withdrawal can settle to a confirmed empty page and recon
   assert.equal((await h.sandbox.appleRankingCapacity(h.state)).remaining, 50);
 });
 
-test("the Submissions panel persists final-withdrawal capacity only with confirmed complete empty evidence", async () => {
-  const source = fs.readFileSync(require.resolve("../src/sidepanel/components/SubmittedApplicationsSection.jsx"), "utf8");
-  const method = source.slice(source.indexOf("  async function removeSavedRole("), source.indexOf("  async function withdrawSelected("));
+test("single-page empty hints cannot replace durable withdrawal proof or erase unrelated reservations", async () => {
   for (const confirmed of [true, false]) {
-    const h = await workerInventory();
-    const old = { complete: true, inventoryState: "confirmed", roles: [role("200000001")], updatedAt: 1000, scannedAt: 1000 };
-    h.data[reviewsKey] = { latestScan: old, lastCompleteScan: old, pages: { 1: page(old.roles) } };
-    h.data.appleJobRanking = { capacitySnapshot: old, jobs: {}, reservations: [{ jobId: "200000002" }] };
-    const ui = { jobStore: h.sandbox.CareerPeelerJobStore, SAVED_REVIEWS_KEY: reviewsKey,
-      reloadArchive: async () => {} };
-    vm.runInNewContext(method, ui);
-    await ui.removeSavedRole("200000001", { ...page([]), accountVerified: confirmed });
-    const state = await h.sandbox.readAppleRankingState();
-    const capacity = await h.sandbox.appleRankingCapacity(state);
-    assert.equal(capacity.known, confirmed);
-    if (confirmed) {
-      assert.equal(capacity.submitted, 0);
-      assert.equal(capacity.remaining, 50);
-      assert.equal(state.reservations.length, 0);
-      assert.equal(h.data[reviewsKey].lastCompleteScan.inventoryState, "confirmed_empty");
-    }
+    const selectedId = "200000001";
+    const old = { complete: true, inventoryState: "confirmed", roles: [role(selectedId)], updatedAt: Date.now() };
+    const values = { appleWithdrawalWorkflow: { version: 1, records: {} },
+      appleSubmittedRoleReviews: { latestScan: old, lastCompleteScan: old, pages: { 1: page(old.roles) } },
+      appleJobRanking: { capacitySnapshot: old, jobs: {}, reservations: [{ jobId: "200000002" }] } };
+    const context = { CareerPeelerApplicationSafety: safety, Date,
+      CareerPeelerJobStore: { updateCollections: async (_keys, update) => {
+        const changes = update(structuredClone(values)); Object.assign(values, changes); return changes;
+      } } };
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(require.resolve("../lib/appleWithdrawalRecovery.js"), "utf8"), context);
+    const before = structuredClone(values);
+    await assert.rejects(context.commitAppleWithdrawalCleanup({ jobId: selectedId, batchId: "batch", requestId: "request",
+      livePage: { ...page([]), accountVerified: confirmed } }), /proof changed/);
+    assert.deepEqual(values, before, "a page-only hint cannot authorize clearing the archive or reservations");
   }
 });
 
