@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "minimum_chrome_version": "120",
-  "name": "Career Peeler",
-  "version": "0.2.2",
+  "name": "Rolebeam",
+  "version": "0.2.3",
   "description": "Unofficial Apple Careers resume matching, ranked applications, and submission review.",
   "icons": {
     "16": "icons/icon16.png",

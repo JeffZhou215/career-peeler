@@ -6,6 +6,7 @@ import { SubmittedApplicationsSection } from "./components/SubmittedApplications
 import { RankedJobsSection } from "./components/RankedJobsSection";
 import { AppleSetupSection } from "./components/AppleSetupSection";
 import { AppleActivity } from "./components/AppleActivity";
+import { ExtensionBrand } from "./components/ExtensionBrand";
 import { formatRelativeTime } from "./lib/format";
 
 function TabIcon({ tab }) {
@@ -25,7 +26,7 @@ export function App() {
   const countVerified = capacity?.known && syncStatus.state !== "failed";
   const cachedCount = countVerified && (syncStatus.state !== "synced" || syncNow - Number(syncStatus.lastSuccessAt || 0) >= 60000);
   return <main className="app ios-app">
-    <div className="ios-chrome"><header><p className="eyebrow">Career Peeler</p><h1>Apple Careers</h1></header>
+    <div className="ios-chrome"><ExtensionBrand />
       <div className="capacity-strip" aria-live="polite">
         <div className="capacity-metric"><span className="capacity-metric-label">Submitted</span>
           <strong>{countVerified ? `${capacity.submitted} / 50` : "Not Verified"}</strong>

@@ -1,6 +1,6 @@
 # Store Asset Provenance
 
-Generated October 17, 2026 for the Apple-only 0.2.2 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
+Generated October 18, 2026 for the Apple-only Rolebeam 0.2.3 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
 
 ## UI Screenshots
 
@@ -37,9 +37,10 @@ Inspect all outputs visually after rerunning. Dates/relative time are generated 
 
 ## Promotional Images And Icon
 
-`render-promos.cjs` uses Sharp to render the adjacent SVG sources at exactly 440 × 280 and 1400 × 560. It copies `icons/icon128.png` byte-for-byte to `store-icon-128x128.png`, preserving the current brand.
+`icons/icon128.svg` is the canonical hand-authored Letterform mark. `render-icons.cjs` derives the 16, 48 and 128 pixel SVG/PNG variants and copies the 128 pixel PNG to `store-icon-128x128.png`. `render-promos.cjs` uses Sharp to render the adjacent SVG sources at exactly 440 × 280 and 1400 × 560, preserving the same brand: white R, mint `#78edd0` accent and deep-indigo `#25215a` background.
 
 ```sh
+node store-assets/source/render-icons.cjs
 node store-assets/source/render-promos.cjs
 ```
 

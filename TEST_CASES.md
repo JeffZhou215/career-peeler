@@ -15,22 +15,22 @@ npm run check
 
 - [ ] **I-01: Fresh production build**
   - Steps: Run `npm run build`, load `dist/` from `chrome://extensions`, and open the toolbar action.
-  - Expected: No manifest/runtime error; the persistent Career Peeler side panel opens.
+  - Expected: No manifest/runtime error; the persistent Rolebeam side panel opens.
 - [ ] **I-02: Supported-site recognition**
   - Steps: Visit one Apple, TikTok, and ByteDance list URL declared in `manifest.json`.
   - Expected: `Scan Visible Job List` accepts each page and starts the corresponding known-site scanner.
 - [ ] **I-03: Passive unrelated-page behavior**
-  - Steps: Visit an unrelated HTTP/HTTPS page without clicking Career Peeler actions.
+  - Steps: Visit an unrelated HTTP/HTTPS page without clicking Rolebeam actions.
   - Expected: No generic script is injected and no page field is read or changed merely because the extension is installed.
 - [ ] **I-04: User-invoked generic injection**
   - Steps: Open an unrelated test application, expand `Other Job Sites`, and click `Autofill This Page`.
   - Expected: Generic scripts are injected only into the selected tab after the click.
 - [ ] **I-05: Workday controlled-input commit**
   - Steps: On two different Workday tenants, autofill a required text field, a month/year field, and a value that Workday had already marked required/empty.
-  - Expected: Ordinary values are committed through the page-context browser-editing pipeline and survive blur/page settle. After Continue exposes an explicitly rejected visible text value, Career Peeler focuses and fully selects only that field, performs one trusted Backspace plus bounded text insertion, freshly verifies the exact value and cleared error, and retries the same Continue no more than once. Chrome may briefly show its debugging banner during rejected-field repair. A failed repair stops for review rather than looping.
+  - Expected: Ordinary values are committed through the page-context browser-editing pipeline and survive blur/page settle. After Continue exposes an explicitly rejected visible text value, Rolebeam focuses and fully selects only that field, performs one trusted Backspace plus bounded text insertion, freshly verifies the exact value and cleared error, and retries the same Continue no more than once. Chrome may briefly show its debugging banner during rejected-field repair. A failed repair stops for review rather than looping.
 - [ ] **I-06: Workday responsive referral prompt**
   - Steps: On at least two Workday tenants whose required `How Did You Hear About Us?` fields use different nested responsive-prompt hierarchies, run autofill with no source selected. Include one tenant offering exact `Other` and Salesforce with only `External Career Site Sources` → `LinkedIn Connection Post`.
-  - Expected: Before ordinary text autofill, Career Peeler reuses a source prompt that is already open; it does not toggle that prompt closed on a rerun. Otherwise it opens and freshly re-reads the prompt. It selects exact `Other` whenever offered. When Salesforce has no exact `Other`, it first applies the captured page-context sequence to the type-2 `External Career Site Sources` row and inventories the replacement level. If verification shows that the branch did not open, it performs one bounded trusted retry centered on the inner rendered `promptOption` text node observed in a successful manual click. It follows the same verified sequence for the type-1 `LinkedIn Connection Post` leaf. On the Job Board fixture it opens `Job Board` and selects its LinkedIn-containing leaf. The source text input remains empty throughout. Every branch transition is proven by a changed non-empty option inventory, and every selected value is freshly verified through a matching selected-item chip. The collapsed `Select` activity detail lists every child option observed after opening the branch; zero visible options are never reported as an opened branch. If the branch does not open, the detail explicitly says so and lists the unchanged root options. A discovered leaf that does not commit is reported as such instead of being rewritten as “no matching child.” If an Other/LinkedIn-labelled match opens another child category, Career Peeler follows only newly rendered preferred children and stops after at most four levels. Chrome may briefly show its debugging banner for trusted input. The extension stops for review if no recognized source parent/preferred leaf is offered or the final chip cannot be verified.
+  - Expected: Before ordinary text autofill, Rolebeam reuses a source prompt that is already open; it does not toggle that prompt closed on a rerun. Otherwise it opens and freshly re-reads the prompt. It selects exact `Other` whenever offered. When Salesforce has no exact `Other`, it first applies the captured page-context sequence to the type-2 `External Career Site Sources` row and inventories the replacement level. If verification shows that the branch did not open, it performs one bounded trusted retry centered on the inner rendered `promptOption` text node observed in a successful manual click. It follows the same verified sequence for the type-1 `LinkedIn Connection Post` leaf. On the Job Board fixture it opens `Job Board` and selects its LinkedIn-containing leaf. The source text input remains empty throughout. Every branch transition is proven by a changed non-empty option inventory, and every selected value is freshly verified through a matching selected-item chip. The collapsed `Select` activity detail lists every child option observed after opening the branch; zero visible options are never reported as an opened branch. If the branch does not open, the detail explicitly says so and lists the unchanged root options. A discovered leaf that does not commit is reported as such instead of being rewritten as “no matching child.” If an Other/LinkedIn-labelled match opens another child category, Rolebeam follows only newly rendered preferred children and stops after at most four levels. Chrome may briefly show its debugging banner for trusted input. The extension stops for review if no recognized source parent/preferred leaf is offered or the final chip cannot be verified.
 - [ ] **I-07: Reload recovery**
   - Steps: Reload the extension with saved settings/history and reopen the side panel.
   - Expected: The side panel renders without crashing and displays persisted profile/history state.
@@ -163,7 +163,7 @@ npm run check
   - Expected: Fields are processed one at a time from fresh snapshots; detached/replaced fields are not treated as successfully filled.
 - [ ] **G-03: Preserve existing values**
   - Steps: Pre-fill a meaningful value before running the sweep.
-  - Expected: Career Peeler does not overwrite it.
+  - Expected: Rolebeam does not overwrite it.
 - [ ] **G-04: Text verification and fallback**
   - Steps: Test one ordinary field and one field that rejects DOM-level input.
   - Expected: The first value is verified normally; the second uses the bounded page-context browser-editing fallback or is flagged if fallback is unavailable/unsuccessful.

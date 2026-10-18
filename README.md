@@ -1,8 +1,10 @@
-# Career Peeler
+# Rolebeam
+
+*Previously Career Peeler.*
 
 An unofficial Chrome extension for Apple Careers. Upload your resume, rank filtered jobs, choose which ones to apply for, and review your existing submissions.
 
-![UI guide showing labeled capacity, resume setup, job selection, and unified submission filters](docs/images/ui-guide.png)
+![Rolebeam UI guide showing labeled capacity, resume setup, job selection, and unified submission filters](docs/images/ui-guide.png)
 
 *Illustration of the current controls. Roles, counts, and sync time are fictional examples.*
 
@@ -15,7 +17,7 @@ npm install
 npm run build
 ```
 
-In Chrome, open **Extensions → Developer Mode → Load Unpacked** and select `dist/`. Click the Career Peeler extension icon to open its side panel. Sign in to [Apple Careers](https://jobs.apple.com/).
+In Chrome, open **Extensions → Developer Mode → Load Unpacked** and select `dist/`. Click the Rolebeam extension icon to open its side panel. Sign in to [Apple Careers](https://jobs.apple.com/).
 
 ## Start With Setup
 
@@ -91,6 +93,6 @@ Reloading restores saved rankings, your Top setting, search text, and View filte
 
 Resume and job data are saved on your device. AI features send the PDF or relevant resume and job information to OpenAI using your key. See [Privacy](PRIVACY.md) and [Storage Details](docs/storage.md).
 
-After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. Reload open Apple Careers pages too so they use the current page reader. The same installation retains saved data. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`.
+After editing the extension, run `npm run build` and reload it in Chrome's Extensions page. Reload open Apple Careers pages too so they use the current page reader. Updating the same extension installation and ID retains saved data, including data created under the Career Peeler name. A separate installation or Chrome Web Store item has separate local storage. The React side panel is bundled; background, content, and shared library scripts are copied into `dist/`.
 
 For development, install dependencies with `npm ci`, then run `npm test` and `npm run check`. The default test command discovers every top-level test file, runs all suites with Node's test runner, and blocks unmocked fetch requests. Tests use synthetic Apple pages and in-memory IndexedDB; they do not submit or withdraw real applications. See [Testing](docs/testing.md) for fixtures and coverage limits.

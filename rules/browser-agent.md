@@ -84,7 +84,7 @@ the listbox named by the trigger's `aria-controls` before falling back to one tr
 infer open/closed state from option-node visibility because Workday can retain stale option nodes.
 
 Workday text inputs and month/year spinbuttons are controlled FormKit fields: a synthetic DOM value can
-be visible while Workday's internal answer remains empty. Values written by Career Peeler therefore use
+be visible while Workday's internal answer remains empty. Values written by Rolebeam therefore use
 a staged native-setter sequence (clear, prefix, final character) with bubbling/composed `input` events
 inside the page's MAIN JavaScript world, then blur to commit and verify a fresh field read. This
 intentionally reproduces the manual last-character edit without routing ordinary form text through CDP;

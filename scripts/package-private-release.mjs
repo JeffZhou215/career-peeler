@@ -40,7 +40,7 @@ for (const file of files.filter(file => !file.startsWith("assets/") && file !== 
 const digest = value => crypto.createHash("sha256").update(value).digest("hex");
 const outDir = path.join(root, "release");
 fs.mkdirSync(outDir, { recursive: true });
-const stem = `career-peeler-${manifest.version}-private-beta`;
+const stem = `rolebeam-${manifest.version}-private-beta`;
 const zipFile = path.join(outDir, `${stem}.zip`);
 // Always create a new archive: updating an older ZIP could retain deleted files.
 fs.rmSync(zipFile, { force: true });
@@ -54,7 +54,7 @@ try {
   trackedChanges = Boolean(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" }).trim());
 } catch {}
 const checksum = digest(fs.readFileSync(zipFile));
-const materialsDir = path.join(outDir, `career-peeler-${manifest.version}-store-materials`);
+const materialsDir = path.join(outDir, `rolebeam-${manifest.version}-store-materials`);
 fs.mkdirSync(materialsDir, { recursive: true });
 for (const [from, to] of [
   ["PRIVACY.md", "PRIVACY.md"], ["store-assets/PRIVATE_LISTING.md", "PRIVATE_LISTING.md"],

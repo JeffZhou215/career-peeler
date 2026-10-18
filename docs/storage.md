@@ -1,6 +1,6 @@
 # Local Storage
 
-Career Peeler stores data inside its Chrome extension installation.
+Rolebeam stores data inside its Chrome extension installation.
 
 | Data | Location |
 | --- | --- |
@@ -19,6 +19,6 @@ Existing job data migrates from Chrome local storage in one IndexedDB transactio
 
 The `unlimitedStorage` permission covers the local cache and IndexedDB. Interrupted scans retain checkpoints. Database write failures use a separate session status so they remain visible even when the database cannot save progress.
 
-Rebuilding and reloading the same extension installation retains saved data. Uninstalling it removes its local data. Applications and withdrawals already sent to Apple remain on Apple's system.
+Rolebeam retains the existing storage names, including `CareerPeelerJobs`, for compatibility. Rebuilding and reloading the same extension installation and ID retains saved data created under the previous Career Peeler name. Installing a different extension ID creates separate local storage. Uninstalling it removes its local data. Applications and withdrawals already sent to Apple remain on Apple's system.
 
 For what leaves the device and how permissions are used, see [Privacy](../PRIVACY.md).

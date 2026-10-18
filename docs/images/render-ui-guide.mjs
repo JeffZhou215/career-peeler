@@ -1,11 +1,15 @@
 // Documentation illustration with synthetic data; never reads Chrome or Apple.
 // Run from the repository root: node docs/images/render-ui-guide.mjs
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createCanvas, loadImage } from "@napi-rs/canvas";
 
 const width = 1140, height = 1056;
 const colors = { white: "#f5f5f7", muted: "#a6a6b0", blue: "#0a84ff", border: "#38383c", panel: "#101012", surface: "#1c1c1e", subtle: "#2c2c2e" };
 const parts = [];
+const iconSvg = await readFile(new URL("../../icons/icon128.svg", import.meta.url), "utf8");
+const iconViewBox = iconSvg.match(/viewBox="([^"]+)"/)?.[1];
+const iconContents = iconSvg.match(/<svg\b[^>]*>([\s\S]*)<\/svg>/)?.[1];
+if (!iconViewBox || !iconContents) throw new Error("Rolebeam icon must be a complete SVG with a viewBox");
 const escape = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
 function text(x, y, value, size = 13, color = colors.white, bold = false, anchor = "start") {
   parts.push(`<text x="${x}" y="${y + size}" font-size="${size}" fill="${color}" font-weight="${bold ? 600 : 400}" text-anchor="${anchor}">${escape(value)}</text>`);
@@ -40,8 +44,9 @@ function panel(x, step, label, active) {
   text(x + 38, 92, label, 17, "#22242a", true);
   box(x, 132, 344, 836, colors.panel, "none", 16);
   const left = x + 16;
-  text(left, 150, "CAREER PEELER", 10, colors.muted, true);
-  text(left, 171, "Apple Careers", 23, colors.white, true);
+  parts.push(`<svg x="${left}" y="156" width="32" height="32" viewBox="${iconViewBox}">${iconContents}</svg>`);
+  text(left + 44, 150, "ROLEBEAM", 10, colors.muted, true);
+  text(left + 44, 171, "Apple Careers", 23, colors.white, true);
   box(left, 211, 312, 61, colors.subtle, "none", 8);
   for (const [offset, label, value] of [[9, "Submitted", "4 / 50"], [109, "Available Slots", "46"], [208, "Application Queue", "1 Job"]]) {
     text(left + offset, 221, label, 9, colors.muted);
@@ -66,7 +71,7 @@ function roleCard(x, y, title, id, status, score, { selected = false, protectedR
 }
 
 box(0, 0, width, height, "#eef1f6", "none", 0);
-text(24, 22, "Your Apple Careers Workflow", 29, "#16171b", true);
+text(24, 22, "Rolebeam · Your Apple Careers Workflow", 29, "#16171b", true);
 text(24, 61, "Upload a PDF. Choose applications. Manage submissions as one collection.", 16, "#626672");
 
 let x = panel(24, "1", "Prepare Your Resume", "Setup");
@@ -138,7 +143,7 @@ text(x + 208.5, 870, "Review Withdrawal", 12, "#be8984", true, "middle");
 
 text(24, 1001, "Illustration · Fictional Roles, Counts And Sync Time", 12, "#626672");
 text(676, 1001, "Expand roles for details. Use ? for help.", 12, "#626672");
-const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="title description"><title id="title">Career Peeler: Setup, Jobs and Submissions</title><desc id="description">Illustration of labeled capacity metrics, PDF setup, reviewed application selection, and one unified submissions collection with sync status and status filters. All data is fictional.</desc><g font-family="Arial, Helvetica, sans-serif">${parts.join("\n")}</g></svg>`;
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="title description"><title id="title">Rolebeam: Setup, Jobs and Submissions</title><desc id="description">Illustration of labeled capacity metrics, PDF setup, reviewed application selection, and one unified submissions collection with sync status and status filters. All data is fictional.</desc><g font-family="Arial, Helvetica, sans-serif">${parts.join("\n")}</g></svg>`;
 await writeFile(new URL("./ui-guide.svg", import.meta.url), svg);
 const canvas = createCanvas(width * 2, height * 2);
 const rasterSvg = svg.replace(`width="${width}" height="${height}"`, `width="${width * 2}" height="${height * 2}"`);

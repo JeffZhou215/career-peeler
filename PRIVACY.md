@@ -1,10 +1,10 @@
-# Career Peeler Privacy Policy
+# Rolebeam Privacy Policy
 
-Last updated: October 17, 2026
+Last updated: October 18, 2026
 
-Career Peeler is an unofficial Chrome extension for Apple Careers. It helps you compare jobs with your resume, manage a local application queue, assist with applications you authorize, and review active submissions. It is not affiliated with Apple or OpenAI.
+Rolebeam is an unofficial Chrome extension for Apple Careers. It helps you compare jobs with your resume, manage a local application queue, assist with applications you authorize, and review active submissions. It is not affiliated with Apple or OpenAI.
 
-Career Peeler has no developer-operated backend, advertising, analytics, or tracking service. The developer does not receive your resume, application profile, API key, job history, or application answers through the extension.
+Rolebeam has no developer-operated backend, advertising, analytics, or tracking service. The developer does not receive your resume, application profile, API key, job history, or application answers through the extension.
 
 ## Information Stored On Your Device
 
@@ -16,11 +16,11 @@ The extension stores the following inside your Chrome profile:
 
 Data is retained across side-panel reopening and browser/service-worker restarts until replaced, removed through available controls, or the extension is uninstalled. Replacing a resume invalidates matching results when relevant; it does not immediately erase all historical job records. Data from retired integrations on an upgraded installation is not automatically erased.
 
-PDF.js runs locally to extract readable PDF text. Career Peeler does not apply additional encryption to its local data. Someone with access to your unlocked Chrome profile may be able to read it. Do not use a shared Chrome profile for private application data.
+PDF.js runs locally to extract readable PDF text. Rolebeam does not apply additional encryption to its local data. Someone with access to your unlocked Chrome profile may be able to read it. Do not use a shared Chrome profile for private application data.
 
 ## Information Sent To OpenAI
 
-OpenAI is the only AI provider integrated into Career Peeler. You provide your own API key; requests go directly over HTTPS to `api.openai.com`. OpenAI API usage may incur charges on your account.
+OpenAI is the only AI provider integrated into Rolebeam. You provide your own API key; requests go directly over HTTPS to `api.openai.com`. OpenAI API usage may incur charges on your account.
 
 Depending on the feature you enable or request, the extension sends:
 
@@ -51,7 +51,7 @@ Information entered or submitted to Apple is governed by Apple's policies. Remov
 - **`unlimitedStorage`:** retain full descriptions, scores and durable workflow data across large searches without normal extension storage quotas, and reduce IndexedDB eviction risk.
 - **`tabs`:** identify appropriate Apple tabs and manage tabs used by authorized workflows in the initiating window.
 - **`scripting`:** restore packaged Apple content scripts when needed after navigation or extension reload.
-- **`sidePanel`:** display Career Peeler's persistent interface.
+- **`sidePanel`:** display Rolebeam's persistent interface.
 - **`debugger`:** briefly send browser-trusted clicks to the exact Apple withdrawal controls after validating the selected job and confirmation stage. Chrome may show a debugging banner. The extension does not expose a general-purpose remote-debugging interface.
 
 Host access is restricted to `https://jobs.apple.com/*`, `https://www.apple.com/careers/*`, and `https://api.openai.com/*`. There is no all-sites permission. All executable extension code is packaged locally; AI responses are handled as data.
@@ -60,4 +60,4 @@ Host access is restricted to `https://jobs.apple.com/*`, `https://www.apple.com/
 
 You can replace the PDF, edit the profile and saved answers, stop workflows, remove queued jobs, and inspect activity or unresolved outcomes. Stopping cannot undo an action already accepted by Apple. You can inspect Chrome extension storage and IndexedDB using Chrome developer tools. Uninstalling the extension removes its local extension storage, subject to Chrome's behavior; it does not remove information previously sent to Apple or OpenAI.
 
-For product/privacy questions, open an issue at [Career Peeler Support](https://github.com/JeffZhou215/career-peeler/issues). Issues are public: do not include API keys, resumes, private application details, or unredacted logs. The private-release publisher must also provide a working support contact in the Chrome Web Store listing.
+For product/privacy questions, open an issue at [Rolebeam Support](https://github.com/JeffZhou215/career-peeler/issues). Issues are public: do not include API keys, resumes, private application details, or unredacted logs. The private-release publisher must also provide a working support contact in the Chrome Web Store listing.

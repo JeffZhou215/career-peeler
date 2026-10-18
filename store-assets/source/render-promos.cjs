@@ -1,10 +1,75 @@
-const fs=require('node:fs');const path=require('node:path');const sharp=require('sharp');
-const root=path.resolve(__dirname,'../..');const assets=path.join(root,'store-assets');
-const icon=fs.readFileSync(path.join(root,'icons/icon128.png')).toString('base64');
-(async()=>{
- fs.copyFileSync(path.join(root,'icons/icon128.png'),path.join(assets,'store-icon-128x128.png'));
- const small=`<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#101114"/><stop offset="1" stop-color="#24332e"/></linearGradient></defs><rect width="440" height="280" fill="url(#g)"/><image x="28" y="28" width="64" height="64" href="data:image/png;base64,${icon}"/><text x="108" y="57" fill="#f5f6f8" font-family="Arial,sans-serif" font-weight="700" font-size="26">Career Peeler</text><text x="108" y="81" fill="#62dfb1" font-family="Arial,sans-serif" font-size="13" letter-spacing="2">PRIVATE BETA</text><text x="28" y="141" fill="#f5f6f8" font-family="Arial,sans-serif" font-weight="700" font-size="29">Find Your Apple Careers Fit</text><text x="28" y="179" fill="#b7c0c1" font-family="Arial,sans-serif" font-size="16">Resume matching. Reviewed applications.</text><text x="28" y="204" fill="#b7c0c1" font-family="Arial,sans-serif" font-size="16">Your submissions, clearly organized.</text><text x="28" y="252" fill="#7f9090" font-family="Arial,sans-serif" font-size="11">Unofficial · Not affiliated with Apple</text></svg>`;
- const marquee=`<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#101114"/><stop offset="1" stop-color="#24332e"/></linearGradient></defs><rect width="1400" height="560" fill="url(#g)"/><image x="80" y="90" width="110" height="110" href="data:image/png;base64,${icon}"/><text x="220" y="144" fill="#f5f6f8" font-family="Arial,sans-serif" font-weight="700" font-size="48">Career Peeler</text><text x="222" y="183" fill="#62dfb1" font-family="Arial,sans-serif" font-size="18" letter-spacing="4">PRIVATE BETA · APPLE CAREERS</text><text x="80" y="300" fill="#f5f6f8" font-family="Arial,sans-serif" font-weight="700" font-size="60">Find your fit. Review your next move.</text><text x="80" y="368" fill="#b7c0c1" font-family="Arial,sans-serif" font-size="28">Resume-based ranking · Selected applications · Submission management</text><text x="80" y="485" fill="#7f9090" font-family="Arial,sans-serif" font-size="17">Unofficial assistant. Not affiliated with Apple or OpenAI.</text></svg>`;
- for(const [name,svg]of[['promo-small-440x280',small],['promo-marquee-1400x560',marquee]]){fs.writeFileSync(path.join(__dirname,name+'.svg'),svg);await sharp(Buffer.from(svg)).png().toFile(path.join(assets,name+'.png'));}
- console.log('Rendered Apple-only promotional images and copied packaged icon.');
-})().catch(e=>{console.error(e);process.exitCode=1;});
+const fs = require('node:fs');
+const path = require('node:path');
+const sharp = require('sharp');
+
+const root = path.resolve(__dirname, '../..');
+const assets = path.join(root, 'store-assets');
+const icon = fs.readFileSync(path.join(root, 'icons/icon128.png')).toString('base64');
+
+const backdrop = `<defs>
+  <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#141328"/><stop offset="1" stop-color="#25215a"/></linearGradient>
+  <radialGradient id="glow"><stop stop-color="#78edd0" stop-opacity=".11"/><stop offset="1" stop-color="#78edd0" stop-opacity="0"/></radialGradient>
+</defs>`;
+
+const small = `<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280">
+${backdrop}
+<rect width="440" height="280" fill="url(#background)"/>
+<circle cx="421" cy="271" r="200" fill="url(#glow)"/>
+<image x="24" y="23" width="50" height="50" href="data:image/png;base64,${icon}"/>
+<g font-family="Arial,Helvetica,sans-serif">
+  <text x="86" y="51" fill="#fff" font-size="29" font-weight="700" letter-spacing="-.8">Rolebeam</text>
+  <text x="87" y="71" fill="#78edd0" font-size="10" letter-spacing="2">PRIVATE BETA</text>
+  <text x="24" y="128" fill="#fff" font-size="31" font-weight="700" letter-spacing="-.8">Find Your Fit.</text>
+  <text x="24" y="165" fill="#fff" font-size="31" font-weight="700" letter-spacing="-.8">Apply With Confidence.</text>
+  <text x="24" y="202" fill="#d0cfe2" font-size="13">Resume-based ranking. Reviewed applications.</text>
+  <text x="24" y="223" fill="#d0cfe2" font-size="13">Manage your Apple Careers submissions.</text>
+  <text x="24" y="260" fill="#b3b0cd" font-size="10">Unofficial · Not affiliated with Apple or OpenAI</text>
+</g>
+</svg>`;
+
+const marquee = `<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
+${backdrop}
+<rect width="1400" height="560" fill="url(#background)"/>
+<ellipse cx="1245" cy="329" rx="480" ry="380" fill="url(#glow)"/>
+<image x="72" y="62" width="96" height="96" href="data:image/png;base64,${icon}"/>
+<g font-family="Arial,Helvetica,sans-serif">
+  <text x="190" y="112" fill="#fff" font-size="48" font-weight="700" letter-spacing="-1.5">Rolebeam</text>
+  <text x="192" y="145" fill="#78edd0" font-size="14" letter-spacing="3">PRIVATE BETA · APPLE CAREERS</text>
+  <text x="72" y="267" fill="#fff" font-size="62" font-weight="700" letter-spacing="-1.9">Find Your Fit.</text>
+  <text x="72" y="341" fill="#fff" font-size="62" font-weight="700" letter-spacing="-1.9">Apply With Confidence.</text>
+  <text x="75" y="399" fill="#d0cfe2" font-size="22">Resume-Based Ranking · Reviewed Applications</text>
+  <text x="75" y="431" fill="#d0cfe2" font-size="22">Your Apple Careers Submissions, In One Place</text>
+  <text x="75" y="510" fill="#b3b0cd" font-size="15">Unofficial assistant. Not affiliated with Apple or OpenAI.</text>
+  <g transform="translate(967 139)">
+    <rect width="352" height="292" rx="28" fill="#fff" fill-opacity=".04" stroke="#fff" stroke-opacity=".13"/>
+    <text x="26" y="41" fill="#b3b0cd" font-size="12" letter-spacing="2">A CLEARER NEXT STEP</text>
+    <g transform="translate(23 65)">
+      <rect width="306" height="59" rx="13" fill="#fff" fill-opacity=".06"/>
+      <rect x="16" y="18" width="7" height="23" rx="3.5" fill="#78edd0"/>
+      <text x="39" y="36" fill="#fff" font-size="19" font-weight="600">Match Your Resume</text>
+    </g>
+    <g transform="translate(23 136)">
+      <rect width="306" height="59" rx="13" fill="#fff" fill-opacity=".06"/>
+      <rect x="16" y="18" width="7" height="23" rx="3.5" fill="#78edd0" fill-opacity=".72"/>
+      <text x="39" y="36" fill="#fff" font-size="19" font-weight="600">Review Your Roles</text>
+    </g>
+    <g transform="translate(23 207)">
+      <rect width="306" height="59" rx="13" fill="#fff" fill-opacity=".06"/>
+      <rect x="16" y="18" width="7" height="23" rx="3.5" fill="#78edd0" fill-opacity=".45"/>
+      <text x="39" y="36" fill="#fff" font-size="19" font-weight="600">Choose Your Next Move</text>
+    </g>
+  </g>
+</g>
+</svg>`;
+
+(async () => {
+  fs.copyFileSync(path.join(root, 'icons/icon128.png'), path.join(assets, 'store-icon-128x128.png'));
+  for (const [name, svg] of [['promo-small-440x280', small], ['promo-marquee-1400x560', marquee]]) {
+    fs.writeFileSync(path.join(__dirname, `${name}.svg`), `${svg}\n`);
+    await sharp(Buffer.from(svg)).png().toFile(path.join(assets, `${name}.png`));
+  }
+  console.log('Rendered Rolebeam promotional images and copied packaged Letterform icon.');
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

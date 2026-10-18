@@ -1,15 +1,15 @@
 # Private Chrome Release Preparation
 
-Prepared October 17, 2026. Target: **Career Peeler 0.2.2**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
+Prepared October 18, 2026. Target: **Rolebeam 0.2.3**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
 
 ## Prepared Material
 
-- Installable ZIP: `release/career-peeler-0.2.2-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
+- Installable ZIP: `release/rolebeam-0.2.3-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
 - Publisher/listing worksheet: `store-assets/PRIVATE_LISTING.md`.
 - Privacy-policy source: `PRIVACY.md`; host the current document at a public HTTPS URL before store submission.
-- Current icon, promotional images and sanitized source-rendered UI screenshots: `store-assets/`.
+- Approved Rolebeam Letterform icon, promotional images and sanitized source-rendered UI screenshots: `store-assets/`.
 - Asset provenance/reproduction: `store-assets/source/README.md`.
-- Validation results/package digest: use the release manifest/checksum generated with the final ZIP. Do not reuse prior 0.1.0 packages.
+- Validation results/package digest: use the release manifest/checksum generated with the final ZIP. Do not reuse earlier Career Peeler packages.
 
 The ZIP must contain packaged runtime files only. Repository history, `node_modules`, tests, logs, screenshots, resume PDFs, user exports, keys, tester accounts and developer attachments must not be shipped. `PRIVACY.md` is intentionally bundled by the production build.
 
@@ -21,17 +21,21 @@ npm run release:private
 
 This runs the full offline automated suite, runtime syntax checks and production build, then packages the validated `dist/` using `scripts/package-private-release.mjs`. It writes:
 
-- `release/career-peeler-0.2.2-private-beta.zip`
-- `release/career-peeler-0.2.2-private-beta.zip.sha256`
-- `release/career-peeler-0.2.2-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
-- `release/career-peeler-0.2.2-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
+- `release/rolebeam-0.2.3-private-beta.zip`
+- `release/rolebeam-0.2.3-private-beta.zip.sha256`
+- `release/rolebeam-0.2.3-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
+- `release/rolebeam-0.2.3-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
 
 The runtime allowlist excludes repository/developer material. Review the JSON and checksum; a dirty source flag means the package includes changes beyond the recorded base commit, so retain that exact reviewable source state. Running this command does not upload, invite testers or publish.
+
+## Branding And Data Continuity
+
+Rolebeam replaces the Career Peeler display name and assets. The Letterform mark uses a white R with a mint accent (`#78edd0`) on deep indigo (`#25215a`). The repository URL and internal storage/API identifiers retain their existing names. Updating the same extension installation and ID preserves saved data; a separately installed item with another ID has separate local storage.
 
 ## Before Upload
 
 - [ ] Full test suite, runtime syntax checks and production build pass on the exact package source.
-- [ ] Inspect ZIP entry list and manifest: version 0.2.2, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
+- [ ] Inspect ZIP entry list and manifest: Rolebeam name and Letterform icon, version 0.2.3, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
 - [ ] Verify the package digest and retain the source commit reference.
 - [ ] Load the ZIP's extracted files in a **new separate Chrome profile**. Do not copy a developer Chrome profile or IndexedDB data.
 - [ ] Confirm fresh install opens Jobs/Submissions/Setup, has no PDF/key/history and leaves application consent disabled.

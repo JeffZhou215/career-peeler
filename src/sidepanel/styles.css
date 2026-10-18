@@ -1588,6 +1588,9 @@ body { min-width: 300px; min-height: 0; overflow: hidden; }
 .ios-chrome { flex-shrink: 0; padding: 16px 16px 10px; border-bottom: 1px solid var(--color-border); }
 .ios-chrome h1 { display: flex; align-items: center; gap: 6px; font-size: 25px; letter-spacing: -.035em; margin: 2px 0 12px; }
 .ios-chrome .eyebrow { font-size: 10px; margin: 0; }
+.ios-chrome .extension-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.ios-chrome .extension-brand-icon { width: 32px; height: 32px; flex: 0 0 auto; }
+.ios-chrome .extension-brand h1 { margin-bottom: 0; }
 .ios-chrome .capacity-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: start; gap: 8px; padding: 8px 10px; font-size: 11px; }
 .capacity-metric { display: grid; gap: 3px; min-width: 0; }
 .capacity-metric-label { min-height: 2.4em; color: var(--color-text-secondary); font-size: 10px; line-height: 1.2; }

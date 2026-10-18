@@ -1,19 +1,19 @@
 # Chrome Web Store Private Release Worksheet
 
-Prepared October 17, 2026 for the Apple-only **Career Peeler 0.2.2** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
+Prepared October 18, 2026 for the Apple-only **Rolebeam 0.2.3** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
 
 ## Release Target
 
 | Field | Prepared Value |
 | --- | --- |
-| Name | Career Peeler |
-| Version | 0.2.2 |
+| Name | Rolebeam |
+| Version | 0.2.3 |
 | Visibility | Private — Trusted Testers |
 | Audience | Explicitly invited Google accounts / publisher-owned tester group |
 | Category | Productivity |
 | Language | English (United States) |
 | Runtime | Chrome Manifest V3 side-panel extension; Apple Careers only |
-| Package | `release/career-peeler-0.2.2-private-beta.zip` |
+| Package | `release/rolebeam-0.2.3-private-beta.zip` |
 | Support | https://github.com/JeffZhou215/career-peeler/issues |
 | Hosted Privacy Policy | `[REQUIRED: publicly accessible HTTPS URL rendering current PRIVACY.md]` |
 
@@ -38,7 +38,7 @@ Never enter tester emails, API keys, real resumes or Apple credentials in this t
 - Setup's PDF supports matching; Apple applications use the resume saved in the tester's Apple account.
 - Apple live DOM behavior, Chrome debugger/native click ordering and eventual server updates are not fully established by the offline tests. No real submissions or withdrawals are required for reviewer testing.
 - The OpenAI key and PDF are retained locally without additional application-level encryption. Disclose that accurately.
-- Old 0.1.0 multi-platform ZIPs and older screenshots are obsolete. Upload only the freshly validated 0.2.2 package/assets.
+- Earlier Career Peeler ZIPs and screenshots are superseded by this rebrand. Upload only the freshly validated Rolebeam 0.2.3 package/assets.
 
 ## Listing Copy
 
@@ -50,7 +50,7 @@ Resume-based Apple Careers ranking, reviewed applications, and active-submission
 
 PRIVATE BETA FOR INVITED TESTERS.
 
-Career Peeler is an unofficial Apple Careers assistant that helps you compare jobs with your resume and manage applications from a persistent Chrome side panel.
+Rolebeam is an unofficial Apple Careers assistant that helps you compare jobs with your resume and manage applications from a persistent Chrome side panel.
 
 Jobs
 
@@ -73,13 +73,13 @@ Control And Recovery
 • Applications use your own explicit saved personal answers and Apple's saved resume. Missing or conflicting answers stop for manual review.
 • Unknown application or withdrawal outcomes require reconciliation rather than automatic replay.
 • Activity links identify roles that need manual review.
-• Career Peeler uses your own OpenAI API key. API requests can incur charges.
+• Rolebeam uses your own OpenAI API key. API requests can incur charges.
 
-DATA DISCLOSURE: Your PDF, parsed resume, profile, API key, job caches and workflow records are stored locally in your Chrome profile. Enabled/requested AI features send the relevant PDF, resume/profile evidence, job text or required-question context directly to OpenAI. Apple receives authorized application interactions. Career Peeler has no developer-operated backend, analytics or advertising service. Read the privacy policy before use.
+DATA DISCLOSURE: Your PDF, parsed resume, profile, API key, job caches and workflow records are stored locally in your Chrome profile. Enabled/requested AI features send the relevant PDF, resume/profile evidence, job text or required-question context directly to OpenAI. Apple receives authorized application interactions. Rolebeam has no developer-operated backend, analytics or advertising service. Read the privacy policy before use.
 
 PERSONAL ANSWERS: Save your own required application answers in Setup. Missing or conflicting answers stop the role for manual review. Criminal-history and scoped questions are bound to exact saved wording; dates are never replaced by the nearest offered date. Ranking and synchronization can be used without submitting applications.
 
-Career Peeler is not affiliated with, endorsed by, or sponsored by Apple or OpenAI. Matching scores are estimates, not hiring predictions. Apple can change its website, eligibility rules and submission limits.
+Rolebeam is not affiliated with, endorsed by, or sponsored by Apple or OpenAI. Matching scores are estimates, not hiring predictions. Apple can change its website, eligibility rules and submission limits.
 
 ## Privacy Practices
 
@@ -115,7 +115,7 @@ There is no `<all_urls>` permission, generic autofill, CLI, TikTok, ByteDance or
 Map these actual data uses to the labels currently shown by the store dashboard. Do not omit a category solely because it remains local.
 
 - Personally identifiable information: contact/location details and resume identity information.
-- Authentication information: the user-provided OpenAI API key. Apple passwords are not requested/stored by Career Peeler.
+- Authentication information: the user-provided OpenAI API key. Apple passwords are not requested/stored by Rolebeam.
 - Health information: saved disability answer and any health information the user includes in their resume/profile.
 - Website content: Apple descriptions, form labels/options, inventory and validation/status text.
 - Web browsing activity: Apple job/application URLs and interaction history for these features.
@@ -133,7 +133,7 @@ Map these actual data uses to the labels currently shown by the store dashboard.
 
 ## Non-Destructive Reviewer Instructions
 
-1. Install the private item with an invited Google account and open the Career Peeler side panel.
+1. Install the private item with an invited Google account and open the Rolebeam side panel.
 2. In Jobs, leave **After Ranking → Review Then Apply**. Do not authorize strong-match submission.
 3. Inspect Jobs, Submissions, Setup and Activity without requiring credentials. Use the provided demo-data screenshots only as illustrative listing material; they are not live accounts.
 4. Optional AI review requires your own OpenAI API key and a PDF you are permitted to send to OpenAI. Review the extracted profile, experience setting and all required answers. Never use a supplied/shared private key.
@@ -149,7 +149,7 @@ No shared Apple credentials or private API keys are provided. The automated suit
 
 | Asset | Use |
 | --- | --- |
-| `store-icon-128x128.png` | Exact current packaged brand icon. |
+| `store-icon-128x128.png` | Approved Rolebeam Letterform icon, identical to the packaged 128px icon. |
 | `promo-small-440x280.png` | Apple-only small promotional image. |
 | `promo-marquee-1400x560.png` | Optional Apple-only marquee. |
 | `screenshot-1-overview-1280x800.png` | Current React Jobs UI with sanitized offline demo data. |

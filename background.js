@@ -274,7 +274,7 @@ const scanStateReady = CareerPeelerJobStore
       await saveScanState();
     } catch (error) {
       console.error(
-        "[Career Peeler] Could not sanitize the legacy scan-status record:",
+        "[Rolebeam] Could not sanitize the legacy scan-status record:",
         error?.message || error
       );
     }

@@ -1,4 +1,4 @@
-# Career Peeler Architecture
+# Rolebeam Architecture
 
 Apple Careers is the only supported employer. The React/Vite side panel has Jobs, Submissions, and Setup tabs. Keep workflow logic in the background/content layer, and UI controls in src/sidepanel.
 
