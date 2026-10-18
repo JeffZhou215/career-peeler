@@ -2613,6 +2613,8 @@ async function clickAction(pattern, stepName, steps, options = {}) {
   if (!pattern.test(getActionLabel(element))) {
     throw Object.assign(new Error("The application action changed before it could be clicked. Review this step."), { code: "workflow_action_changed" });
   }
+  await options.assertSavedAnswers?.();
+  options.assertIdentity?.();
   element.click();
   steps.push({
     step: stepName,
@@ -2680,7 +2682,10 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
   const existingValidation = getVisibleValidationErrors({ submission: true });
   if (existingValidation.length) return blockedSubmissionResult(options.submissionOutcome || "not_attempted", "blocked_by_validation",
     `Submit was not clicked because validation is already visible: ${existingValidation.join("; ")}`);
+  await options.assertSavedAnswers?.();
   await options.assertOwnership?.("submit");
+  options.assertIdentity?.();
+  await options.assertSavedAnswers?.();
   options.assertIdentity?.();
   const postPermitBlock = checkSubmissionPermission(options);
   if (postPermitBlock) return postPermitBlock;
@@ -2893,6 +2898,7 @@ async function clickPrimaryAction(siteConfig, steps, options = {}) {
         recordMissing: false,
         assertIdentity: options.assertIdentity,
         assertOwnership: options.assertOwnership,
+        assertSavedAnswers: options.assertSavedAnswers,
         shouldStop: () => {
           alreadyAppliedDuringContinueSearch = getAlreadyAppliedSignal();
           return Boolean(alreadyAppliedDuringContinueSearch);
@@ -2962,6 +2968,8 @@ async function clickPrimaryAction(siteConfig, steps, options = {}) {
   if ((siteConfig?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primaryButton))) {
     return clickAndDetectSubmission(primaryButton, steps, options);
   }
+  await options.assertSavedAnswers?.();
+  options.assertIdentity?.();
   primaryButton.click();
   steps.push({
     step: "Continue application step",
@@ -3019,7 +3027,7 @@ function getSelectedWorkAnswer(container) {
     const option = select.options?.[select.selectedIndex];
     if (option && !isPlaceholderOption(option)) selected.push(`${option.textContent || ""} ${option.value || ""}`);
   }
-  for (const option of Array.from(container.querySelectorAll("input[type='radio'], [role='radio'], button, [role='button']"))) {
+  for (const option of Array.from(container.querySelectorAll("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox'], button, [role='button']"))) {
     if (isAnswerOptionSelected(option)) selected.push(getAnswerOptionLabel(option));
   }
   for (const control of Array.from(container.querySelectorAll("[role='combobox'], [aria-haspopup='listbox'], .ud__select__selector"))) {
@@ -3030,14 +3038,33 @@ function getSelectedWorkAnswer(container) {
   return answers.length ? answers.every(value => value === answers[0]) ? answers[0] : "conflict" : null;
 }
 
+function getSavedApplicationQuestionText(container) {
+  const declared = container?.getAttribute?.("data-form-field-i18n-name");
+  if (declared) return normalizeText(declared);
+  const legend = container?.querySelector?.("legend");
+  if (legend?.tagName?.toLowerCase() === "legend" && legend.innerText) return normalizeText(legend.innerText);
+  // Preserve question wording for exact saved answers, excluding rendered answer labels.
+  const labels = new Set([
+    ...getAgentOptionControls(container).map(getAnswerOptionLabel),
+    ...Array.from(container?.querySelectorAll?.("select") || []).flatMap(select => Array.from(select.options || []).map(option => option.textContent || option.value || ""))
+  ].map(normalizeText));
+  const lines = String(container?.innerText || "").split(/\n/).map(normalizeText).filter(Boolean);
+  while (lines.length > 1 && (labels.has(lines[lines.length - 1]) || /^(?:yes|no|edit)$/i.test(lines[lines.length - 1]))) lines.pop();
+  return normalizeText(lines.join(" "));
+}
+
 async function answerSavedWorkQuestion(container, steps, applicationAnswers = {}, options = {}) {
-  const policy = CareerPeelerApplicationSafety.workQuestionPolicy(container.innerText, applicationAnswers);
-  const step = policy?.policyKey === "sponsorship" ? "Answer visa sponsorship" : "Answer work authorization";
+  const questionText = getSavedApplicationQuestionText(container);
+  const policy = CareerPeelerApplicationSafety.applicationQuestionPolicy(questionText, applicationAnswers);
+  const step = `Saved application answer: ${questionText}`;
   const fail = reason => {
     steps.push({ step, status: "blocked", label: reason });
     return { answered: false, unresolvedReason: reason };
   };
-  if (!policy || policy.error) return fail(policy?.error || "The work-eligibility question could not be identified. Review it manually.");
+  if (!policy || policy.error) return fail(policy?.error || "The personal question could not be identified. Review it manually.");
+  if (!["Yes", "No"].includes(policy.desiredAnswer)) return fail("This question needs its explicit saved value verified against Apple. Review it manually.");
+  const mayWrite = () => getSavedApplicationQuestionText(container) === questionText &&
+    (!getSelectedWorkAnswer(container) || getSelectedWorkAnswer(container) === policy.desiredAnswer);
   const current = getSelectedWorkAnswer(container);
   if (current && current !== policy.desiredAnswer) {
     return fail("Apple's existing answer conflicts with the saved setting or cannot be verified. Review it manually; it was not changed.");
@@ -3053,6 +3080,7 @@ async function answerSavedWorkQuestion(container, steps, applicationAnswers = {}
     if (!option) return fail("Apple did not offer the explicit saved answer. Review this question manually.");
     await options.assertOwnership?.();
     options.assertIdentity?.();
+    if (!mayWrite()) return fail("Apple changed the personal question or its existing answer. Review it manually; it was not changed.");
     setNativeFormValue(select, option.value);
   } else {
     let option = getAgentOptionControls(container).find(element => matches(getAnswerOptionLabel(element)));
@@ -3066,13 +3094,176 @@ async function answerSavedWorkQuestion(container, steps, applicationAnswers = {}
     if (!option || option.isConnected === false || container.isConnected === false) return fail("Apple's answer control changed or did not offer the saved answer. Review it manually.");
     await options.assertOwnership?.();
     options.assertIdentity?.();
+    if (!mayWrite()) return fail("Apple changed the personal question or its existing answer. Review it manually; it was not changed.");
     option.scrollIntoView({ block: "center" });
     option.click();
   }
-  const verified = await waitForCondition(() => container.isConnected !== false && getSelectedWorkAnswer(container) === policy.desiredAnswer);
+  const verified = await waitForCondition(() => container.isConnected !== false &&
+    getSavedApplicationQuestionText(container) === questionText && getSelectedWorkAnswer(container) === policy.desiredAnswer);
   if (!verified) return fail("The explicit saved answer could not be verified on Apple. Review it manually.");
   steps.push({ step, status: "selected", label: "Explicit saved answer selected and verified." });
   return { answered: true };
+}
+
+function isSavedPersonalQuestion(text, profile = {}) {
+  return Boolean(CareerPeelerApplicationSafety.applicationQuestionPolicy(text, profile)) ||
+    /\b(?:gender|race|ethnicity|veteran|disabilit(?:y|ies))\b/i.test(text);
+}
+
+function readSavedPersonalSelection(element, container, kind) {
+  if (kind === "select") {
+    return Array.from(element.selectedOptions || element.options || [])
+      .filter(option => option.selected || element.options?.[element.selectedIndex] === option)
+      .filter(option => !isPlaceholderOption(option))
+      .map(option => normalizeText(option.textContent || option.value || ""));
+  }
+  if (kind === "open_text") return String(element.value || "").trim() ? [normalizeText(element.value)] : [];
+  if (kind === "custom_dropdown") {
+    const value = getSelectedDropdownText(container);
+    return value && !/^(?:select|choose)(?: an?)?(?: option| answer| date)?$/i.test(value) ? [value] : [];
+  }
+  return getAgentOptionControls(container).filter(isAnswerOptionSelected).map(getAnswerOptionLabel).map(normalizeText);
+}
+
+function savedAnswersAgree(selected, expected, policy) {
+  if (selected.length !== expected.length || !selected.length) return false;
+  if (policy && ["Yes", "No"].includes(policy.desiredAnswer)) {
+    return selected.length === 1 && (policy.desiredAnswer === "Yes" ? isYesAnswerText(selected[0]) : isNoAnswerText(selected[0]));
+  }
+  return selected.every(value => expected.some(answer => normalizeText(answer).toLowerCase() === value.toLowerCase()));
+}
+
+async function verifySavedApplicationAnswers(steps, options = {}, { readOnlyReview = false } = {}) {
+  const fail = reason => {
+    steps.push({ step: "Verify saved application answers", status: "blocked", label: reason });
+    return { unresolvedReason: reason };
+  };
+  const records = [];
+  const groups = new Set();
+  for (const element of getRequiredFieldAuditControls()) {
+    const kind = getRequiredFieldAuditKind(element);
+    const container = getAgentFieldContainer(element);
+    const label = getSavedApplicationQuestionText(container) || getApplicationControlQuestionLabel(element);
+    if (!isSavedPersonalQuestion(label, options.applicationAnswers) || !shouldAgentAnswerRequiredControl(element, label, { includeUnmarked: true })) continue;
+    if (groups.has(container)) continue;
+    groups.add(container);
+    records.push({ element, container, kind, label });
+  }
+  if (readOnlyReview) {
+    // Use the existing semantic container reader, not guessed Apple review ids. A recognizable
+    // question with no associated single answer is blocked instead of inferred from the profile.
+    const reviewContainers = Array.from(document.querySelectorAll("fieldset, section, div, li"))
+      .filter(element => isElementVisible(element))
+      .map(element => {
+        const lines = String(element.innerText || "").split(/\n/).map(normalizeText).filter(Boolean);
+        const questions = lines.filter(line => isSavedPersonalQuestion(line, options.applicationAnswers) &&
+          !isOptionalApplicationQuestion(element, line) &&
+          (!isStartDateQuestion(line) || /\b(?:earliest|available|availability)\b|when can you start|\?/i.test(line)));
+        return { element, lines, questions };
+      })
+      .filter(record => record.questions.length > 0)
+      .filter(record => !records.some(editable => editable.container === record.element ||
+        editable.container.contains?.(record.element) || record.element.contains?.(editable.element)));
+    const candidates = reviewContainers.filter(record => record.questions.length === 1 && record.lines.join(" ").length <= 1000);
+    const rows = candidates.filter(record => !candidates.some(other => other.element !== record.element && record.element.contains?.(other.element)));
+    // A section can render several question/answer pairs in p/span children. Dropping that
+    // section because it has more than one question would bypass every saved-answer check.
+    // Require all recognized occurrences to belong to a verifiable row; ancestor containers
+    // with individually readable child rows are covered without becoming duplicate records.
+    for (const container of reviewContainers) {
+      const covered = rows.filter(row => row.element === container.element || container.element.contains?.(row.element))
+        .flatMap(row => row.questions);
+      for (const question of container.questions) {
+        const match = covered.indexOf(question);
+        if (match === -1) return fail("Apple's review contains personal questions that cannot be associated with a single verified answer. Review this step manually; Submit was not clicked.");
+        covered.splice(match, 1);
+      }
+    }
+    for (const record of rows) {
+      const label = record.questions[0];
+      const index = record.lines.indexOf(label);
+      const selected = record.lines.slice(index + 1).filter(line => !/^(?:edit|change|modify)$/i.test(line));
+      records.push({ element: record.element, container: record.element, kind: "review", label, selected });
+    }
+  }
+  const labelIsCurrent = record => record.kind === "review" ||
+    (getSavedApplicationQuestionText(record.container) || getApplicationControlQuestionLabel(record.element)) === record.label;
+  for (const record of records) {
+    options.assertIdentity?.();
+    const { element, container, kind, label } = record;
+    const reviewText = kind === "review" ? String(element.innerText || "") : null;
+    const policy = CareerPeelerApplicationSafety.applicationQuestionPolicy(label, options.applicationAnswers || {});
+    if (policy?.error) return fail(policy.error);
+    let selected = record.selected || readSavedPersonalSelection(element, container, kind);
+    let expected;
+    if (policy && ["Yes", "No"].includes(policy.desiredAnswer)) {
+      expected = [policy.desiredAnswer];
+    } else if (policy?.policyKey === "earliest_start_date" && kind === "open_text") {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(policy.desiredAnswer)) return fail("Apple's date field needs an explicit saved calendar date. Review it manually.");
+      expected = [policy.desiredAnswer];
+    } else {
+      let customOptions = [];
+      if (kind === "custom_dropdown" && !selected.length) customOptions = await openAndReadAgentDropdownOptions(element, options);
+      record.customOptions = customOptions;
+      const offered = kind === "select" ? Array.from(element.options || []).filter(option => !isPlaceholderOption(option)).map(option => normalizeText(option.textContent || option.value || ""))
+        : kind === "option_group" ? getAgentOptionControls(container).map(getAnswerOptionLabel)
+          : customOptions.length ? customOptions.map(getAnswerOptionLabel) : selected;
+      const decision = await requestApplicationQuestionDecision({ kind: kind === "review" ? "select" : kind, label, options: offered }, offered);
+      expected = decision?.action === "choose_options" && Array.isArray(decision.value) ? decision.value
+        : ["choose_option", "answer_text"].includes(decision?.action) ? [decision.value] : [];
+      if (!expected.length) return fail("No explicit saved answer safely maps to this personal question. Review it manually; no answer was invented.");
+    }
+    options.assertIdentity?.();
+    if (element.isConnected === false || container.isConnected === false || !labelIsCurrent(record) ||
+        (kind === "review" && String(element.innerText || "") !== reviewText)) return fail("Apple changed the personal-answer row during verification. Review it manually.");
+    selected = kind === "review" ? selected : readSavedPersonalSelection(element, container, kind);
+    record.verifiedSelection = selected;
+    record.reviewText = reviewText;
+    if (selected.length) {
+      if (!savedAnswersAgree(selected, expected, policy)) return fail("Apple's existing personal answer conflicts with the saved answer or cannot be verified. Review it manually; it was not changed.");
+      continue;
+    }
+    if (kind === "review") return fail("Apple's read-only review does not expose a verifiable answer for this personal question. Review it manually.");
+    const mayWrite = () => labelIsCurrent(record) && element.isConnected !== false && container.isConnected !== false &&
+      readSavedPersonalSelection(element, container, kind).every(value => policy && ["Yes", "No"].includes(policy.desiredAnswer)
+        ? (policy.desiredAnswer === "Yes" ? isYesAnswerText(value) : isNoAnswerText(value))
+        : expected.some(answer => normalizeText(answer).toLowerCase() === value.toLowerCase()));
+    if (kind === "select") {
+      await options.assertOwnership?.(); options.assertIdentity?.();
+      if (!mayWrite()) return fail("Apple changed the personal question or its existing answer. Review it manually; it was not changed.");
+      if (!setNativeSelectValues(element, expected)) return fail("Apple did not offer the explicit saved personal answer. Review it manually.");
+    } else if (kind === "open_text") {
+      if (element.readOnly) return fail("The personal answer is read-only and could not be verified. Review it manually.");
+      await options.assertOwnership?.(); options.assertIdentity?.();
+      if (!mayWrite()) return fail("Apple changed the personal question or its existing answer. Review it manually; it was not changed.");
+      setNativeFormValue(element, expected[0]);
+    } else if (policy && ["Yes", "No"].includes(policy.desiredAnswer)) {
+      const result = await answerSavedWorkQuestion(container, steps, options.applicationAnswers || {}, options);
+      if (result.unresolvedReason) return fail(result.unresolvedReason);
+    } else if (["option_group", "custom_dropdown"].includes(kind)) {
+      const offered = kind === "option_group" ? getAgentOptionControls(container) : record.customOptions || [];
+      const matched = expected.map(value => offered.find(option => getAnswerOptionLabel(option).toLowerCase() === normalizeText(value).toLowerCase()));
+      if (matched.some(option => !option) || (kind === "custom_dropdown" && matched.length !== 1)) return fail("Apple did not expose the explicit saved answer. Review it manually.");
+      for (const option of matched) {
+        await options.assertOwnership?.(); options.assertIdentity?.();
+        if (option.isConnected === false || !mayWrite()) return fail("Apple replaced or changed the personal-answer control. Review it manually.");
+        option.click();
+      }
+    } else return fail("Apple's personal-answer control could not be verified. Review it manually.");
+    const verified = await waitForCondition(() => element.isConnected !== false && container.isConnected !== false &&
+      savedAnswersAgree(readSavedPersonalSelection(element, container, kind), expected, policy));
+    if (!verified) return fail("The saved personal answer did not remain in Apple's form. Review it manually.");
+    record.verifiedSelection = readSavedPersonalSelection(element, container, kind);
+  }
+  // An earlier field may have changed while a later saved-answer lookup was awaited.
+  for (const record of records) {
+    if (record.element.isConnected === false || record.container.isConnected === false || !labelIsCurrent(record) ||
+        (record.kind === "review" ? String(record.element.innerText || "") !== record.reviewText :
+          JSON.stringify(readSavedPersonalSelection(record.element, record.container, record.kind)) !== JSON.stringify(record.verifiedSelection))) {
+      return fail("Apple changed a verified personal answer before navigation. Review it manually.");
+    }
+  }
+  return { unresolvedReason: null };
 }
 
 function isYesAnswerText(text) {
@@ -3268,7 +3459,8 @@ function getQuestionContainers() {
         isVisaSponsorshipQuestion(text) ||
         isAgeEligibilityQuestion(text) ||
         isPriorAppleEmploymentQuestion(text) ||
-        isPriorAppleContractorQuestion(text);
+        isPriorAppleContractorQuestion(text) ||
+        isCriminalHistoryQuestion(text);
       const answerControls = Array.from(
         element.querySelectorAll(
           [
@@ -3515,24 +3707,8 @@ async function answerQuestionnaire(steps, applicationAnswers = {}, options = {})
   }
 
   const questionRules = [
-    {
-      matcher: (question) =>
-        isWorkAuthorizationQuestion(question),
-      savedWorkAnswer: true,
-      stepName: "Answer work authorization"
-    },
-    { matcher: isVisaSponsorshipQuestion, savedWorkAnswer: true, stepName: "Answer visa sponsorship" },
-    { matcher: isAgeEligibilityQuestion, answer: answerYesQuestion, stepName: "Answer age eligibility" },
-    {
-      matcher: isPriorAppleEmploymentQuestion,
-      answer: answerNoQuestion,
-      stepName: "Answer prior Apple employment"
-    },
-    {
-      matcher: isPriorAppleContractorQuestion,
-      answer: answerNoQuestion,
-      stepName: "Answer prior Apple contractor status"
-    }
+    isWorkAuthorizationQuestion, isVisaSponsorshipQuestion, isAgeEligibilityQuestion,
+    isPriorAppleEmploymentQuestion, isPriorAppleContractorQuestion, isCriminalHistoryQuestion
   ];
 
   let answeredCount = 0;
@@ -3550,7 +3726,7 @@ async function answerQuestionnaire(steps, applicationAnswers = {}, options = {})
       };
     }
 
-    const container = getQuestionContainers().find((candidate) => rule.matcher(normalizeText(candidate.innerText || "")));
+    const container = getQuestionContainers().find((candidate) => rule(getSavedApplicationQuestionText(candidate)));
 
     if (!container) {
       continue;
@@ -3559,14 +3735,10 @@ async function answerQuestionnaire(steps, applicationAnswers = {}, options = {})
     requiredCount += 1;
 
     options.assertIdentity?.();
-    if (rule.savedWorkAnswer) {
-      const result = await answerSavedWorkQuestion(container, steps, applicationAnswers, options);
-      if (result.unresolvedReason) return { answeredAny: answeredCount > 0, requiredCount, answeredCount,
-        alreadyAppliedSignal: null, unresolvedReason: result.unresolvedReason };
-      if (result.answered) answeredCount += 1;
-    } else if (await rule.answer(container, rule.stepName, steps, options)) {
-      answeredCount += 1;
-    }
+    const result = await answerSavedWorkQuestion(container, steps, applicationAnswers, options);
+    if (result.unresolvedReason) return { answeredAny: answeredCount > 0, requiredCount, answeredCount,
+      alreadyAppliedSignal: null, unresolvedReason: result.unresolvedReason };
+    if (result.answered) answeredCount += 1;
   }
 
   return {
@@ -4455,6 +4627,14 @@ async function runApplicationWorkflowStep(options = {}) {
   const bound = { ...options, steps };
   bound.assertIdentity = () => assertAppleWorkflowIdentity(bound);
   if (bound.workflowSessionId) bound.assertOwnership = action => assertAppleWorkflowOwnership(bound, action);
+  bound.assertSavedAnswers = async () => {
+    const config = getSiteConfig();
+    const primary = findPrimaryActionButton(config);
+    const readOnlyReview = Boolean(primary) && (config?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primary)) &&
+      !hasVisibleApplicationQuestionControls();
+    const audit = await verifySavedApplicationAnswers(steps, bound, { readOnlyReview });
+    if (audit.unresolvedReason) throw Object.assign(new Error(audit.unresolvedReason), { code: "workflow_saved_answer_unresolved" });
+  };
   bound.assertObservationIdentity = () => assertAppleWorkflowIdentity({ ...bound,
     allowConfirmation: Boolean(bound.allowConfirmation || steps.some(step => step.step === "Submit application" && step.status === "clicked")) }, true);
   try {
@@ -4721,6 +4901,9 @@ async function runBoundApplicationWorkflowStep(options) {
   }
 
   options.assertIdentity();
+  const savedAnswerAudit = await verifySavedApplicationAnswers(steps, options, { readOnlyReview: isReviewAndSubmitStep });
+  if (savedAnswerAudit.unresolvedReason) return buildStepResult({ clicked: false, done: false, pausedForReview: true,
+    errorType: "saved_application_answer_unresolved", steps, summary: savedAnswerAudit.unresolvedReason });
   const primaryActionResult = await clickPrimaryAction(siteConfig, steps, options);
 
   if (

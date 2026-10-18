@@ -22,7 +22,6 @@ const {
   extractEmployerFromPreviousEmploymentQuestion,
   resolvePreviousEmployerQuestionFromProfile,
   getApplicationQuestionPolicy,
-  getNearestFutureDateOption,
   findPolicyOption,
   buildApplicationQuestionPrompt,
   resolveApplicationQuestion,
@@ -225,22 +224,11 @@ test("application question policy uses saved eligibility answers and leaves sens
   assert.equal(getApplicationQuestionPolicy("Do you require visa sponsorship?", [], profile).desiredAnswer, "Yes");
   assert.match(getApplicationQuestionPolicy("Are you authorized to work?").error, /explicit/);
   assert.match(getApplicationQuestionPolicy("Current right-to-work status", [], profile).error, /manually/);
-  assert.equal(getApplicationQuestionPolicy("Have you ever been convicted of a felony?").desiredAnswer, "No");
-  for (const text of ["Race / Ethnicity", "Protected veteran status", "Disability status", "Do you consent to a background check?"]) {
+  assert.match(getApplicationQuestionPolicy("Have you ever been convicted of a felony?").error, /explicit/);
+  for (const text of ["Race / Ethnicity", "Protected veteran status", "Disability status"]) {
     assert.equal(getApplicationQuestionPolicy(text), null);
   }
-});
-
-test("nearest-future-date policy chooses the earliest real offered date and prefers an immediate option", () => {
-  const now = new Date("2026-08-17T12:00:00Z");
-  assert.equal(
-    getNearestFutureDateOption(["Select a date", "August 17, 2026", "September 15, 2026", "August 20, 2026", "August 1, 2026"], now),
-    "August 20, 2026"
-  );
-  assert.equal(
-    getNearestFutureDateOption(["September 15, 2026", "As soon as possible", "August 20, 2026"], now),
-    "As soon as possible"
-  );
+  assert.match(getApplicationQuestionPolicy("Do you consent to a background check?").error, /exact question|manually/i);
 });
 
 test("saved EEO answers resolve to exact options actually offered by the page", () => {
@@ -387,7 +375,7 @@ test("previous-employer questions extract a named employer without matching gene
 
 
 
-asyncTest("resolveApplicationQuestion answers previous-employer Yes only when candidateProfile lists that employer", async () => {
+asyncTest("resolveApplicationQuestion does not infer previous employment even when the PDF lists that employer", async () => {
   resetOpenAiCallCount();
   let agentStartCount = 0;
   const result = await resolveApplicationQuestion({
@@ -401,24 +389,21 @@ asyncTest("resolveApplicationQuestion answers previous-employer Yes only when ca
     },
     onLlmStart: async () => { agentStartCount += 1; }
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.data.action, "choose_option");
-  assert.equal(result.data.value, "Yes");
-  assert.equal(result.data.source, "candidate_profile");
+  assert.equal(result.ok, false);
+  assert.match(result.error, /explicit|manually/i);
   assert.equal(agentStartCount, 0);
   assert.equal(getOpenAiCallCount(), 0);
 });
 
-asyncTest("resolveApplicationQuestion answers previous-employer No when a populated candidateProfile has no match", async () => {
+asyncTest("resolveApplicationQuestion does not infer previous-employer No from incomplete resume history", async () => {
   const result = await resolveApplicationQuestion({
     questionText: "Have you ever worked for Mastercard as an employee?",
     options: ["Yes", "No"],
     fieldKind: "option_group",
     userProfile: { candidateProfile: { experience: [{ company: "Acme", title: "Engineer" }] } }
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.data.value, "No");
-  assert.match(result.data.reason, /does not list Mastercard/i);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /explicit|manually/i);
 });
 
 asyncTest("resolveApplicationQuestion refuses to guess previous employment without profile employer history", async () => {
@@ -429,7 +414,7 @@ asyncTest("resolveApplicationQuestion refuses to guess previous employment witho
     userProfile: { candidateProfile: { experience: [] } }
   });
   assert.equal(result.ok, false);
-  assert.match(result.error, /no employer history/i);
+  assert.match(result.error, /explicit|manually/i);
 });
 
 asyncTest("resolveApplicationQuestion maps a model-selected stable option id back to exact observed page text", async () => {

@@ -10,7 +10,7 @@ Career Peeler has no developer-operated backend, advertising, analytics, or trac
 
 The extension stores the following inside your Chrome profile:
 
-- **Chrome local storage:** your uploaded PDF resume and filename, parsed resume text, structured CandidateProfile and edits, matching preferences, experience setting, required application answers, OpenAI API key and its validation status, small progress records, and submission synchronization status/timestamps.
+- **Chrome local storage:** your uploaded PDF resume and filename, parsed resume text, structured CandidateProfile and edits, matching preferences, experience setting, required application answers (including age eligibility, prior Apple employment, start availability and exact-question answers for criminal-history/scoped questions), OpenAI API key and its validation status, small progress records, and submission synchronization status/timestamps.
 - **IndexedDB (`CareerPeelerJobs`):** job descriptions and qualifications, matching scores and evidence, search identities and scan checkpoints, saved submissions, application queue/history, activity/error logs, submission capacity snapshots and reservations, and durable application/withdrawal recovery records. Withdrawal records associate an exact job ID with its reviewed operation and confirmed or unresolved outcome.
 - **Chrome session storage:** small database-write failure reports used to surface storage problems.
 
@@ -29,7 +29,7 @@ Depending on the feature you enable or request, the extension sends:
 - **Job ranking and submission analysis:** resume text/profile evidence (including explicit profile edits), experience settings, and relevant job descriptions, responsibilities and qualifications.
 - **Unresolved required application questions:** the question, observed answer choices, relevant job/page context, resume evidence and relevant saved contact/profile values. For required open-text questions, OpenAI's hosted web search may be used for public company or role context.
 
-The separately saved gender, race/ethnicity, veteran and disability answers are resolved locally and are excluded from AI question requests. Optional questions are skipped. Information you put inside the PDF, resume text or other resume/profile evidence can still be included in extraction or matching requests; avoid including unnecessary sensitive information.
+Separately saved personal application answers, including gender, race/ethnicity, veteran/disability, work eligibility, age, prior Apple employment, availability and exact-question answers, are resolved locally. They are not included in AI question requests to infer personal answers. Optional questions are skipped. Information you put inside the PDF, resume text or other resume/profile evidence can still be included in extraction or matching requests; avoid including unnecessary sensitive information.
 
 OpenAI processes requests under its own terms and privacy/data policies. The extension does not control OpenAI's retention or account settings and does not promise immediate deletion of information already sent to OpenAI.
 
@@ -37,7 +37,7 @@ OpenAI processes requests under its own terms and privacy/data policies. The ext
 
 The extension reads supported Apple Careers pages, including search results, job descriptions, application forms and your Active Submissions list. It uses your existing browser session; it does not request or store your Apple password. Chrome and Apple manage authentication cookies.
 
-Applications you explicitly authorize may fill required form answers, click Continue and perform final Submit actions. The PDF in Setup is used for matching; applications use the resume already saved in your Apple Careers account. Review that saved resume and your application answers before permitting submissions.
+Applications you explicitly authorize may fill required form answers, click Continue and perform final Submit actions. The PDF in Setup is used for matching; applications use the resume already saved in your Apple Careers account. Review that saved resume and your application answers before permitting submissions. Missing, conflicting, expired or unsupported personal answers stop for manual review. The extension does not infer criminal history or a negative previous-employment answer from an incomplete resume, or choose an unsaved start date.
 
 Withdrawals require selecting roles and explicitly confirming the intended batch. They cannot be undone on Apple Careers. The extension checks exact job IDs and protects starred or otherwise protected roles. Unresolved outcomes are retained for reconciliation; they are not automatically retried.
 

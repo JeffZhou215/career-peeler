@@ -22,7 +22,8 @@ In Chrome, open **Extensions → Developer Mode → Load Unpacked** and select `
 1. Open **Setup → Your Resume → Upload Resume** and choose a PDF.
 2. Under **AI Matching**, check **Enable LLM Matching**, enter your OpenAI API key, choose a model, and click **Test API Key**.
 3. Click **Extract Profile From Resume** if the profile is not ready. Review the extracted profile and **Parsed Resume Text**.
-4. Expand **Application Profile** and check your experience, required application answers, work authorization, and sponsorship settings.
+4. Expand **Application Profile** and check your experience and required application answers. Save your own work authorization, sponsorship, age eligibility, prior Apple employment and start availability. These start unset; a saved date or explicit **Immediately** controls availability.
+5. In **Saved Question Answers**, copy the exact wording of a criminal-history or differently scoped question and save your own Yes/No answer. Answers only cover that wording. Missing, conflicting, expired or unsupported personal answers stop the role for manual review; the extension does not guess them from your resume or ask AI to invent them.
 
 ## Find And Apply For Jobs
 

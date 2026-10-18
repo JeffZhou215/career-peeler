@@ -1,9 +1,12 @@
+import { useRef, useState } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 
 import {
   EEO_PROFILE_FIELDS,
   EEO_PROFILE_OPTIONS,
-  getMissingRequiredApplicationAnswers
+  getMissingRequiredApplicationAnswers,
+  normalizeApplicationQuestionKey,
+  normalizeApplicationQuestionAnswers
 } from "../lib/profile";
 
 function SelectAnswer({ field, idPrefix, profile, save, missing }) {
@@ -24,6 +27,77 @@ function SelectAnswer({ field, idPrefix, profile, save, missing }) {
       </select>
     </label>
   );
+}
+
+// These are explicit answers to the exact question the user reviewed. In particular, a criminal
+// conviction answer must not become an answer to a differently scoped arrest/background question.
+export function SavedQuestionAnswers({ profile, save, idPrefix }) {
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const answers = normalizeApplicationQuestionAnswers(profile.applicationQuestionAnswers);
+  const questionKey = normalizeApplicationQuestionKey(question);
+
+  async function saveAnswer() {
+    if (savingRef.current || !questionKey || !["yes", "no"].includes(answer)) return;
+    if (!Object.hasOwn(answers, questionKey) && Object.keys(answers).length >= 100) {
+      setError("Remove a saved answer before adding another. You can save up to 100 questions.");
+      return;
+    }
+    savingRef.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await save({ applicationQuestionAnswers: { ...answers, [questionKey]: answer } });
+      setQuestion("");
+      setAnswer("");
+    } catch (failure) {
+      setError(failure?.message || "The answer could not be saved.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function removeAnswer(key) {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    const next = { ...answers };
+    delete next[key];
+    setError("");
+    try {
+      await save({ applicationQuestionAnswers: next });
+    } catch (failure) {
+      setError(failure?.message || "The answer could not be removed.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  return <details className="compact-fold">
+    <summary>Saved Question Answers</summary>
+    <div className="compact-fold-body">
+      <p className="muted">Copy the exact personal Yes/No question from Apple. An unsaved or differently worded question stops for manual review. These answers stay on your device and are never inferred from your PDF or sent to AI.</p>
+      {Object.entries(answers).map(([key, value]) => <div key={key} className="settings-group">
+        <p>{key}</p>
+        <div className="compact-setting-row"><span>{value === "yes" ? "Yes" : "No"}</span>
+          <button type="button" className="secondary" disabled={saving} aria-label={`Remove Saved Answer: ${key}`} onClick={() => removeAnswer(key)}>Remove</button>
+        </div>
+      </div>)}
+      <label className="field-label" htmlFor={`${idPrefix}saved-question`}>Exact Question</label>
+      <textarea id={`${idPrefix}saved-question`} rows="3" maxLength="500" value={question} disabled={saving} onChange={(event) => setQuestion(event.target.value)} />
+      <label className="field-label" htmlFor={`${idPrefix}saved-answer`}>Your Answer</label>
+      <select id={`${idPrefix}saved-answer`} value={answer} disabled={saving} onChange={(event) => setAnswer(event.target.value)}>
+        <option value="">Not Set</option><option value="yes">Yes</option><option value="no">No</option>
+      </select>
+      <button type="button" className="secondary" disabled={saving || !questionKey || !answer} onClick={saveAnswer}>Save Answer</button>
+      {error && <p className="submitted-history-error" role="alert">{error}</p>}
+    </div>
+  </details>;
 }
 
 export function RequiredApplicationAnswers({ profile, save, idPrefix, sectionRef, emphasizeMissing = false }) {

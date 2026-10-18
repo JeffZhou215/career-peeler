@@ -1,10 +1,10 @@
 # Private Chrome Release Preparation
 
-Prepared October 17, 2026. Target: **Career Peeler 0.2.1**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
+Prepared October 17, 2026. Target: **Career Peeler 0.2.2**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
 
 ## Prepared Material
 
-- Installable ZIP: `release/career-peeler-0.2.1-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
+- Installable ZIP: `release/career-peeler-0.2.2-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
 - Publisher/listing worksheet: `store-assets/PRIVATE_LISTING.md`.
 - Privacy-policy source: `PRIVACY.md`; host the current document at a public HTTPS URL before store submission.
 - Current icon, promotional images and sanitized source-rendered UI screenshots: `store-assets/`.
@@ -21,17 +21,17 @@ npm run release:private
 
 This runs the full offline automated suite, runtime syntax checks and production build, then packages the validated `dist/` using `scripts/package-private-release.mjs`. It writes:
 
-- `release/career-peeler-0.2.1-private-beta.zip`
-- `release/career-peeler-0.2.1-private-beta.zip.sha256`
-- `release/career-peeler-0.2.1-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
-- `release/career-peeler-0.2.1-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
+- `release/career-peeler-0.2.2-private-beta.zip`
+- `release/career-peeler-0.2.2-private-beta.zip.sha256`
+- `release/career-peeler-0.2.2-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
+- `release/career-peeler-0.2.2-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
 
 The runtime allowlist excludes repository/developer material. Review the JSON and checksum; a dirty source flag means the package includes changes beyond the recorded base commit, so retain that exact reviewable source state. Running this command does not upload, invite testers or publish.
 
 ## Before Upload
 
 - [ ] Full test suite, runtime syntax checks and production build pass on the exact package source.
-- [ ] Inspect ZIP entry list and manifest: version 0.2.1, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
+- [ ] Inspect ZIP entry list and manifest: version 0.2.2, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
 - [ ] Verify the package digest and retain the source commit reference.
 - [ ] Load the ZIP's extracted files in a **new separate Chrome profile**. Do not copy a developer Chrome profile or IndexedDB data.
 - [ ] Confirm fresh install opens Jobs/Submissions/Setup, has no PDF/key/history and leaves application consent disabled.
@@ -42,21 +42,21 @@ The runtime allowlist excludes repository/developer material. Review the JSON an
 - [ ] With an account that already has submissions, inspect existing-tab passive sync and explicit Sync. Never withdraw applications to manufacture an empty-list fixture.
 - [ ] Verify Chrome's native debugging banner, tab cleanup and permission explanations without completing a real withdrawal. Modal inspection may be cancelled; do not click Proceed.
 - [ ] Keep the documented live Apple eventual-consistency/empty-state verification limitations visible; automated mocks do not establish every Apple behavior.
-- [ ] Review fixed required-question policies below before allowing friends to enable application assistance.
+- [ ] Verify each tester saves their own application answers, and that missing, conflicting or unmatched personal answers stop for manual review.
 
 ## Current Private-Beta Boundaries
 
 This preparation preserves current behavior and the user's existing safety protections. It does not generalize all personal settings or resolve unrelated audit findings.
 
 - Explicit work-authorization and sponsorship answers are respected; unresolved answers stop the operation.
-- Recognized criminal-history questions currently resolve to **No** and start-date questions choose the nearest available future option. The UI does not configure these policies. Anyone whose circumstances differ must complete applications manually. Review before enabling automatic applications; do not describe the extension as having fully configurable answers.
+- Age eligibility, work authorization, sponsorship and simple prior Apple employment questions use explicit saved choices. Start availability uses a saved calendar date or explicit Immediately selection. Criminal-history and differently scoped questions require an answer saved against the exact question wording. Unset, conflicting, expired or unmappable answers stop that role for manual review; they are not inferred from the resume or sent to an LLM to guess.
 - The experience default is two years; each tester must replace/review it against their own resume.
 - Some installation-specific protected-role rules remain. They only prevent withdrawals; they should be generalized in a separate reviewed change before broader distribution. Personal IDs/details are intentionally omitted from public-facing copy.
 - Matching uses the Setup PDF plus explicit profile edits. Actual applications use Apple's saved resume; the user must verify it.
 - Unknown submission/withdrawal results pause and require reconciliation. A fresh selection never grants permission to replay an unknown final action.
 - Offline tests cover adverse sequences, not the native browser's full timing or Apple's internal server state. Do not claim live withdrawal verification occurred.
 
-These boundaries are not satisfied by adding a disclaimer alone. Before inviting testers to use automated applications, the publisher must ensure the fixed policies are truthful for that tester or keep that tester's use to ranking/sync/manual application completion.
+Before inviting testers, verify a clean profile has no assumed personal answers. Save only truthful answers for that user and inspect the actual Apple review page; unsupported wording remains a manual task. The extension does not guarantee that every possible Apple question can be automated.
 
 ## Publisher Tasks Requiring Owner Input
 
@@ -73,11 +73,11 @@ Private and Unlisted are different: Unlisted generally permits installs by anyon
 
 1. Install only through the private listing using an invited Google account; use a personal Chrome profile.
 2. Open Setup, enter your own OpenAI API key only if using AI features, and upload a PDF you are permitted to send to OpenAI. API usage can incur charges.
-3. Check extracted CandidateProfile, explicit edits, experience setting, work authorization, sponsorship and other required answers. Never use the developer's sample answers or files.
+3. Check extracted CandidateProfile, explicit edits and experience setting. In Application Profile, save your own work authorization, sponsorship, age eligibility, prior Apple employment, start availability and required identity answers. Use Saved Question Answers for the exact wording of criminal-history or other scoped questions. Never use the developer's sample answers or files.
 4. Sign in to your own Apple Careers account and verify Apple's saved resume. Setup's PDF is for matching.
 5. Start with Jobs → **After Ranking → Review Then Apply**. Scan the intended filter and review evidence before queueing roles.
 6. Use Submissions → **Sync Submissions** for capacity; **Analyze & Rank All** is separate AI analysis. Cached/partial/unknown is not a newly verified count.
-7. If choosing application assistance, review the entire batch and authorize only the selected roles. Stop when any fixed policy would be untrue; finish manually instead.
+7. If choosing application assistance, review the entire batch and authorize only the selected roles. Missing saved answers or incompatible wording stops the role for manual review. Inspect Activity and the job link, update your saved answers or complete that application manually, then explicitly review any new attempt.
 8. If choosing withdrawal, verify exact titles/IDs and explicitly confirm. Apple does not allow reapplication after withdrawal. An uncertain result requires Sync/review; do not repeatedly click Proceed.
 9. Report version, safe role URL and redacted Activity errors. Never post keys, resumes or private account information in public issues.
 

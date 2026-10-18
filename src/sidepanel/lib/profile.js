@@ -169,6 +169,32 @@ export function normalizeYesNoUnset(value) {
   return value === "yes" || value === "no" ? value : "";
 }
 
+// Mirrors lib/appleApplicationSafety.js. Question punctuation is significant: saved answers only
+// cover the exact wording reviewed by the user, with whitespace/case differences normalized.
+export function normalizeApplicationQuestionKey(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function normalizeApplicationQuestionAnswers(value) {
+  const normalized = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  for (const [question, answer] of Object.entries(value).slice(0, 100)) {
+    const key = normalizeApplicationQuestionKey(question);
+    const choice = String(answer || "").trim().toLowerCase();
+    if (!key || key.length > 500 || !["yes", "no"].includes(choice)) continue;
+    Object.defineProperty(normalized, key, { value: choice, enumerable: true, configurable: true, writable: true });
+  }
+  return normalized;
+}
+
+export function normalizeSavedStartDate(value) {
+  const date = String(value || "").trim();
+  if (date === "immediate") return date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number(date.slice(0, 4)) < 1900) return "";
+  const parsed = new Date(`${date}T12:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date ? date : "";
+}
+
 // "testing" is deliberately not a valid PERSISTED value -- see lib/core.js's copy of this function for
 // why. Keep both in sync by hand, same as every other duplicated pair in this file.
 const API_KEY_VALIDATION_STATUSES = ["not_tested", "valid", "invalid", "error"];
@@ -516,6 +542,9 @@ export function createDefaultProfile() {
     ...genericFields,
     workAuthorized: "",
     requiresSponsorship: "",
+    ageOver18: "",
+    previousAppleEmployment: "",
+    applicationQuestionAnswers: {},
     eeoGender: "",
     eeoRaceEthnicity: [],
     eeoVeteranStatus: "",
@@ -557,6 +586,10 @@ export function normalizeProfile(rawProfile) {
     ...genericFields,
     workAuthorized: normalizeYesNoUnset(profile.workAuthorized),
     requiresSponsorship: normalizeYesNoUnset(profile.requiresSponsorship),
+    ageOver18: normalizeYesNoUnset(profile.ageOver18),
+    previousAppleEmployment: normalizeYesNoUnset(profile.previousAppleEmployment),
+    applicationQuestionAnswers: normalizeApplicationQuestionAnswers(profile.applicationQuestionAnswers),
+    availableStartDate: normalizeSavedStartDate(profile.availableStartDate),
     ...eeoProfile,
     resumeFileDataUrl: String(profile.resumeFileDataUrl || "").trim(),
     resumeFileName: String(profile.resumeFileName || "").trim(),

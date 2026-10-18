@@ -1,19 +1,19 @@
 # Chrome Web Store Private Release Worksheet
 
-Prepared October 17, 2026 for the Apple-only **Career Peeler 0.2.1** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
+Prepared October 17, 2026 for the Apple-only **Career Peeler 0.2.2** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
 
 ## Release Target
 
 | Field | Prepared Value |
 | --- | --- |
 | Name | Career Peeler |
-| Version | 0.2.1 |
+| Version | 0.2.2 |
 | Visibility | Private — Trusted Testers |
 | Audience | Explicitly invited Google accounts / publisher-owned tester group |
 | Category | Productivity |
 | Language | English (United States) |
 | Runtime | Chrome Manifest V3 side-panel extension; Apple Careers only |
-| Package | `release/career-peeler-0.2.1-private-beta.zip` |
+| Package | `release/career-peeler-0.2.2-private-beta.zip` |
 | Support | https://github.com/JeffZhou215/career-peeler/issues |
 | Hosted Privacy Policy | `[REQUIRED: publicly accessible HTTPS URL rendering current PRIVACY.md]` |
 
@@ -27,18 +27,18 @@ Never enter tester emails, API keys, real resumes or Apple credentials in this t
 - [ ] Trusted tester Google accounts or an owned tester group, entered privately in the dashboard.
 - [ ] Confirmation of final listing, permission/data disclosures and private distribution settings.
 - [ ] Non-destructive live Chrome smoke verification recorded in the release checklist.
-- [ ] Review the fixed required-answer policies below before inviting anyone to use auto-application.
+- [ ] Verify blank personal-answer defaults and the missing/conflicting-answer manual-review behavior before inviting testers.
 
 ## Private-Beta Limitations And Release Gates
 
 - Work authorization and sponsorship use explicit saved Yes/No answers; unanswered or unresolved questions stop assistance. Each tester must set their own answers.
-- **Some other question policies remain fixed:** recognized criminal-history questions resolve to No, and start-date questions choose the nearest available future option. Those policies are not configurable in the current UI. Do not permit automated application use when they would be untrue or unsuitable; use manual completion instead. This is a private-beta release limitation, not a claim that all answers are configurable.
+- **Personal answers are explicit:** age eligibility and simple previous Apple employment use saved Yes/No choices; availability uses an explicitly saved date or Immediately choice. Criminal-history and differently scoped questions require an answer saved for the exact question wording. Missing, conflicting, expired or unsupported answers stop for manual review. Resume omissions are not proof of No, and the LLM cannot guess these answers.
 - A fresh profile starts with an experience setting of two years. Each tester must review it against their own resume before ranking.
 - Additional installation-specific withdrawal protections remain in this build. They can prevent a role from being selected; they do not authorize withdrawals. Generalizing these protections is a future product decision. Do not include personal application details in store copy or screenshots.
 - Setup's PDF supports matching; Apple applications use the resume saved in the tester's Apple account.
 - Apple live DOM behavior, Chrome debugger/native click ordering and eventual server updates are not fully established by the offline tests. No real submissions or withdrawals are required for reviewer testing.
 - The OpenAI key and PDF are retained locally without additional application-level encryption. Disclose that accurately.
-- Old 0.1.0 multi-platform ZIPs and older screenshots are obsolete. Upload only the freshly validated 0.2.1 package/assets.
+- Old 0.1.0 multi-platform ZIPs and older screenshots are obsolete. Upload only the freshly validated 0.2.2 package/assets.
 
 ## Listing Copy
 
@@ -59,6 +59,7 @@ Jobs
 • Reuse saved descriptions and scores, with clear partial-scan and recovery status.
 • Review ranked jobs, save an application queue and select the specific roles you want to apply for.
 • Optionally authorize strong-match applications after the entire filtered search has been ranked.
+• Save your own personal application answers, including exact-question responses where wording matters.
 
 Submissions
 
@@ -69,14 +70,14 @@ Submissions
 
 Control And Recovery
 
-• Applications use explicit saved work-authorization and sponsorship answers and Apple's saved resume.
+• Applications use your own explicit saved personal answers and Apple's saved resume. Missing or conflicting answers stop for manual review.
 • Unknown application or withdrawal outcomes require reconciliation rather than automatic replay.
 • Activity links identify roles that need manual review.
 • Career Peeler uses your own OpenAI API key. API requests can incur charges.
 
 DATA DISCLOSURE: Your PDF, parsed resume, profile, API key, job caches and workflow records are stored locally in your Chrome profile. Enabled/requested AI features send the relevant PDF, resume/profile evidence, job text or required-question context directly to OpenAI. Apple receives authorized application interactions. Career Peeler has no developer-operated backend, analytics or advertising service. Read the privacy policy before use.
 
-PRIVATE-BETA LIMITATION: Some required-question policies, including recognized criminal-history and start-date answers, remain fixed. Review the test instructions and your answers before allowing any application assistance. Do not use automated completion if those policies do not match your circumstances. Ranking and synchronization can be used without submitting applications.
+PERSONAL ANSWERS: Save your own required application answers in Setup. Missing or conflicting answers stop the role for manual review. Criminal-history and scoped questions are bound to exact saved wording; dates are never replaced by the nearest offered date. Ranking and synchronization can be used without submitting applications.
 
 Career Peeler is not affiliated with, endorsed by, or sponsored by Apple or OpenAI. Matching scores are estimates, not hiring predictions. Apple can change its website, eligibility rules and submission limits.
 
@@ -139,7 +140,7 @@ Map these actual data uses to the labels currently shown by the store dashboard.
 5. Open a public filtered Apple job list and use **Scan And Rank** in Review Then Apply mode. This may incur OpenAI charges but does not submit applications. Stop/resume, cached rankings, search and queue review can be inspected without clicking Confirm And Apply.
 6. Signed-in inventory testing requires a reviewer/tester's own Apple account. Visit **Your Roles → Submissions → Active** to inspect passive sync status. **Sync Submissions** explicitly verifies the full inventory; **Analyze & Rank All** is separate AI analysis. Do not create or withdraw applications to generate data.
 7. Do not click **Confirm And Apply**, Apple's **Submit**, **Confirm Withdrawal**, or Apple's **Proceed** during review. Withdrawal and final submission are irreversible real account actions, not demo actions.
-8. Review the fixed-policy limitations above. Users whose answers differ must complete applications manually.
+8. Inspect Application Profile and Saved Question Answers. Verify required personal answers start unset. Automated offline tests exercise missing, conflicting and unmatched answers without performing real Apple actions. An unsupported question remains a manual-review task.
 9. Report extension version, safe job URL, last Activity step and redacted error. Do not include a key, resume or private application details in a public issue.
 
 No shared Apple credentials or private API keys are provided. The automated suite is isolated and performs no live submissions or withdrawals.
@@ -154,6 +155,7 @@ No shared Apple credentials or private API keys are provided. The automated suit
 | `screenshot-1-overview-1280x800.png` | Current React Jobs UI with sanitized offline demo data. |
 | `screenshot-2-settings-1280x800.png` | Current React Setup UI with no credential or personal resume. |
 | `screenshot-3-progress-logs-1280x800.png` | Current React Submissions UI with sanitized offline demo data. |
+| `screenshot-4-application-answers-1280x800.png` | Current Application Profile and exact-question editor, showing unset personal answers. |
 
 See `store-assets/source/README.md` for capture provenance and reproducibility. Screenshots show the actual source-rendered side panel; surrounding captions and demo records are illustrative. No real account data or claimed live submission success is used.
 

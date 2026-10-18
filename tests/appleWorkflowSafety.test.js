@@ -315,18 +315,25 @@ test("background binds initial tab identity to the selected role before any work
   assert.equal(harness.calls.checkpoints.length, 0);
 });
 
-test("workflow messages expose only explicit eligibility answers, never the API key or resume/profile", async () => {
+test("workflow messages carry each user's explicit application answers without the API key or resume/profile", async () => {
   const harness = createBackgroundHarness();
   await harness.ready;
   mockStep(harness, { ok: true, data: { url: harness.tabs[0].url, clicked: false, done: false,
     pausedForReview: true, steps: [], summary: "Synthetic manual review", submissionOutcome: "not_attempted" } });
   await harness.sandbox.runApplicationWorkflow(harness.tabs[0], { closeOnDone: false, userProfile: {
     workAuthorized: "no", requiresSponsorship: "yes", llmApiKey: "synthetic-private-key",
-    resumeText: "Synthetic private resume evidence", firstName: "Private Candidate"
+    resumeText: "Synthetic private resume evidence", firstName: "Private Candidate",
+    ageOver18: "no", previousAppleEmployment: "yes", availableStartDate: "2099-06-01",
+    applicationQuestionAnswers: { "Have you ever been convicted of a felony?": "yes" },
+    eeoGender: "female", eeoRaceEthnicity: ["asian"], eeoVeteranStatus: "not_protected_veteran",
+    eeoDisabilityStatus: "prefer_not_to_disclose"
   } });
   assert.equal(harness.calls.messages.length, 1);
   const message = harness.calls.messages[0];
-  assert.deepEqual(structuredClone(message.applicationAnswers), { workAuthorized: "no", requiresSponsorship: "yes" });
+  assert.deepEqual(structuredClone(message.applicationAnswers), { workAuthorized: "no", requiresSponsorship: "yes",
+    ageOver18: "no", previousAppleEmployment: "yes", availableStartDate: "2099-06-01",
+    applicationQuestionAnswers: { "have you ever been convicted of a felony?": "yes" },
+    eeoGender: "female", eeoRaceEthnicity: ["asian"], eeoVeteranStatus: "not_protected_veteran", eeoDisabilityStatus: "prefer_not_to_disclose" });
   assert.equal(message.expectedJobId, "200123456-0836");
   assert.doesNotMatch(JSON.stringify(message), /synthetic-private-key|Synthetic private resume|Private Candidate/);
   assert.equal(message.userProfile, undefined);

@@ -1,17 +1,17 @@
 # Store Asset Provenance
 
-Generated October 17, 2026 for the Apple-only 0.2.1 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
+Generated October 17, 2026 for the Apple-only 0.2.2 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
 
 ## UI Screenshots
 
-`capture-current-ui.cjs` renders the repository's **actual React side-panel source** through Vite in a new isolated headless Chrome context. It captures Jobs, Setup and Submissions, then composites each unmodified 450 × 800 capture onto a 1280 × 800 caption background.
+`capture-current-ui.cjs` renders the repository's **actual React side-panel source** through Vite in a new isolated headless Chrome context. It captures Jobs, Setup, Submissions and the expanded Application Profile, then composites each unmodified 450 × 800 capture onto a 1280 × 800 caption background.
 
 - Uses the current App/components/styles; does not draw or imitate a replacement product interface.
 - Chrome APIs are mocked and submission archive data uses the real IndexedDB adapter in the isolated origin.
 - Job titles, synthetic IDs, scores, counts and scan state are **offline demonstration data**. They are not actual Apple postings or matching results.
 - No personal applicant identity, PDF, API key, saved legal/EEO answer, real history or account is loaded.
 - Every non-localhost request is blocked. No Apple/OpenAI request, submission or withdrawal occurs.
-- Operation message handlers return an offline error except read-only ranking data. Only view tabs are clicked during capture.
+- Operation message handlers return an offline error except read-only ranking data. Only view tabs and disclosure summaries are clicked during capture. No action, consent or personal-answer control is selected.
 - No real Chrome profile/session is accessed.
 - Caption panels explicitly label the source-rendered UI and dummy data.
 - This proves visual rendering, not native extension permission handling, worker recovery or live Apple integration.
@@ -26,11 +26,12 @@ node store-assets/source/capture-current-ui.cjs
 
 If dependencies are outside this repository, set `NODE_PATH` to their absolute `node_modules` directory. The script defaults to installed Google Chrome; `CAREER_PEELER_CAPTURE_BROWSER` can select another installed Playwright browser channel. No capture tools are included in the extension ZIP.
 
-The three PNGs retain historical filenames for listing compatibility:
+The first three PNGs retain historical filenames for listing compatibility:
 
 - `screenshot-1-overview-1280x800.png`: Jobs, complete filter ranking and ranked roles.
 - `screenshot-2-settings-1280x800.png`: Setup without uploaded resume or credential.
 - `screenshot-3-progress-logs-1280x800.png`: Submissions, capacity/sync, filters and protected role.
+- `screenshot-4-application-answers-1280x800.png`: Setup's expanded Application Profile and Saved Question Answers, scrolled to the blank personal-answer controls. Shows unset answers, an empty start date, unchecked immediate availability and the exact-question editor.
 
 Inspect all outputs visually after rerunning. Dates/relative time are generated from the capture time; demo status must never be represented as a live verified account.
 

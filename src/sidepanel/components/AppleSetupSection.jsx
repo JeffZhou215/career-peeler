@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { HelpTooltip } from "./HelpTooltip";
 import { CandidateProfileSection } from "./CandidateProfileSection";
-import { RequiredApplicationAnswers } from "./RequiredApplicationAnswers";
+import { RequiredApplicationAnswers, SavedQuestionAnswers } from "./RequiredApplicationAnswers";
 import { ApiKeyValidationStatus } from "./ApiKeyValidationStatus";
 import { useResumeExtraction } from "../hooks/useResumeExtraction";
 import { useApiKeyValidation } from "../hooks/useApiKeyValidation";
@@ -51,6 +51,13 @@ export function AppleSetupSection({ profile, save }) {
       <RequiredApplicationAnswers profile={profile} save={save} idPrefix="apple-" />
       <div className="compact-setting-row"><label htmlFor="authorized">Work Authorized</label><select id="authorized" value={profile.workAuthorized} onChange={(event) => save({workAuthorized:event.target.value})}><option value="">Not Set</option><option value="yes">Yes</option><option value="no">No</option></select></div>
       <div className="compact-setting-row"><label htmlFor="sponsorship">Requires Sponsorship</label><select id="sponsorship" value={profile.requiresSponsorship} onChange={(event) => save({requiresSponsorship:event.target.value})}><option value="">Not Set</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+      <div className="compact-setting-row"><label htmlFor="age-over-18">Age 18 Or Older</label><select id="age-over-18" value={profile.ageOver18 || ""} onChange={(event) => save({ ageOver18: event.target.value })}><option value="">Not Set</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+      <div className="compact-setting-row"><label htmlFor="previous-apple-employment">Previously Employed By Apple</label><select id="previous-apple-employment" value={profile.previousAppleEmployment || ""} onChange={(event) => save({ previousAppleEmployment: event.target.value })}><option value="">Not Set</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+      <p className="muted">Set only your own answers. Missing or ambiguous personal answers stop the application for manual review.</p>
+      <label className="field-label" htmlFor="available-start-date">Available Start Date</label>
+      <input id="available-start-date" type="date" value={profile.availableStartDate === "immediate" ? "" : profile.availableStartDate || ""} onChange={(event) => save({ availableStartDate: event.target.value })} />
+      <label className="checkbox-row"><input type="checkbox" checked={profile.availableStartDate === "immediate"} onChange={(event) => save({ availableStartDate: event.target.checked ? "immediate" : "" })} /><span>I Can Start Immediately</span></label>
+      <SavedQuestionAnswers profile={profile} save={save} idPrefix="apple-" />
     </div></details>
     <details className="ios-group compact-fold"><summary>Matching Rules</summary><div className="compact-fold-body">
       <p>Responsibilities 40% · Minimum Qualifications 35% · Experience Level 15% · Domain 10%</p>
