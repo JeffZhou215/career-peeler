@@ -29,7 +29,7 @@ function collect(relative = "") {
 }
 collect();
 const required = ["manifest.json", "sidepanel.html", "background.js", "content.js", "PRIVACY.md",
-  "lib/appleJobStore.js", "lib/appleWithdrawalRecovery.js", "lib/appleWithdrawalSafety.js", "assets/sidepanel.js"];
+  "lib/appleJobStore.js", "lib/appleWithdrawalRecovery.js", "lib/appleWithdrawalSafety.js", "lib/openaiModelCatalog.js", "assets/sidepanel.js"];
 for (const file of required) if (!files.includes(file)) throw new Error(`Missing release file: ${file}`);
 // The plain runtime scripts and policy are copied verbatim, never bundled away.
 for (const file of files.filter(file => !file.startsWith("assets/") && file !== "sidepanel.html")) {

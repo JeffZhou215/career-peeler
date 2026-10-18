@@ -91,7 +91,9 @@ field(x + 12, 569, 288, "••••••••••••••••");
 button(x + 12, 615, 135, "Test API Key", false, 11, 28);
 text(x + 172, 621, "Valid", 11, colors.muted);
 text(x + 12, 659, "Model", 11, colors.muted, true);
-field(x + 70, 651, 230, "gpt-4o", 12);
+text(x + 148, 652, "GPT-4o", 12, colors.white, true);
+text(x + 148, 671, "gpt-4o", 10, colors.muted);
+text(x + 282, 655, "›", 19, colors.muted);
 box(x, 727, 312, 37); text(x + 12, 738, "›  Application Profile", 12, colors.white, true);
 box(x, 778, 312, 37); text(x + 12, 789, "›  Matching Rules", 12, colors.white, true);
 

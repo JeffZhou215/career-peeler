@@ -1,4 +1,4 @@
-importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js", "lib/appleWorkflowRecovery.js", "lib/appleWithdrawalRecovery.js");
+importScripts("lib/appleJobStore.js", "lib/appleApplicationSafety.js", "lib/openaiModelCatalog.js", "lib/core.js", "lib/jobRanking.js", "lib/appleRankingWorker.js", "lib/appleSubmissionSync.js", "lib/appleWorkflowRecovery.js", "lib/appleWithdrawalRecovery.js");
 
 // Makes the toolbar icon open the side panel (which stays docked and open across tab switches)
 // instead of a transient popup. Must run on every service worker startup, not just install.
@@ -1563,6 +1563,10 @@ function getAutoApplyReadinessError(userProfile) {
     return null;
   }
 
+  if (!isSupportedOpenAiModel(userProfile.llmModel || DEFAULT_LLM_MODEL)) {
+    return "Choose a supported full OpenAI model in Setup before applying. Mini and nano models are not supported.";
+  }
+
   if (!isApiKeyValidated(userProfile)) {
     return "LLM-assisted auto-apply requires a valid API key. Configure and test it before starting the scan.";
   }
@@ -2938,6 +2942,9 @@ async function scoreAppleSubmittedRoles(roles, userProfile, { onProgress, should
   if (!profile.llmEnabled || !profile.llmApiKey) {
     throw new Error("Enable OpenAI matching and configure your API key in the side panel first.");
   }
+  if (!isSupportedOpenAiModel(profile.llmModel)) {
+    throw new Error("Choose a supported full OpenAI model in Setup before analyzing submissions. Mini and nano models are not supported.");
+  }
   if (!resumeProfile) {
     throw new Error("Add or extract your resume profile before analyzing submitted roles.");
   }
@@ -3514,6 +3521,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_RESOLVE_APPLICATION_QUESTION",
   "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK",
   "APPLE_CAREERS_TEST_API_KEY",
+  "APPLE_CAREERS_LIST_OPENAI_MODELS",
   "APPLE_CAREERS_EXTRACT_CANDIDATE_PROFILE"
 ]);
 
@@ -3700,6 +3708,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_TRUSTED_APPLE_WITHDRAW_CLICK") {
         sendResponse(await dispatchTrustedAppleWithdrawalClick(sender, message.jobId, message.stage, message.expectedPageIndex, message.batchId, message.requestId));
 
+      } else if (message.type === "APPLE_CAREERS_LIST_OPENAI_MODELS") {
+        // Credentials are accepted only from this extension's own pages, never
+        // from an Apple tab/content script. Do not echo the key in the response.
+        const extensionPrefix = chrome.runtime.id ? `chrome-extension://${chrome.runtime.id}/` : null;
+        if (sender.tab || (sender.id && sender.id !== chrome.runtime.id) ||
+            (sender.url && (!extensionPrefix || !sender.url.startsWith(extensionPrefix)))) {
+          throw new Error("Choose models from the extension Setup page.");
+        }
+        sendResponse({ ok: true, data: await listAvailableOpenAiModels(message.apiKey, { force: message.force === true }) });
       } else if (message.type === "APPLE_CAREERS_TEST_API_KEY") {
         // The UI never calls the provider directly -- same "content/UI messages background, background
         // does the fetch" shape as every other LLM call in this codebase (see callOpenAi's call sites).

@@ -1,19 +1,19 @@
 # Chrome Web Store Private Release Worksheet
 
-Prepared October 18, 2026 for the Apple-only **Rolebeam 0.2.3** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
+Prepared October 18, 2026 for the Apple-only **Rolebeam 0.2.4** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
 
 ## Release Target
 
 | Field | Prepared Value |
 | --- | --- |
 | Name | Rolebeam |
-| Version | 0.2.3 |
+| Version | 0.2.4 |
 | Visibility | Private — Trusted Testers |
 | Audience | Explicitly invited Google accounts / publisher-owned tester group |
 | Category | Productivity |
 | Language | English (United States) |
 | Runtime | Chrome Manifest V3 side-panel extension; Apple Careers only |
-| Package | `release/rolebeam-0.2.3-private-beta.zip` |
+| Package | `release/rolebeam-0.2.4-private-beta.zip` |
 | Support | https://github.com/JeffZhou215/career-peeler/issues |
 | Hosted Privacy Policy | `[REQUIRED: publicly accessible HTTPS URL rendering current PRIVACY.md]` |
 
@@ -38,7 +38,7 @@ Never enter tester emails, API keys, real resumes or Apple credentials in this t
 - Setup's PDF supports matching; Apple applications use the resume saved in the tester's Apple account.
 - Apple live DOM behavior, Chrome debugger/native click ordering and eventual server updates are not fully established by the offline tests. No real submissions or withdrawals are required for reviewer testing.
 - The OpenAI key and PDF are retained locally without additional application-level encryption. Disclose that accurately.
-- Earlier Career Peeler ZIPs and screenshots are superseded by this rebrand. Upload only the freshly validated Rolebeam 0.2.3 package/assets.
+- Earlier Career Peeler ZIPs and screenshots are superseded by this rebrand. Upload only the freshly validated Rolebeam 0.2.4 package/assets.
 
 ## Listing Copy
 
@@ -55,6 +55,7 @@ Rolebeam is an unofficial Apple Careers assistant that helps you compare jobs wi
 Jobs
 
 • Upload a PDF resume and review its extracted candidate profile.
+• Choose a full-size compatible model from a searchable picker using your own API key.
 • Scan all pages of your filtered Apple Careers search and rank jobs against your resume.
 • Reuse saved descriptions and scores, with clear partial-scan and recovery status.
 • Review ranked jobs, save an application queue and select the specific roles you want to apply for.
@@ -156,6 +157,7 @@ No shared Apple credentials or private API keys are provided. The automated suit
 | `screenshot-2-settings-1280x800.png` | Current React Setup UI with no credential or personal resume. |
 | `screenshot-3-progress-logs-1280x800.png` | Current React Submissions UI with sanitized offline demo data. |
 | `screenshot-4-application-answers-1280x800.png` | Current Application Profile and exact-question editor, showing unset personal answers. |
+| `screenshot-5-model-picker-1280x800.png` | Current model sheet with Recommended and searchable compatible models, using offline demonstration availability. |
 
 See `store-assets/source/README.md` for capture provenance and reproducibility. Screenshots show the actual source-rendered side panel; surrounding captions and demo records are illustrative. No real account data or claimed live submission success is used.
 

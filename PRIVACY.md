@@ -24,7 +24,7 @@ OpenAI is the only AI provider integrated into Rolebeam. You provide your own AP
 
 Depending on the feature you enable or request, the extension sends:
 
-- **Key validation:** your API credential in the authorization header when checking the models endpoint.
+- **Key validation and model discovery:** your API credential in the authorization header when checking the models endpoint. Model discovery reads model identifiers/basic availability, filters them through the packaged compatibility list, and caches results briefly in background-worker memory. It does not send your resume, profile or saved application answers, or generate a completion.
 - **CandidateProfile extraction:** the uploaded PDF, including its contents and filename, to extract a structured profile.
 - **Job ranking and submission analysis:** resume text/profile evidence (including explicit profile edits), experience settings, and relevant job descriptions, responsibilities and qualifications.
 - **Unresolved required application questions:** the question, observed answer choices, relevant job/page context, resume evidence and relevant saved contact/profile values. For required open-text questions, OpenAI's hosted web search may be used for public company or role context.

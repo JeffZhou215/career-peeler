@@ -1,10 +1,10 @@
 # Private Chrome Release Preparation
 
-Prepared October 18, 2026. Target: **Rolebeam 0.2.3**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
+Prepared October 18, 2026. Target: **Rolebeam 0.2.4**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
 
 ## Prepared Material
 
-- Installable ZIP: `release/rolebeam-0.2.3-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
+- Installable ZIP: `release/rolebeam-0.2.4-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
 - Publisher/listing worksheet: `store-assets/PRIVATE_LISTING.md`.
 - Privacy-policy source: `PRIVACY.md`; host the current document at a public HTTPS URL before store submission.
 - Approved Rolebeam Letterform icon, promotional images and sanitized source-rendered UI screenshots: `store-assets/`.
@@ -21,10 +21,10 @@ npm run release:private
 
 This runs the full offline automated suite, runtime syntax checks and production build, then packages the validated `dist/` using `scripts/package-private-release.mjs`. It writes:
 
-- `release/rolebeam-0.2.3-private-beta.zip`
-- `release/rolebeam-0.2.3-private-beta.zip.sha256`
-- `release/rolebeam-0.2.3-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
-- `release/rolebeam-0.2.3-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
+- `release/rolebeam-0.2.4-private-beta.zip`
+- `release/rolebeam-0.2.4-private-beta.zip.sha256`
+- `release/rolebeam-0.2.4-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
+- `release/rolebeam-0.2.4-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
 
 The runtime allowlist excludes repository/developer material. Review the JSON and checksum; a dirty source flag means the package includes changes beyond the recorded base commit, so retain that exact reviewable source state. Running this command does not upload, invite testers or publish.
 
@@ -35,12 +35,13 @@ Rolebeam replaces the Career Peeler display name and assets. The Letterform mark
 ## Before Upload
 
 - [ ] Full test suite, runtime syntax checks and production build pass on the exact package source.
-- [ ] Inspect ZIP entry list and manifest: Rolebeam name and Letterform icon, version 0.2.3, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
+- [ ] Inspect ZIP entry list and manifest: Rolebeam name and Letterform icon, version 0.2.4, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
 - [ ] Verify the package digest and retain the source commit reference.
 - [ ] Load the ZIP's extracted files in a **new separate Chrome profile**. Do not copy a developer Chrome profile or IndexedDB data.
 - [ ] Confirm fresh install opens Jobs/Submissions/Setup, has no PDF/key/history and leaves application consent disabled.
 - [ ] Review the default two-year experience value, then set the test user's real value before ranking.
 - [ ] Verify Setup's required answers are blank/unresolved until explicitly saved. Review all displayed settings before using application assistance.
+- [ ] Verify Model opens the selection sheet, only compatible models available to the test key can be selected, and Cancel or a failed refresh preserves the saved choice. Mini/nano and unsupported old settings must not start matching.
 - [ ] Confirm no extension data or logs contain real applicant details in graphical assets.
 - [ ] Test safe public-list Scan And Rank in **Review Then Apply** mode; inspect partial/complete status, Stop/Resume and cache behavior without final applications.
 - [ ] With an account that already has submissions, inspect existing-tab passive sync and explicit Sync. Never withdraw applications to manufacture an empty-list fixture.

@@ -539,7 +539,7 @@ function jsonFetchResponse(payload) {
 
 asyncTest("callOpenAi parses the chat completion content out of a stubbed response", async () => {
   await withStubbedFetch(jsonFetchResponse({ hello: "world" }), async () => {
-    const content = await callOpenAi([{ role: "user", content: "hi" }], { apiKey: "sk-test", model: "gpt-4o-mini" });
+    const content = await callOpenAi([{ role: "user", content: "hi" }], { apiKey: "sk-test", model: "gpt-4o" });
     assert.equal(JSON.parse(content).hello, "world");
   });
 });
@@ -572,7 +572,7 @@ asyncTest("callOpenAi aborts a stalled provider request instead of hanging indef
       await assert.rejects(
         callOpenAi([{ role: "user", content: "hi" }], {
           apiKey: "sk-test",
-          model: "gpt-4o-mini",
+          model: "gpt-4o",
           timeoutMs: 5
         }),
         /timed out/i
@@ -590,12 +590,12 @@ asyncTest("callOpenAi increments the shared call counter on every call; testApiK
   assert.equal(getOpenAiCallCount(), 0);
 
   await withStubbedFetch(jsonFetchResponse({ hello: "world" }), async () => {
-    await callOpenAi([{ role: "user", content: "hi" }], { apiKey: "sk-test", model: "gpt-4o-mini" });
+    await callOpenAi([{ role: "user", content: "hi" }], { apiKey: "sk-test", model: "gpt-4o" });
   });
   assert.equal(getOpenAiCallCount(), 1);
 
   await withStubbedFetch(jsonFetchResponse({ hello: "world" }), async () => {
-    await callOpenAi([{ role: "user", content: "hi" }], { apiKey: "sk-test", model: "gpt-4o-mini" });
+    await callOpenAi([{ role: "user", content: "hi" }], { apiKey: "sk-test", model: "gpt-4o" });
   });
   assert.equal(getOpenAiCallCount(), 2, "a second call increments again rather than overwriting");
 
@@ -1496,7 +1496,7 @@ asyncTest("extractCandidateProfileFromResume sends the resume as a file content 
         resumeFileDataUrl: "data:application/pdf;base64,JVBERi0xLjQK",
         resumeFileName: "resume.pdf",
         apiKey: "sk-test",
-        model: "gpt-4o-mini"
+        model: "gpt-4o"
       });
 
       assert.equal(result.ok, true);
@@ -1539,7 +1539,7 @@ asyncTest("extractCandidateProfileFromResume rejects non-PDF files before callin
         resumeFileDataUrl: "data:application/msword;base64,AAAA",
         resumeFileName: "resume.doc",
         apiKey: "sk-test",
-        model: "gpt-4o-mini"
+        model: "gpt-4o"
       });
 
       assert.equal(result.ok, false);
@@ -1557,7 +1557,7 @@ asyncTest("extractCandidateProfileFromResume returns a clear, actionable error w
         resumeFileDataUrl: "data:application/pdf;base64,JVBERi0xLjQK",
         resumeFileName: "resume.pdf",
         apiKey: "sk-test",
-        model: "gpt-4o-mini"
+        model: "gpt-4o"
       });
 
       assert.equal(result.ok, false);
@@ -1574,7 +1574,7 @@ asyncTest("extractCandidateProfileFromResume fails clearly instead of silently s
       throw new Error("fetch should not have been called");
     },
     async () => {
-      const result = await extractCandidateProfileFromResume({ resumeFileDataUrl: "", apiKey: "sk-test", model: "gpt-4o-mini" });
+      const result = await extractCandidateProfileFromResume({ resumeFileDataUrl: "", apiKey: "sk-test", model: "gpt-4o" });
       assert.equal(result.ok, false);
     }
   );

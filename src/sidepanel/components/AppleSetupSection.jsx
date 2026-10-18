@@ -3,6 +3,7 @@ import { HelpTooltip } from "./HelpTooltip";
 import { CandidateProfileSection } from "./CandidateProfileSection";
 import { RequiredApplicationAnswers, SavedQuestionAnswers } from "./RequiredApplicationAnswers";
 import { ApiKeyValidationStatus } from "./ApiKeyValidationStatus";
+import { ModelPicker } from "./ModelPicker";
 import { useResumeExtraction } from "../hooks/useResumeExtraction";
 import { useApiKeyValidation } from "../hooks/useApiKeyValidation";
 import { useProfileField } from "../hooks/useDraftField";
@@ -13,7 +14,6 @@ export function AppleSetupSection({ profile, save }) {
   const picker = useRef(null);
   const parsedFile = useRef(null);
   const apiKey = useProfileField(profile, save, "llmApiKey");
-  const model = useProfileField(profile, save, "llmModel");
   const validation = useApiKeyValidation({ provider: "openai", apiKey: profile.llmApiKey, profile, save });
   const fingerprint = profile.resumeFileDataUrl ? fingerprintText(profile.resumeFileDataUrl) : null;
   const textReady = Boolean(profile.resumeText?.trim() && profile.resumeTextFingerprint === fingerprint);
@@ -43,7 +43,7 @@ export function AppleSetupSection({ profile, save }) {
       <label className="checkbox-row"><input type="checkbox" checked={profile.llmEnabled} onChange={(event) => save({ llmEnabled: event.target.checked })} /><span>Enable LLM Matching</span></label>
       <label className="field-label" htmlFor="llmApiKey">OpenAI API Key</label><input id="llmApiKey" type="password" autoComplete="off" placeholder="sk-…" {...apiKey} />
       <ApiKeyValidationStatus status={validation.status} message={validation.message} testing={validation.status === "testing"} onTest={validation.testNow} />
-      <label className="field-label" htmlFor="llmModel">Model</label><input id="llmModel" {...model} />
+      <ModelPicker profile={profile} save={save} />
     </div>
     <details className="ios-group compact-fold"><summary>Application Profile</summary><div className="compact-fold-body">
       <label className="field-label" htmlFor="years">Years Of Professional Experience<HelpTooltip text="Use the experience level supported by your resume. Explicit required experience and senior scope are assessed separately from general skills." /></label>

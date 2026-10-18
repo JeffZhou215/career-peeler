@@ -1,17 +1,17 @@
 # Store Asset Provenance
 
-Generated October 18, 2026 for the Apple-only Rolebeam 0.2.3 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
+Generated October 18, 2026 for the Apple-only Rolebeam 0.2.4 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
 
 ## UI Screenshots
 
-`capture-current-ui.cjs` renders the repository's **actual React side-panel source** through Vite in a new isolated headless Chrome context. It captures Jobs, Setup, Submissions and the expanded Application Profile, then composites each unmodified 450 × 800 capture onto a 1280 × 800 caption background.
+`capture-current-ui.cjs` renders the repository's **actual React side-panel source** through Vite in a new isolated headless Chrome context. It captures Jobs, Setup, Submissions, the expanded Application Profile and the model selection sheet, then composites each unmodified 450 × 800 capture onto a 1280 × 800 caption background.
 
 - Uses the current App/components/styles; does not draw or imitate a replacement product interface.
 - Chrome APIs are mocked and submission archive data uses the real IndexedDB adapter in the isolated origin.
 - Job titles, synthetic IDs, scores, counts and scan state are **offline demonstration data**. They are not actual Apple postings or matching results.
-- No personal applicant identity, PDF, API key, saved legal/EEO answer, real history or account is loaded.
+- No personal applicant identity, PDF, real API key, saved legal/EEO answer, real history or account is loaded. The model-sheet capture uses an explicit nonfunctional placeholder and a synthetic available-model response.
 - Every non-localhost request is blocked. No Apple/OpenAI request, submission or withdrawal occurs.
-- Operation message handlers return an offline error except read-only ranking data. Only view tabs and disclosure summaries are clicked during capture. No action, consent or personal-answer control is selected.
+- Operation message handlers return an offline error except read-only ranking data and the explicitly mocked placeholder key/model discovery. View tabs, disclosure summaries and the model-sheet opener are clicked during capture. No application, withdrawal, consent or personal-answer action is selected.
 - No real Chrome profile/session is accessed.
 - Caption panels explicitly label the source-rendered UI and dummy data.
 - This proves visual rendering, not native extension permission handling, worker recovery or live Apple integration.
@@ -32,6 +32,7 @@ The first three PNGs retain historical filenames for listing compatibility:
 - `screenshot-2-settings-1280x800.png`: Setup without uploaded resume or credential.
 - `screenshot-3-progress-logs-1280x800.png`: Submissions, capacity/sync, filters and protected role.
 - `screenshot-4-application-answers-1280x800.png`: Setup's expanded Application Profile and Saved Question Answers, scrolled to the blank personal-answer controls. Shows unset answers, an empty start date, unchecked immediate availability and the exact-question editor.
+- `screenshot-5-model-picker-1280x800.png`: native model selection sheet with Recommended and searchable compatible entries. The list is synthetic and does not establish any real key's model access.
 
 Inspect all outputs visually after rerunning. Dates/relative time are generated from the capture time; demo status must never be represented as a live verified account.
 

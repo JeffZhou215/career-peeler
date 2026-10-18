@@ -25,16 +25,23 @@ const local={appleCareersUserProfile:{userYearsOfExperience:2,afterRanking:'revi
  await context.route('**/*',r=>{const u=new URL(r.request().url());return u.hostname==='127.0.0.1'?r.continue():r.abort('blockedbyclient');});
  await context.addInitScript(({local,view})=>{
   const listeners=new Set();const messages=new Set(); const data=structuredClone(local);
-  window.chrome={storage:{onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},local:{get:async k=>k==null?structuredClone(data):Object.fromEntries((Array.isArray(k)?k:typeof k==='string'?[k]:Object.keys(k)).filter(k=>Object.hasOwn(data,k)).map(k=>[k,structuredClone(data[k])])),set:async patch=>{Object.assign(data,structuredClone(patch));for(const f of listeners)f(Object.fromEntries(Object.entries(patch).map(([k,v])=>[k,{newValue:v}])),'local');},remove:async keys=>{for(const k of typeof keys==='string'?[keys]:keys)delete data[k];}},session:{set:async()=>{}}},runtime:{onMessage:{addListener:f=>messages.add(f),removeListener:f=>messages.delete(f)},sendMessage:async m=>m.type==='APPLE_CAREERS_GET_JOB_RANKING'?{ok:true,data:structuredClone(view)}:{ok:false,error:'Offline screenshot: actions disabled.'}},windows:{getCurrent:async()=>({id:1})},tabs:{query:async()=>[],onActivated:{addListener:()=>{},removeListener:()=>{}},onUpdated:{addListener:()=>{},removeListener:()=>{}}}};
+  window.chrome={storage:{onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},local:{get:async k=>k==null?structuredClone(data):Object.fromEntries((Array.isArray(k)?k:typeof k==='string'?[k]:Object.keys(k)).filter(k=>Object.hasOwn(data,k)).map(k=>[k,structuredClone(data[k])])),set:async patch=>{Object.assign(data,structuredClone(patch));for(const f of listeners)f(Object.fromEntries(Object.entries(patch).map(([k,v])=>[k,{newValue:v}])),'local');},remove:async keys=>{for(const k of typeof keys==='string'?[keys]:keys)delete data[k];}},session:{set:async()=>{}}},runtime:{onMessage:{addListener:f=>messages.add(f),removeListener:f=>messages.delete(f)},sendMessage:async m=>{
+   if(m.type==='APPLE_CAREERS_GET_JOB_RANKING') return {ok:true,data:structuredClone(view)};
+   if(m.apiKey==='offline-demo-placeholder-not-a-real-key') {
+    if(m.type==='APPLE_CAREERS_TEST_API_KEY') return {status:'valid'};
+    if(m.type==='APPLE_CAREERS_LIST_OPENAI_MODELS') return {ok:true,data:{checkedAt:new Date().toISOString(),models:['gpt-6.1-sol','gpt-5.5','gpt-4o','gpt-4.1'].map(id=>window.RolebeamOpenAiModels.getModel(id))}};
+   }
+   return {ok:false,error:'Offline screenshot: actions disabled.'};
+  }},windows:{getCurrent:async()=>({id:1})},tabs:{query:async()=>[],onActivated:{addListener:()=>{},removeListener:()=>{}},onUpdated:{addListener:()=>{},removeListener:()=>{}}}};
  },{local,view});
  const page=await context.newPage();page.setDefaultTimeout(10000);page.on('pageerror',e=>{errors.push(String(e));console.error('PAGE ERROR:',e)});page.on('console',m=>{if(m.type()==='error'){errors.push(m.text());console.error('CONSOLE:',m.text())}});page.on('requestfailed',r=>console.error('FAILED:',r.url(),r.failure()));
  await page.goto('http://127.0.0.1:4177/sidepanel.html',{waitUntil:'networkidle'});
  await page.getByRole('heading',{name:'Apple Careers',exact:true}).waitFor();
  // Use the real helper for cache signature, avoiding a misleading stale-score banner.
  await page.evaluate(async archive=>{const p=await import('/src/sidepanel/lib/profile.js');archive.latestScan.matchSignature=p.fingerprintText(p.resolveResumeProfileText(p.normalizeProfile({userYearsOfExperience:2,llmEnabled:false}))+'|2');await window.CareerPeelerJobStore.set({appleSubmittedRoleReviews:archive});},archive);
- const shots=[['jobs','screenshot-1-overview-1280x800.png','Rank Your Search','Compare jobs against your resume.','Scan the complete filtered search, review','ranked roles, then choose what to queue.'],['setup','screenshot-2-settings-1280x800.png','Your Resume. Your Settings.','Start with a PDF resume.','Review extracted evidence and saved answers.','Use your own OpenAI key for AI features.'],['submissions','screenshot-3-progress-logs-1280x800.png','Manage Submissions','See capacity and synchronization status.','Search one saved collection, analyze fit,','and explicitly review withdrawal selections.'],['answers','screenshot-4-application-answers-1280x800.png','Your Answers. No Guessing.','Save personal answers explicitly.','Missing or ambiguous answers stop for review.','No inferred legal answers or start dates.']];
+ const shots=[['jobs','screenshot-1-overview-1280x800.png','Rank Your Search','Compare jobs against your resume.','Scan the complete filtered search, review','ranked roles, then choose what to queue.'],['setup','screenshot-2-settings-1280x800.png','Your Resume. Your Settings.','Start with a PDF resume.','Review extracted evidence and saved answers.','Use your own OpenAI key for AI features.'],['submissions','screenshot-3-progress-logs-1280x800.png','Manage Submissions','See capacity and synchronization status.','Search one saved collection, analyze fit,','and explicitly review withdrawal selections.'],['answers','screenshot-4-application-answers-1280x800.png','Your Answers. No Guessing.','Save personal answers explicitly.','Missing or ambiguous answers stop for review.','No inferred legal answers or start dates.'],['models','screenshot-5-model-picker-1280x800.png','Choose Your Model.','Compatible choices. No typing.','Search models available to your key.','Full models only. Mini and nano excluded.']];
  for(const [tab,file,title,sub,l1,l2] of shots){
-  await page.getByRole('tab',{name:tab==='jobs'?'Jobs':['setup','answers'].includes(tab)?'Setup':'Submissions',exact:true}).click();
+  await page.getByRole('tab',{name:tab==='jobs'?'Jobs':['setup','answers','models'].includes(tab)?'Setup':'Submissions',exact:true}).click();
   await page.waitForTimeout(300);
   await page.evaluate(()=>document.querySelector('.ios-workspace').scrollTop=0);
   if(tab==='answers'){
@@ -46,11 +53,26 @@ const local={appleCareersUserProfile:{userYearsOfExperience:2,afterRanking:'revi
     workspace.scrollTop+=target.getBoundingClientRect().top-workspace.getBoundingClientRect().top-10;
    });
   }
+  if(tab==='models'){
+   await page.evaluate(async()=>{
+    const {fingerprintText}=await import('/src/sidepanel/lib/profile.js');
+    const key='offline-demo-placeholder-not-a-real-key';
+    const stored=await chrome.storage.local.get('appleCareersUserProfile');
+    await chrome.storage.local.set({appleCareersUserProfile:{...stored.appleCareersUserProfile,llmApiKey:key,llmApiKeyValidationStatus:'valid',llmApiKeyValidatedFingerprint:fingerprintText(key)}});
+    document.querySelector('.ios-workspace').scrollTop=0;
+   });
+   await page.locator('.model-picker-setting').click();
+   await page.getByRole('dialog',{name:'Choose A Model'}).waitFor();
+   await page.getByText('Available To This Key · 4 Compatible Models',{exact:true}).waitFor();
+   await page.getByRole('dialog',{name:'Choose A Model'}).evaluate(async element=>{
+    await Promise.all(element.getAnimations().map(animation=>animation.finished));
+   });
+  }
   const raw=await page.screenshot();
   const bg=Buffer.from(`<svg width="1280" height="800" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#17142e"/><stop offset="1" stop-color="#25215a"/></linearGradient></defs><rect width="1280" height="800" fill="url(#g)"/><text x="528" y="186" fill="#78edd0" font-size="17" letter-spacing="4" font-family="Arial,sans-serif">ROLEBEAM · PRIVATE BETA</text><text x="528" y="266" fill="#f6f6f8" font-size="39" font-weight="700" font-family="Arial,sans-serif">${title}</text><text x="528" y="325" fill="#e1e3e7" font-size="24" font-family="Arial,sans-serif">${sub}</text><text x="528" y="375" fill="#a7aab4" font-size="21" font-family="Arial,sans-serif">${l1}</text><text x="528" y="410" fill="#a7aab4" font-size="21" font-family="Arial,sans-serif">${l2}</text><rect x="528" y="668" rx="9" width="646" height="61" fill="#272b31"/><text x="549" y="693" fill="#d5d8df" font-size="15" font-family="Arial,sans-serif">Actual side-panel UI · Sanitized offline demonstration data</text><text x="549" y="714" fill="#a7aab4" font-size="14" font-family="Arial,sans-serif">No real account, applications, withdrawals, credentials or API calls</text></svg>`);
   await sharp(bg).composite([{input:raw,left:24,top:0}]).png().toFile(path.join(out,file));
  }
  if(errors.length)throw new Error(errors.join('\n'));
- console.log('Captured four actual React UI screenshots for 0.2.3. External network requests blocked.');
+ console.log('Captured five actual React UI screenshots for 0.2.4. External network requests blocked.');
  } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

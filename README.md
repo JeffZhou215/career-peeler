@@ -22,10 +22,12 @@ In Chrome, open **Extensions → Developer Mode → Load Unpacked** and select `
 ## Start With Setup
 
 1. Open **Setup → Your Resume → Upload Resume** and choose a PDF.
-2. Under **AI Matching**, check **Enable LLM Matching**, enter your OpenAI API key, choose a model, and click **Test API Key**.
+2. Under **AI Matching**, check **Enable LLM Matching**, enter your OpenAI API key, and click **Test API Key**. Tap **Model** to open the selection sheet, choose from **Recommended** or search the compatible models available to your key, then tap **Done**.
 3. Click **Extract Profile From Resume** if the profile is not ready. Review the extracted profile and **Parsed Resume Text**.
 4. Expand **Application Profile** and check your experience and required application answers. Save your own work authorization, sponsorship, age eligibility, prior Apple employment and start availability. These start unset; a saved date or explicit **Immediately** controls availability.
 5. In **Saved Question Answers**, copy the exact wording of a criminal-history or differently scoped question and save your own Yes/No answer. Answers only cover that wording. Missing, conflicting, expired or unsupported personal answers stop the role for manual review; the extension does not guess them from your resume or ask AI to invent them.
+
+The model picker uses a curated full-size model list with GPT-4o as the baseline. Mini, nano and specialized models are excluded. Model discovery reads OpenAI's models endpoint; it does not send your resume or generate a paid completion. A failed refresh keeps your saved choice. Changing models makes prior matching results stale; it does not silently rerun a scan or change an active workflow. See [Model Selection](docs/model-selection.md) for compatibility and availability limits.
 
 ## Find And Apply For Jobs
 

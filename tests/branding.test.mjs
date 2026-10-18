@@ -24,7 +24,7 @@ test("Rolebeam release metadata is consistent across the extension, package and 
     json("manifest.json"), json("package.json"), json("package-lock.json"), read("sidepanel.html")
   ]);
   assert.equal(manifest.name, "Rolebeam");
-  assert.equal(manifest.version, "0.2.3");
+  assert.equal(manifest.version, "0.2.4");
   assert.equal(pkg.name, "rolebeam");
   assert.equal(pkg.version, manifest.version);
   assert.equal(lock.name, pkg.name);
