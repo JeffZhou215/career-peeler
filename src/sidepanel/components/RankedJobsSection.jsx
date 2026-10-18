@@ -360,7 +360,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     {view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
       ? `The previous scan was interrupted. Choose Resume Scan to continue from page ${(latestSearch.pagesRead || 0) + 1} using saved scores.`
       : view?.recovery?.reconciliationRequired
-        ? "The application workflow was interrupted. Sync Submissions, then review your selection before starting again. No applications resumed automatically."
+        ? view.recovery.message || "The application workflow was interrupted. Sync Submissions, then review your selection before starting again. No applications resumed automatically."
         : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
     {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}
       {!error && view?.errorJob && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">

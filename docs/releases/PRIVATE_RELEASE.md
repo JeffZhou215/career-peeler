@@ -58,6 +58,7 @@ This preparation preserves current behavior and the user's existing safety prote
 - Some installation-specific protected-role rules remain. They only prevent withdrawals; they should be generalized in a separate reviewed change before broader distribution. Personal IDs/details are intentionally omitted from public-facing copy.
 - Matching uses the Setup PDF plus explicit profile edits. Actual applications use Apple's saved resume; the user must verify it.
 - Unknown submission/withdrawal results pause and require reconciliation. A fresh selection never grants permission to replay an unknown final action.
+- A verified Active inventory can synchronize capacity even when an interrupted application's exact location-specific job ID remains unresolved. A separate warning links that role; application automation stays paused, and the inventory's base ID is not treated as confirmation of the full reviewed ID.
 - Offline tests cover adverse sequences, not the native browser's full timing or Apple's internal server state. Do not claim live withdrawal verification occurred.
 
 Before inviting testers, verify a clean profile has no assumed personal answers. Save only truthful answers for that user and inspect the actual Apple review page; unsupported wording remains a manual task. The extension does not guarantee that every possible Apple question can be automated.

@@ -3252,12 +3252,12 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
     await CareerPeelerJobStore.set({ [APPLE_SUBMITTED_ROLE_REVIEWS_KEY]: archive });
     if (complete) {
       await quiesceRecoveredAppleWorkflow();
-      const workflow = await reconcileAppleApplicationSession(archive.latestScan);
+      const { workflow, recoveryWarning } = await reconcileAppleApplicationInventory(archive.latestScan);
       const ranking = await readAppleRankingState();
       ranking.capacitySnapshot = archive.latestScan;
       ranking.reservations = unresolvedAppleWorkflowReservations(workflow);
       await saveAppleRankingState(ranking, { jobs: [], applicationFailures: [] });
-      await completeAppleSubmissionSync(inventory);
+      await completeAppleSubmissionSync(inventory, { recoveryWarning });
     }
   };
   const publish = async (review) => {

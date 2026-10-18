@@ -44,6 +44,34 @@ test("successful timestamps have machine-readable dates and survive a reopened s
   assert.ok(renderStatus(record).includes(`dateTime="${new Date(now).toISOString()}"`));
 });
 
+test("verified capacity and unresolved exact application identity have separate status and review link", () => {
+  const recoveryWarning = { message: "Application needs review. Automatic applications remain paused.",
+    jobId: "200123456-0836", title: "Software Engineer", url: "https://jobs.apple.com/en-us/details/200123456-0836/engineer" };
+  const html = renderStatus({ state: "synced", lastSuccessAt: now, lastVerifiedCount: 1, recoveryWarning });
+  assert.match(html, /Synced just now/);
+  assert.match(html, /Application needs review/);
+  assert.match(html, /Automatic applications remain paused/);
+  assert.ok(html.includes(`href="${recoveryWarning.url}"`));
+  assert.match(html, /Review Software Engineer \(Job ID 200123456-0836\)/);
+  assert.doesNotMatch(html, /Sync failed|capacity unknown|>Retry</);
+  assert.doesNotMatch(renderStatus({ state: "failed", lastSuccessAt: now, recoveryWarning }), /Application needs review/);
+});
+
+test("a reopened panel restores the successful count timestamp together with its separate recovery warning", async () => {
+  const record = { state: "synced", lastSuccessAt: now, lastVerifiedCount: 1,
+    recoveryWarning: { jobId: "200123456-0836", message: "Automatic applications remain paused." } };
+  const storage = { local: { get: async () => ({ appleSubmissionSyncStatus: record }) },
+    onChanged: { addListener() {}, removeListener() {} } };
+  for (let count = 0; count < 2; count++) {
+    const received = [];
+    const stop = watchStatus(status => received.push(status), storage);
+    await Promise.resolve(); stop();
+    assert.deepEqual(received, [record]);
+    assert.match(renderStatus(received[0]), /Synced just now/);
+    assert.match(renderStatus(received[0]), /Automatic applications remain paused/);
+  }
+});
+
 test("live sync updates cannot be overwritten by an older asynchronous panel-opening read", async () => {
   let listener, resolve;
   const stale = new Promise(done => { resolve = done; });

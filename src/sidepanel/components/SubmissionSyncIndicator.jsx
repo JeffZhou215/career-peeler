@@ -12,5 +12,11 @@ export function SubmissionSyncIndicator({ status = {}, now = Date.now(), onRetry
       {status.state === "synced" || !status.state ? `Verified ${new Date(status.lastSuccessAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : `Last successful sync: ${new Date(status.lastSuccessAt).toLocaleString()}`}
     </time>}
     {status.message && (status.state === "failed" || status.state === "deferred") && <span>{status.message}</span>}
+    {status.state === "synced" && status.recoveryWarning && <span className="submission-recovery-warning">
+      {status.recoveryWarning.message}
+      {status.recoveryWarning.url && <> <a href={status.recoveryWarning.url} target="_blank" rel="noopener noreferrer">
+        Review {status.recoveryWarning.title} (Job ID {status.recoveryWarning.jobId})
+      </a></>}
+    </span>}
   </div>;
 }
