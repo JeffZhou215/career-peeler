@@ -1,0 +1,60 @@
+{
+  "fixtureVersion": 1,
+  "provenance": {
+    "observedOn": "2026-10-18",
+    "description": "Sanitized public job identity and generic signed-in controls from read-only Apple Careers job-detail observations. No resume, account identity, application answers, job description, cookies, or tokens are included.",
+    "fullIdentifierObservation": "The signed-in full job URL displayed the same full identifier in Role Number and both Submitted aria-labels.",
+    "baseIdentifierObservation": "The user-supplied base-URL outerHTML displayed only the base identifier. It is a negative fixture for the separately reviewed suffixed role."
+  },
+  "expectedJobId": "200670922-0836",
+  "url": "https://jobs.apple.com/en-us/details/200670922-0836/ml-engineer-apple-foundation-models",
+  "title": "ML Engineer, Apple Foundation Models",
+  "wrapper": {
+    "tagName": "DIV",
+    "attributes": { "id": "jobdetails-wrapper", "dir": "ltr", "lang": "en-US" },
+    "children": [
+      {
+        "tagName": "H1",
+        "text": "ML Engineer, Apple Foundation Models",
+        "attributes": { "id": "jobdetails-postingtitle", "tabindex": "-1" }
+      },
+      {
+        "tagName": "STRONG",
+        "text": "200670922-0836",
+        "attributes": { "id": "jobdetails-jobnumber", "itemprop": "identifier" }
+      },
+      {
+        "tagName": "A",
+        "text": "Submitted",
+        "attributes": {
+          "id": "jobdetails-jobdetails-jobdetailheader-actions-jobdetailssubmitresume",
+          "class": "button button-link disabled button-block button-neutral",
+          "role": "link",
+          "aria-disabled": "true",
+          "tabindex": "-1",
+          "aria-label": "Submitted: ML Engineer, Apple Foundation Models 200670922-0836"
+        }
+      },
+      {
+        "tagName": "A",
+        "text": "Submitted",
+        "attributes": {
+          "id": "jobdetails-jobdetails-jobdetailfooter-actions-jobdetailssubmitresume",
+          "class": "button button-link disabled button-block button-neutral",
+          "role": "link",
+          "aria-disabled": "true",
+          "tabindex": "-1",
+          "aria-label": "Submitted: ML Engineer, Apple Foundation Models 200670922-0836"
+        }
+      }
+    ]
+  },
+  "accountControls": [
+    { "tagName": "A", "text": "Sign Out", "attributes": { "id": "search-localnav-link-sign-out", "href": "/en-us/logout" } }
+  ],
+  "baseIdentifierVariant": {
+    "url": "https://jobs.apple.com/en-us/details/200670922/ml-engineer-apple-foundation-models",
+    "roleNumber": "200670922",
+    "ariaLabel": "Submitted: ML Engineer, Apple Foundation Models 200670922"
+  }
+}

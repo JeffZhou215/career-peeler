@@ -2543,6 +2543,38 @@ async function readAppleJobApplicability(expectedJobId) {
 // Recovery needs stronger evidence than a generic Submitted button or an
 // already-applied notice (which can also describe a withdrawn application).
 // Observe only; never open an application or click a control to obtain proof.
+function readAppleSubmittedControlEvidence(expectedJobId) {
+  const wrappers = document.querySelectorAll("#jobdetails-wrapper");
+  if (wrappers.length !== 1) return null;
+  const wrapper = wrappers[0];
+  const titles = wrapper.querySelectorAll("#jobdetails-postingtitle");
+  const numbers = wrapper.querySelectorAll("#jobdetails-jobnumber[itemprop='identifier']");
+  if (titles.length !== 1 || numbers.length !== 1 || !isElementVisible(titles[0]) || !isElementVisible(numbers[0])) return null;
+  const nodes = [wrapper];
+  const controls = [];
+  for (const id of ["jobdetails-jobdetails-jobdetailheader-actions-jobdetailssubmitresume",
+    "jobdetails-jobdetails-jobdetailfooter-actions-jobdetailssubmitresume"]) {
+    const matches = wrapper.querySelectorAll(`[id="${id}"]`);
+    if (matches.length !== 1) return null;
+    const control = matches[0];
+    nodes.push(control);
+    controls.push({ id, tagName: control.tagName, role: control.getAttribute("role"),
+      ariaDisabled: control.getAttribute("aria-disabled"), tabIndex: control.getAttribute("tabindex"),
+      href: control.getAttribute("href"), ariaLabel: control.getAttribute("aria-label"),
+      text: normalizeText(control.innerText || control.textContent || ""),
+      disabledClass: control.classList.contains("disabled"), visible: isElementVisible(control), connected: control.isConnected });
+  }
+  const signOut = document.querySelectorAll("#search-localnav-link-sign-out");
+  const signIn = document.querySelectorAll("#search-localnav-link-sign-in");
+  const controlEvidence = { url: window.location.href, title: normalizeText(titles[0].innerText || titles[0].textContent || ""),
+    roleNumber: normalizeText(numbers[0].innerText || numbers[0].textContent || ""), controls,
+    authenticated: signOut.length === 1 && isElementVisible(signOut[0]) &&
+      /\/logout\/?(?:[?#]|$)/i.test(signOut[0].getAttribute("href") || "") &&
+      !Array.from(signIn).some(isElementVisible) };
+  const signal = CareerPeelerApplicationSafety.submittedControlEvidence(expectedJobId, controlEvidence);
+  return signal ? { ...signal, controlEvidence, nodes } : null;
+}
+
 async function readAppleRecoverySubmissionStatus(expectedJobId, requestId, notBefore) {
   const observe = () => {
     assertAppleWorkflowIdentity({ expectedJobId });
@@ -2551,19 +2583,31 @@ async function readAppleRecoverySubmissionStatus(expectedJobId, requestId, notBe
         globalThis.performance.timeOrigin < notBefore) return null;
     if (getSessionRequiredSignal()) return null;
     if (document.readyState === "loading" || getLoadingSignal()) return null;
-    const signal = getJobBoundSubmissionSignal(expectedJobId);
-    if (signal && /\b(?:no|not|never|cannot|unable|failed|failure|rejected|withdrawn|withdraw|inactive|unsuccessful|error|pending)\b|n['’]t\b/i.test(signal.text)) return null;
+    const negative = /\b(?:no|not|never|cannot|unable|failed|failure|rejected|withdrawn|withdraw|inactive|unsuccessful|error|pending)\b|n['’]t\b/i;
+    if (Array.from(document.querySelectorAll("#global-alert, [role='alert'], [data-autom='submission-confirmation']"))
+      .some(element => isElementVisible(element) && negative.test(normalizeText(element.innerText || element.textContent || "")))) return null;
+    const controls = readAppleSubmittedControlEvidence(expectedJobId);
+    // If Apple's known wrapper is present, conflicting/incomplete controls
+    // cannot be bypassed by a stale confirmation elsewhere on the page.
+    if (!controls && document.querySelectorAll("#jobdetails-wrapper").length) return null;
+    const signal = controls || getJobBoundSubmissionSignal(expectedJobId);
+    if (signal && negative.test(signal.text)) return null;
     return signal;
   };
   const first = observe();
   await delay(300);
   const second = observe();
-  const confirmed = Boolean(first && second && first.jobId === second.jobId && first.text === second.text);
+  const confirmed = Boolean(first && second && first.jobId === second.jobId && first.text === second.text &&
+    first.source === second.source && (!first.nodes || first.nodes.every((node, index) =>
+      node === second.nodes?.[index] && node.isConnected)));
+  const signal = confirmed ? { jobId: second.jobId, text: second.text,
+    ...(second.source ? { source: second.source, title: second.title } : {}) } : null;
   return { requestId, jobId: getJobId(), url: window.location.href, identityVerified: true,
     submissionOutcome: confirmed ? "confirmed" : "unknown",
-    proof: confirmed ? "job_identified_submission" : null,
+    proof: confirmed ? second.source || "job_identified_submission" : null,
+    controlEvidence: confirmed ? second.controlEvidence : undefined,
     documentStartedAt: globalThis.performance?.timeOrigin,
-    observedAt: Date.now(), signal: confirmed ? second : null };
+    observedAt: Date.now(), signal };
 }
 
 function getLoadingSignal() {
