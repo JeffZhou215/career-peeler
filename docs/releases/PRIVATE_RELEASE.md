@@ -6,7 +6,7 @@ Prepared October 18, 2026. Target: **Rolebeam 0.2.7**, Apple Careers only, Chrom
 
 - Installable ZIP: `release/rolebeam-0.2.7-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
 - Publisher/listing worksheet: `store-assets/PRIVATE_LISTING.md`.
-- Privacy-policy source: `PRIVACY.md`; host the current document at a public HTTPS URL before store submission.
+- Hosted privacy policy: https://jeffzhou215.github.io/career-peeler/privacy.html. Source: `PRIVACY.md`. Hosting and update instructions: [GitHub Pages](GITHUB_PAGES.md).
 - Approved Rolebeam Letterform icon, promotional images and sanitized source-rendered UI screenshots: `store-assets/`.
 - Asset provenance/reproduction: `store-assets/source/README.md`.
 - Validation results/package digest: use the release manifest/checksum generated with the final ZIP. Do not reuse earlier Career Peeler packages.

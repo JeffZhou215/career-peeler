@@ -15,7 +15,7 @@ Prepared October 18, 2026 for the Apple-only **Rolebeam 0.2.7** private beta. Th
 | Runtime | Chrome Manifest V3 side-panel extension; Apple Careers only |
 | Package | `release/rolebeam-0.2.7-private-beta.zip` |
 | Support | https://github.com/JeffZhou215/career-peeler/issues |
-| Hosted Privacy Policy | `[REQUIRED: publicly accessible HTTPS URL rendering current PRIVACY.md]` |
+| Hosted Privacy Policy | https://jeffzhou215.github.io/career-peeler/privacy.html |
 
 Never enter tester emails, API keys, real resumes or Apple credentials in this tracked file.
 
@@ -23,7 +23,7 @@ Never enter tester emails, API keys, real resumes or Apple credentials in this t
 
 - [ ] Chrome Web Store developer account and final publisher name.
 - [ ] Verified working support/contact email in the developer dashboard.
-- [ ] Public privacy-policy URL; repository Markdown inside the ZIP alone is insufficient.
+- [x] Public privacy-policy URL verified October 18, 2026: https://jeffzhou215.github.io/career-peeler/privacy.html.
 - [ ] Trusted tester Google accounts or an owned tester group, entered privately in the dashboard.
 - [ ] Confirmation of final listing, permission/data disclosures and private distribution settings.
 - [ ] Non-destructive live Chrome smoke verification recorded in the release checklist.
