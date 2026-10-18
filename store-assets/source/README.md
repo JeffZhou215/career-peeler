@@ -1,6 +1,6 @@
 # Store Asset Provenance
 
-Generated October 18, 2026 for the Apple-only Rolebeam 0.2.6 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
+Generated October 18, 2026 for the Apple-only Rolebeam 0.2.7 private-beta preparation. These are local release assets, not evidence of a Chrome Web Store upload or approval.
 
 ## UI Screenshots
 

@@ -195,9 +195,22 @@ test("same-worker unknown outcomes expose exact recovery controls without claimi
   delete h.data[key].recoveredAt;
   const view = await h.sandbox.getAppleRankingView({});
   assert.equal(view.recovered, false);
+  assert.equal(view.workflowSessionId, "reviewed-session");
   assert.equal(view.recovery.sessionId, "reviewed-session");
   assert.equal(view.recovery.jobId, jobId);
   assert.equal(view.recovery.reconciliationRequired, true);
+});
+
+test("a readiness failure explains why the exact status was not verified without changing the pending operation", async () => {
+  const reason = "Apple's job status is still loading. Try Check Application Status again; no application was submitted.";
+  const h = await fixture({ status: ({ proof }) => ({ ok: true, data: { ...proof,
+    submissionOutcome: "unknown", proof: null, signal: null, reasonCode: "page_loading", reason } }) });
+  const result = await h.check();
+  assert.equal(result.ok, true);
+  assert.equal(result.data.resolved, false);
+  assert.equal(result.data.reasonCode, "page_loading");
+  assert.equal(result.data.message, reason);
+  unknown(h);
 });
 
 test("resolving one operation retains another unknown operation and its reservation", async () => {

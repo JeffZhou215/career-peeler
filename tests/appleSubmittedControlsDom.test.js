@@ -106,7 +106,11 @@ function domNode(data) {
       visit(this); return result;
     },
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
-    appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+    appendChild(child) {
+      // Native appendChild moves an existing node rather than duplicating it.
+      if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child);
+      child.parentElement = this; this.children.push(child); return child;
+    },
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; this.connected = false; },
     click() { this.clickCount += 1; throw new Error("Recovery DOM tests must never click a page control."); }
   };
@@ -225,6 +229,7 @@ for (const id of ["jobdetails-wrapper", headerId, footerId]) {
       const h = createDomFixture();
       h.delay = async () => {
         const original = h.node(id);
+        if (!original) return;
         if (mode === "replace") {
           const source = id === "jobdetails-wrapper" ? fixture.wrapper : fixture.wrapper.children.find(node => node.attributes.id === id);
           original.parentElement.appendChild(domNode(source));
@@ -240,7 +245,7 @@ for (const [reason, mutate] of [
   ["full job URL changes", h => { h.window.location = new URL(fixture.url.replace("-0836", "-9999")); }],
   ["role number changes", h => { h.node("jobdetails-jobnumber").innerText = "200670922-9999"; }],
   ["control becomes enabled", h => { h.node(headerId).setAttribute("aria-disabled", "false"); }],
-  ["sign-out disappears", h => { h.node("search-localnav-link-sign-out").remove(); }],
+  ["sign-out disappears", h => { h.node("search-localnav-link-sign-out")?.remove(); }],
   ["error arrives", h => { h.append({ tagName: "DIV", text: "Application failed", attributes: { role: "alert" } }); }],
   ["loading begins", h => { h.document.readyState = "loading"; }]
 ]) {
@@ -250,19 +255,144 @@ for (const [reason, mutate] of [
   });
 }
 
-test("a delayed Submitted render is not confirmed until a later complete stable read", async () => {
+test("a delayed Submitted render is confirmed only after two later complete stable observations", async () => {
   const h = createDomFixture();
   const footer = h.node(footerId); footer.remove();
   h.delay = async () => { h.node("jobdetails-wrapper").appendChild(footer); footer.connected = true; };
-  assertUnknown(await h.read(), "first observation incomplete");
-  h.delay = async () => {};
   const response = await h.read();
   assert.equal(response.ok, true, response.error);
   assert.equal(response.data.submissionOutcome, "confirmed");
+  assert.equal(response.data.pollCount, 3);
 });
 
 test("a delayed matching-title toast with no exact job id cannot replace missing controls", async () => {
   const h = createDomFixture(); h.node(footerId).remove();
   h.delay = async () => { h.append({ tagName: "DIV", text: `Your application for ${fixture.title} has been submitted`, attributes: { role: "alert" } }); };
   assertUnknown(await h.read(), "title-only toast");
+});
+
+function recoveryClock(h, onDelay = () => {}) {
+  const clock = { now: h.performance.timeOrigin, elapsed: 0, delays: 0 };
+  h.Date = class extends Date { static now() { return clock.now; } };
+  h.delay = async ms => {
+    clock.now += ms; clock.elapsed += ms; clock.delays += 1;
+    onDelay(clock);
+  };
+  return clock;
+}
+
+for (const description of [
+  "Experience with natural language processing and foundation models.",
+  "Build efficient systems for loading model checkpoints.",
+  "Contribute to research projects that are in progress.",
+  "Experience submitting research papers to conferences."
+]) {
+  test(`job-description wording is not a recovery loading indicator (${description})`, async () => {
+    const h = createDomFixture();
+    h.node("jobdetails-wrapper").appendChild(domNode({ tagName: "DIV", text: description }));
+    assert.ok(h.getLoadingSignal(), "the unrelated legacy workflow detector is deliberately unchanged");
+    const response = await h.read();
+    assert.equal(response.ok, true, response.error);
+    assert.equal(response.data.submissionOutcome, "confirmed");
+    assert.equal(response.data.reasonCode, "confirmed");
+    assert.equal(response.data.pollCount, 2);
+    assert.equal(response.data.timedOut, false);
+  });
+}
+
+test("recovery waits beyond 300 ms for Apple's Submitted controls to render before taking two stable proofs", async () => {
+  const h = createDomFixture();
+  h.node(headerId).visible = false; h.node(footerId).visible = false;
+  const clock = recoveryClock(h, ({ elapsed }) => {
+    if (elapsed >= 1500) { h.node(headerId).visible = true; h.node(footerId).visible = true; }
+  });
+  const response = await h.read();
+  assert.equal(response.ok, true, response.error);
+  assert.equal(response.data.submissionOutcome, "confirmed");
+  assert.equal(response.data.pollCount, 7);
+  assert.equal(clock.elapsed, 1800);
+  assert.equal(response.data.elapsedMs, 1800);
+  assert.equal(h.document.querySelectorAll("a").reduce((sum, node) => sum + node.clickCount, 0), 0);
+});
+
+test("recovery waits for delayed authentication without treating the document load event as account readiness", async () => {
+  const h = createDomFixture();
+  h.node("search-localnav-link-sign-out").visible = false;
+  const clock = recoveryClock(h, ({ elapsed }) => {
+    if (elapsed >= 1800) h.node("search-localnav-link-sign-out").visible = true;
+  });
+  const response = await h.read();
+  assert.equal(response.ok, true, response.error);
+  assert.equal(response.data.submissionOutcome, "confirmed");
+  assert.equal(response.data.pollCount, 8);
+  assert.equal(clock.elapsed, 2100);
+});
+
+for (const attributes of [{ "aria-busy": "true" }, { role: "progressbar" }]) {
+  test(`semantic busy state postpones recovery proof until it clears (${JSON.stringify(attributes)})`, async () => {
+    const h = createDomFixture();
+    const busy = h.append({ tagName: "DIV", text: "Preparing account", attributes });
+    const clock = recoveryClock(h, ({ elapsed }) => { if (elapsed >= 900) busy.visible = false; });
+    const response = await h.read();
+    assert.equal(response.ok, true, response.error);
+    assert.equal(response.data.submissionOutcome, "confirmed");
+    assert.equal(response.data.pollCount, 5);
+    assert.equal(clock.elapsed, 1200);
+  });
+}
+
+for (const [state, mutate, reasonCode] of [
+  ["busy", h => { h.append({ tagName: "DIV", attributes: { "aria-busy": "true" } }); }, "page_not_ready"],
+  ["authentication unavailable", h => { h.node("search-localnav-link-sign-out").visible = false; }, "authentication_required"],
+  ["missing exact controls", h => { h.node(footerId).remove(); }, "missing_exact_controls"],
+  ["contradictory status", h => { h.append({ tagName: "DIV", text: "Application failed", attributes: { role: "alert" } }); }, "contradictory_evidence"]
+]) {
+  test(`permanent ${state} times out with a bounded structured reason and no confirmation`, async () => {
+    const h = createDomFixture();
+    mutate(h);
+    const clock = recoveryClock(h);
+    const response = await h.read();
+    assert.equal(response.ok, true, response.error);
+    assert.equal(response.data.submissionOutcome, "unknown");
+    assert.equal(response.data.reasonCode, reasonCode);
+    assert.equal(typeof response.data.reason, "string");
+    assert.equal(response.data.pollCount, 41);
+    assert.equal(response.data.timedOut, true);
+    assert.equal(response.data.elapsedMs, 12000);
+    assert.equal(clock.delays, 40);
+    assert.equal(response.data.signal, null);
+  });
+}
+
+test("the poll-attempt cap also bounds unknown recovery when a test timer does not advance Date", async () => {
+  const h = createDomFixture();
+  h.node(footerId).remove();
+  const response = await h.read();
+  assert.equal(response.ok, true, response.error);
+  assert.equal(response.data.reasonCode, "missing_exact_controls");
+  assert.equal(response.data.pollCount, 41);
+  assert.equal(response.data.timedOut, true);
+});
+
+test("an old document stops immediately with a freshness reason instead of polling stale evidence", async () => {
+  const h = createDomFixture();
+  const clock = recoveryClock(h);
+  const response = await h.read(h.performance.timeOrigin + 1);
+  assert.equal(response.ok, true, response.error);
+  assert.equal(response.data.submissionOutcome, "unknown");
+  assert.equal(response.data.reasonCode, "document_stale");
+  assert.equal(response.data.pollCount, 1);
+  assert.equal(response.data.timedOut, false);
+  assert.equal(clock.delays, 0);
+});
+
+test("a full job-identity change while readiness is pending aborts on its first observation", async () => {
+  const h = createDomFixture();
+  h.node(footerId).visible = false;
+  const clock = recoveryClock(h, () => { h.window.location = new URL(fixture.url.replace("-0836", "-9999")); });
+  const response = await h.read();
+  assert.equal(response.ok, false);
+  assert.equal(response.data.errorType, "job_identity_mismatch");
+  assert.equal(clock.delays, 1);
+  assert.equal(h.observationCalls.messages.length, 0);
 });

@@ -2576,36 +2576,82 @@ function readAppleSubmittedControlEvidence(expectedJobId) {
 }
 
 async function readAppleRecoverySubmissionStatus(expectedJobId, requestId, notBefore) {
+  const startedAt = Date.now();
+  const timeoutMs = 12000;
+  const intervalMs = 300;
+  const maxPolls = Math.floor(timeoutMs / intervalMs) + 1;
+  const reasons = {
+    document_stale: "The job page is older than this check. Refresh the exact reviewed job page, then check again.",
+    document_unverified: "The job page's fresh document could not be verified. Refresh the reviewed job page and check again.",
+    page_not_ready: "Apple's job page did not finish loading before the check timed out. Wait for the page to finish loading and check again.",
+    authentication_required: "Apple has not confirmed the signed-in account on this job page. Sign in, wait for the page to finish loading, then check again.",
+    missing_exact_controls: "Apple's exact Submitted controls did not appear before the check timed out. Review the exact job page and check again.",
+    contradictory_evidence: "Apple displayed conflicting application status information. Review the job page before checking again.",
+    controls_unstable: "Apple's submission controls did not remain stable. Wait for the page to finish updating and check again.",
+    confirmed: "Apple confirmed this exact submission."
+  };
   const observe = () => {
     assertAppleWorkflowIdentity({ expectedJobId });
-    if (!getSiteConfig()?.isJobDetailUrl(getCurrentUrl())) return null;
+    if (!getSiteConfig()?.isJobDetailUrl(getCurrentUrl())) return { reasonCode: "document_unverified", terminal: true };
     if (!Number.isFinite(notBefore) || !Number.isFinite(globalThis.performance?.timeOrigin) ||
-        globalThis.performance.timeOrigin < notBefore) return null;
-    if (getSessionRequiredSignal()) return null;
-    if (document.readyState === "loading" || getLoadingSignal()) return null;
+        globalThis.performance.timeOrigin > Date.now()) return { reasonCode: "document_unverified", terminal: true };
+    if (globalThis.performance.timeOrigin < notBefore) return { reasonCode: "document_stale", terminal: true };
+    if (getSessionRequiredSignal()) return { reasonCode: "authentication_required" };
+    // Job descriptions can mention data processing or loading models. Only
+    // semantic page-busy indicators belong in this read-only readiness check.
+    if (document.readyState !== "complete" || Array.from(document.querySelectorAll("[aria-busy='true'], [role='progressbar']"))
+      .some(isElementVisible)) return { reasonCode: "page_not_ready" };
     const negative = /\b(?:no|not|never|cannot|unable|failed|failure|rejected|withdrawn|withdraw|inactive|unsuccessful|error|pending)\b|n['’]t\b/i;
     if (Array.from(document.querySelectorAll("#global-alert, [role='alert'], [data-autom='submission-confirmation']"))
-      .some(element => isElementVisible(element) && negative.test(normalizeText(element.innerText || element.textContent || "")))) return null;
+      .some(element => isElementVisible(element) && negative.test(normalizeText(element.innerText || element.textContent || "")))) {
+      return { reasonCode: "contradictory_evidence" };
+    }
     const controls = readAppleSubmittedControlEvidence(expectedJobId);
     // If Apple's known wrapper is present, conflicting/incomplete controls
     // cannot be bypassed by a stale confirmation elsewhere on the page.
-    if (!controls && document.querySelectorAll("#jobdetails-wrapper").length) return null;
+    if (!controls && document.querySelectorAll("#jobdetails-wrapper").length) {
+      const signOut = document.querySelectorAll("#search-localnav-link-sign-out");
+      const signIn = document.querySelectorAll("#search-localnav-link-sign-in");
+      const authenticated = signOut.length === 1 && isElementVisible(signOut[0]) &&
+        /\/logout\/?(?:[?#]|$)/i.test(signOut[0].getAttribute("href") || "") && !Array.from(signIn).some(isElementVisible);
+      return { reasonCode: authenticated ? "missing_exact_controls" : "authentication_required" };
+    }
     const signal = controls || getJobBoundSubmissionSignal(expectedJobId);
-    if (signal && negative.test(signal.text)) return null;
-    return signal;
+    if (signal && negative.test(signal.text)) return { reasonCode: "contradictory_evidence" };
+    return signal ? { signal } : { reasonCode: "missing_exact_controls" };
   };
-  const first = observe();
-  await delay(300);
-  const second = observe();
-  const confirmed = Boolean(first && second && first.jobId === second.jobId && first.text === second.text &&
-    first.source === second.source && (!first.nodes || first.nodes.every((node, index) =>
-      node === second.nodes?.[index] && node.isConnected)));
-  const signal = confirmed ? { jobId: second.jobId, text: second.text,
-    ...(second.source ? { source: second.source, title: second.title } : {}) } : null;
+  let previous = null;
+  let confirmed = null;
+  let pollCount = 0;
+  let reasonCode = "missing_exact_controls";
+  let terminal = false;
+  // Both wall time and an attempt cap bound this loop, including environments
+  // whose timer implementation does not advance their clock.
+  for (; pollCount < maxPolls;) {
+    pollCount += 1;
+    const observation = observe();
+    const current = observation.signal;
+    if (current && previous && previous.jobId === current.jobId && previous.text === current.text &&
+        previous.source === current.source && (!previous.nodes || previous.nodes.every((node, index) =>
+          node === current.nodes?.[index] && node.isConnected))) {
+      confirmed = current;
+      reasonCode = "confirmed";
+      break;
+    }
+    previous = current || null;
+    reasonCode = observation.reasonCode || "controls_unstable";
+    terminal = observation.terminal === true;
+    if (terminal || pollCount === maxPolls || Date.now() - startedAt >= timeoutMs) break;
+    await delay(Math.min(intervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
+  }
+  const signal = confirmed ? { jobId: confirmed.jobId, text: confirmed.text,
+    ...(confirmed.source ? { source: confirmed.source, title: confirmed.title } : {}) } : null;
   return { requestId, jobId: getJobId(), url: window.location.href, identityVerified: true,
     submissionOutcome: confirmed ? "confirmed" : "unknown",
-    proof: confirmed ? second.source || "job_identified_submission" : null,
-    controlEvidence: confirmed ? second.controlEvidence : undefined,
+    proof: confirmed ? confirmed.source || "job_identified_submission" : null,
+    controlEvidence: confirmed ? confirmed.controlEvidence : undefined,
+    reasonCode, reason: reasons[reasonCode], pollCount, elapsedMs: Math.max(0, Date.now() - startedAt),
+    timedOut: !confirmed && !terminal,
     documentStartedAt: globalThis.performance?.timeOrigin,
     observedAt: Date.now(), signal };
 }

@@ -41,19 +41,24 @@ export function RankingRecoveryFeedback({ view, error = "", interruptedRanking =
     "The recovered role's full Apple job ID could not be reconciled.",
     "An interrupted application needs reconciliation. Sync Submissions before starting another application."
   ].includes(displayError));
+  const checkResult = result?.message && <div className={result.failed ? "submitted-history-error" : "muted"} role={result.failed ? "alert" : "status"}>
+    {result.jobId && <span className="compact-role-meta">Application Check · Job ID {result.jobId}</span>}
+    <span>{result.message}</span>
+  </div>;
   return <>
     {unresolved ? <section className="application-recovery" aria-label="Interrupted Application">
       <p className="submitted-history-error" role="alert">{recovery.message || "This application was interrupted. Its outcome needs verification before another application can start."}</p>
       {job ? <a href={job.url} target="_blank" rel="noopener noreferrer">Review {job.title} (Job ID {recovery.jobId})</a>
         : recovery.jobId && <span className="compact-role-meta">Job ID {recovery.jobId}</span>}
       <p className="muted">No applications resumed. Check Application Status reads Active submissions and refreshes the reviewed job page; it never submits an application.</p>
+      {checkResult}
       <div className="compact-actions"><button type="button" className="secondary" disabled={busy || !recovery.sessionId || !recovery.jobId} onClick={onCheck}>
         {checking ? "Checking Application Status…" : "Check Application Status"}
       </button></div>
     </section> : view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
       ? `The previous scan was interrupted. Choose Resume Scan to continue from page ${(latestSearch?.pagesRead || 0) + 1} using saved scores.`
       : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
-    {result?.message && <p className={result.failed ? "submitted-history-error" : "muted"} role={result.failed ? "alert" : "status"}>{result.message}</p>}
+    {!unresolved && checkResult}
     {displayError && !duplicateRecoveryError && <p className="submitted-history-error" role="alert">{displayError}
       {!error && view?.errorJob && (!job || view.errorJob.jobId !== job.jobId) && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
         Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
@@ -117,9 +122,17 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const recoveryCheck = useRef(null);
   const currentRecovery = useRef(null);
   currentRecovery.current = view?.recovery;
+  const currentWorkflowSession = useRef(null);
+  const workflowSessionId = view?.workflowSessionId || view?.recovery?.sessionId || null;
+  currentWorkflowSession.current = workflowSessionId;
+  const rankingRefreshGeneration = useRef(0);
+  const rankingRefreshPending = useRef(null);
   const [recoveryCheckResult, setRecoveryCheckResult] = useState(null);
 
-  useEffect(() => { setRecoveryCheckResult(null); }, [view?.recovery?.sessionId, view?.recovery?.jobId]);
+  useEffect(() => {
+    setRecoveryCheckResult(result => result?.sessionId === workflowSessionId ? result : null);
+  }, [workflowSessionId]);
+  useEffect(() => () => { rankingRefreshGeneration.current++; rankingRefreshPending.current = null; }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,15 +158,24 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     // Restore the view before fetching; a default Top 50 request can expose
     // lower-ranked cached roles for a moment after every panel reload.
     if (!viewPreferencesLoaded) return;
-    const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: initializedTop.current ? requestedTopN : null });
-    if (response?.ok) {
-      if (!initializedTop.current && response.data.capacity?.known) {
-        initializedTop.current = true;
-        setTopN(response.data.topN); setTopNDraft(String(response.data.topN));
+    const generation = ++rankingRefreshGeneration.current;
+    rankingRefreshPending.current = generation;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_GET_JOB_RANKING", userProfile: profile, topN: initializedTop.current ? requestedTopN : null });
+      // Storage notifications and workflow responses can request overlapping
+      // snapshots. A late older read must not restore a resolved recovery state.
+      if (generation !== rankingRefreshGeneration.current) return;
+      if (response?.ok) {
+        if (!initializedTop.current && response.data.capacity?.known) {
+          initializedTop.current = true;
+          setTopN(response.data.topN); setTopNDraft(String(response.data.topN));
+        }
+        setView(response.data);
       }
-      setView(response.data);
+      else setError(response?.error || "Saved jobs could not be loaded.");
+    } finally {
+      if (rankingRefreshPending.current === generation) rankingRefreshPending.current = null;
     }
-    else setError(response?.error || "Saved jobs could not be loaded.");
   }, [profile, topN, viewPreferencesLoaded]);
 
   useEffect(() => {
@@ -168,7 +190,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
 
   useEffect(() => {
     if (!view?.running) return undefined;
-    const timer = setInterval(() => refresh().catch(console.error), 1000);
+    const timer = setInterval(() => {
+      // A slow read must finish before another poll supersedes it. Explicit
+      // actions and storage updates may still request a newer snapshot.
+      if (rankingRefreshPending.current === null) refresh().catch(console.error);
+    }, 1000);
     return () => clearInterval(timer);
   }, [view?.running, refresh]);
 
@@ -202,26 +228,28 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     if (busy || view?.running || applyOpen || recoveryCheck.current || !recovery?.reconciliationRequired || !recovery.sessionId || !recovery.jobId) return;
     const request = { sessionId: recovery.sessionId, jobId: recovery.jobId };
     const current = () => currentRecovery.current?.sessionId === request.sessionId && currentRecovery.current?.jobId === request.jobId;
+    const sameSession = () => currentWorkflowSession.current === request.sessionId;
     recoveryCheck.current = request;
     setBusy(true);
     setPendingAction("check_recovery");
     setRecoveryCheckResult(null);
     try {
       const tab = await getActiveTab();
-      if (!current()) return;
+      if (!current() || !sameSession()) return;
       const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION", tab,
         workflowSessionId: request.sessionId, jobId: request.jobId });
-      if (!current()) return;
+      if (!sameSession()) return;
       if (!response?.ok || typeof response.data?.resolved !== "boolean") {
         throw new Error(response?.error || "The application status could not be verified. No application was submitted.");
       }
       const message = response.data.message || (response.data.resolved
         ? "Application status verified. Review your selected batch before applying."
         : "The application outcome is still unverified. Automatic applications remain paused.");
-      setRecoveryCheckResult({ message, failed: false });
+      setRecoveryCheckResult({ message, failed: false, jobId: request.jobId, sessionId: request.sessionId });
       await refresh();
     } catch (failure) {
-      if (current()) setRecoveryCheckResult({ message: failure?.message || "The application status could not be checked. No application was submitted.", failed: true });
+      if (sameSession()) setRecoveryCheckResult({ message: failure?.message || "The application status could not be checked. No application was submitted.",
+        failed: true, jobId: request.jobId, sessionId: request.sessionId });
     } finally {
       if (recoveryCheck.current === request) {
         recoveryCheck.current = null;
