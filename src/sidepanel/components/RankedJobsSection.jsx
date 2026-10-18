@@ -18,6 +18,50 @@ export function RankingScanSummary({ view, search }) {
   </span></span>;
 }
 
+function recoveryRole(view) {
+  const recovery = view?.recovery;
+  const job = [recovery, view?.currentJob, view?.errorJob].find(item => item?.jobId === recovery?.jobId && item.url);
+  if (!job || !recovery?.jobId) return null;
+  try {
+    const url = new URL(job.url);
+    const id = url.pathname.match(/^\/(?:[a-z]{2}-[a-z]{2}\/details|app\/[a-z]{2}-[a-z]{2}\/apply)\/([^/]+)(?:\/|$)/i)?.[1];
+    if (url.origin !== "https://jobs.apple.com" || id !== recovery.jobId) return null;
+    return { ...job, title: job.title || "Interrupted Application" };
+  } catch (_) { return null; }
+}
+
+export function RankingRecoveryFeedback({ view, error = "", interruptedRanking = false, latestSearch,
+  busy = false, checking = false, result, onCheck }) {
+  const recovery = view?.recovery;
+  const unresolved = recovery?.reconciliationRequired === true;
+  const job = unresolved ? recoveryRole(view) : null;
+  const displayError = error || view?.error;
+  const duplicateRecoveryError = unresolved && (displayError === recovery.message || [
+    "The worker restarted. Sync Submissions before starting another application; no application was resumed.",
+    "The recovered role's full Apple job ID could not be reconciled.",
+    "An interrupted application needs reconciliation. Sync Submissions before starting another application."
+  ].includes(displayError));
+  return <>
+    {unresolved ? <section className="application-recovery" aria-label="Interrupted Application">
+      <p className="submitted-history-error" role="alert">{recovery.message || "This application was interrupted. Its outcome needs verification before another application can start."}</p>
+      {job ? <a href={job.url} target="_blank" rel="noopener noreferrer">Review {job.title} (Job ID {recovery.jobId})</a>
+        : recovery.jobId && <span className="compact-role-meta">Job ID {recovery.jobId}</span>}
+      <p className="muted">No applications resumed. Check Application Status reads Active submissions and refreshes the reviewed job page; it never submits an application.</p>
+      <div className="compact-actions"><button type="button" className="secondary" disabled={busy || !recovery.sessionId || !recovery.jobId} onClick={onCheck}>
+        {checking ? "Checking Application Status…" : "Check Application Status"}
+      </button></div>
+    </section> : view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
+      ? `The previous scan was interrupted. Choose Resume Scan to continue from page ${(latestSearch?.pagesRead || 0) + 1} using saved scores.`
+      : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
+    {result?.message && <p className={result.failed ? "submitted-history-error" : "muted"} role={result.failed ? "alert" : "status"}>{result.message}</p>}
+    {displayError && !duplicateRecoveryError && <p className="submitted-history-error" role="alert">{displayError}
+      {!error && view?.errorJob && (!job || view.errorJob.jobId !== job.jobId) && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
+        Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
+      </a></>}
+    </p>}
+  </>;
+}
+
 export function ApplicationBatchReview({ batch, selectedCount, preparing, starting, busy, error, errorType, capacity,
   allowSubmission, reviewAcknowledged, workflowRunning, onReviewChange, onConsentChange, onConfirm, onRetry, onCancel, onOpenSetup }) {
   const ready = Boolean(batch?.jobs.length) && !preparing && !error;
@@ -70,6 +114,12 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const [queueOpen, setQueueOpen] = useState(false);
   const [rankedOpen, setRankedOpen] = useState(true);
   const [reviewedQueueToken, setReviewedQueueToken] = useState(null);
+  const recoveryCheck = useRef(null);
+  const currentRecovery = useRef(null);
+  currentRecovery.current = view?.recovery;
+  const [recoveryCheckResult, setRecoveryCheckResult] = useState(null);
+
+  useEffect(() => { setRecoveryCheckResult(null); }, [view?.recovery?.sessionId, view?.recovery?.jobId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +195,40 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     setTopN(requestedTopN);
     setTopNDraft(String(requestedTopN));
     return requestedTopN;
+  }
+
+  async function checkInterruptedApplication() {
+    const recovery = currentRecovery.current;
+    if (busy || view?.running || applyOpen || recoveryCheck.current || !recovery?.reconciliationRequired || !recovery.sessionId || !recovery.jobId) return;
+    const request = { sessionId: recovery.sessionId, jobId: recovery.jobId };
+    const current = () => currentRecovery.current?.sessionId === request.sessionId && currentRecovery.current?.jobId === request.jobId;
+    recoveryCheck.current = request;
+    setBusy(true);
+    setPendingAction("check_recovery");
+    setRecoveryCheckResult(null);
+    try {
+      const tab = await getActiveTab();
+      if (!current()) return;
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION", tab,
+        workflowSessionId: request.sessionId, jobId: request.jobId });
+      if (!current()) return;
+      if (!response?.ok || typeof response.data?.resolved !== "boolean") {
+        throw new Error(response?.error || "The application status could not be verified. No application was submitted.");
+      }
+      const message = response.data.message || (response.data.resolved
+        ? "Application status verified. Review your selected batch before applying."
+        : "The application outcome is still unverified. Automatic applications remain paused.");
+      setRecoveryCheckResult({ message, failed: false });
+      await refresh();
+    } catch (failure) {
+      if (current()) setRecoveryCheckResult({ message: failure?.message || "The application status could not be checked. No application was submitted.", failed: true });
+    } finally {
+      if (recoveryCheck.current === request) {
+        recoveryCheck.current = null;
+        setBusy(false);
+        setPendingAction(null);
+      }
+    }
   }
 
   async function act(type) {
@@ -357,16 +441,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       {latestSearch && <span className="compact-role-meta">{latestSearch.pagesRead || 0} Pages Finished · {latestSearch.complete ? "All Pages Ranked" : "Partial Scan"}</span>}
       {view?.currentJob && <a className="compact-role-meta" href={view.currentJob.url} target="_blank" rel="noopener noreferrer">{view.currentJob.title} · {view.currentJob.jobId}</a>}</span>
     </div>
-    {view?.recovered && <p className="submitted-history-error" role="alert">{interruptedRanking
-      ? `The previous scan was interrupted. Choose Resume Scan to continue from page ${(latestSearch.pagesRead || 0) + 1} using saved scores.`
-      : view?.recovery?.reconciliationRequired
-        ? view.recovery.message || "The application workflow was interrupted. Sync Submissions, then review your selection before starting again. No applications resumed automatically."
-        : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
-    {(error || view?.error) && <p className="submitted-history-error" role="alert">{error || view.error}
-      {!error && view?.errorJob && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
-        Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
-      </a></>}
-    </p>}
+    <RankingRecoveryFeedback view={view} error={error} interruptedRanking={interruptedRanking} latestSearch={latestSearch}
+      busy={busy || view?.running || applyOpen} checking={pendingAction === "check_recovery"} result={recoveryCheckResult} onCheck={checkInterruptedApplication} />
     <details className="compact-fold"><summary>Scan Details</summary>
       <div className="compact-fold-body">
         {view?.phase && <span>{view.phase}</span>}

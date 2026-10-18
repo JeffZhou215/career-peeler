@@ -2540,6 +2540,32 @@ async function readAppleJobApplicability(expectedJobId) {
     alreadySubmitted: alreadySubmitted(), canApply: Boolean(action && !isActionDisabled(action)) };
 }
 
+// Recovery needs stronger evidence than a generic Submitted button or an
+// already-applied notice (which can also describe a withdrawn application).
+// Observe only; never open an application or click a control to obtain proof.
+async function readAppleRecoverySubmissionStatus(expectedJobId, requestId, notBefore) {
+  const observe = () => {
+    assertAppleWorkflowIdentity({ expectedJobId });
+    if (!getSiteConfig()?.isJobDetailUrl(getCurrentUrl())) return null;
+    if (!Number.isFinite(notBefore) || !Number.isFinite(globalThis.performance?.timeOrigin) ||
+        globalThis.performance.timeOrigin < notBefore) return null;
+    if (getSessionRequiredSignal()) return null;
+    if (document.readyState === "loading" || getLoadingSignal()) return null;
+    const signal = getJobBoundSubmissionSignal(expectedJobId);
+    if (signal && /\b(?:no|not|never|cannot|unable|failed|failure|rejected|withdrawn|withdraw|inactive|unsuccessful|error|pending)\b|n['’]t\b/i.test(signal.text)) return null;
+    return signal;
+  };
+  const first = observe();
+  await delay(300);
+  const second = observe();
+  const confirmed = Boolean(first && second && first.jobId === second.jobId && first.text === second.text);
+  return { requestId, jobId: getJobId(), url: window.location.href, identityVerified: true,
+    submissionOutcome: confirmed ? "confirmed" : "unknown",
+    proof: confirmed ? "job_identified_submission" : null,
+    documentStartedAt: globalThis.performance?.timeOrigin,
+    observedAt: Date.now(), signal: confirmed ? second : null };
+}
+
 function getLoadingSignal() {
   const candidates = Array.from(
     document.querySelectorAll("[aria-busy='true'], [role='progressbar'], [aria-label], button, div, span")
@@ -5199,6 +5225,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     )
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error?.message || "Could not verify this Apple submission." }));
+    return true;
+  }
+
+  if (message?.type === "APPLE_CAREERS_READ_RECOVERY_SUBMISSION_STATUS") {
+    readAppleRecoverySubmissionStatus(message.expectedJobId, message.requestId, message.notBefore)
+      .then(data => sendResponse({ ok: true, data }))
+      .catch(error => sendResponse({ ok: false, error: error.message, data: { errorType: error.code } }));
     return true;
   }
 

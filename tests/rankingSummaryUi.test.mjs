@@ -6,11 +6,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
 
-let server, RankingScanSummary;
+let server, RankingScanSummary, RankingRecoveryFeedback;
 before(async () => {
   server = await createServer({ configFile: false, plugins: [react()], appType: "custom", logLevel: "error",
     server: { middlewareMode: true, hmr: false, ws: false, watch: null } });
-  ({ RankingScanSummary } = await server.ssrLoadModule("/src/sidepanel/components/RankedJobsSection.jsx"));
+  ({ RankingScanSummary, RankingRecoveryFeedback } = await server.ssrLoadModule("/src/sidepanel/components/RankedJobsSection.jsx"));
 });
 after(async () => { await server?.close(); });
 const render = (view, search) => renderToStaticMarkup(createElement(RankingScanSummary, { view, search }));
@@ -59,7 +59,10 @@ test("the panel keeps cache totals in Scan Details and resumes from the complete
   assert.match(source, /<RankingScanSummary view=\{view\} search=\{latestSearch\}/);
   assert.match(source, /Cached Jobs Across Filters/);
   assert.doesNotMatch(source, /reviewedCount.*Saved ·/);
-  assert.match(source, /continue from page \$\{\(latestSearch\.pagesRead \|\| 0\) \+ 1\}/);
+  const recovery = renderToStaticMarkup(createElement(RankingRecoveryFeedback, {
+    view: { recovered: true }, interruptedRanking: true, latestSearch: { pagesRead: 13, pageIndex: 12 }
+  }));
+  assert.match(recovery, /continue from page 14 using saved scores/);
   assert.doesNotMatch(source, /interrupted on page \$\{\(latestSearch\.pageIndex/);
   assert.match(source, /latestSearch\.complete \? "All Pages Ranked" : "Partial Scan"/);
 });

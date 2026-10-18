@@ -3497,6 +3497,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_FINALIZE_WITHDRAWAL",
   "APPLE_CAREERS_GET_JOB_RANKING",
   "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
+  "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION",
   "APPLE_CAREERS_START_JOB_RANKING",
   "APPLE_CAREERS_QUEUE_TOP_JOBS",
   "APPLE_CAREERS_REMOVE_QUEUED_JOB",
@@ -3560,6 +3561,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY") {
         if (sender.tab) throw new Error("Sync Submissions must be started from the extension panel.");
         sendResponse(await refreshAppleJobQueueCount(message.tab));
+      } else if (message.type === "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION") {
+        const prefix = chrome.runtime.id ? `chrome-extension://${chrome.runtime.id}/` : null;
+        if (sender.tab || (sender.id && sender.id !== chrome.runtime.id) ||
+            (sender.url && (!prefix || !sender.url.startsWith(prefix)))) {
+          throw new Error("Check interrupted applications from the extension panel.");
+        }
+        sendResponse(await checkInterruptedAppleApplication(message));
       } else if (message.type === "APPLE_CAREERS_START_JOB_RANKING") {
         sendResponse(await startAppleJobRanking(message.tab, message.userProfile, { topN: message.topN, resume: message.resume, autoApply: message.autoApply }));
       } else if (message.type === "APPLE_CAREERS_QUEUE_TOP_JOBS") {

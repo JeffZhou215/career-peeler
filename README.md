@@ -42,6 +42,8 @@ In your Apple Careers tab, set the search filters you want. Then open the extens
 
 If an earlier application was interrupted, the review sheet automatically checks Apple submissions first. It shows **Checking Previous Applications…**, offers **Retry Check** if verification fails, and requires your confirmation after a successful check. Submitted or unresolved selected roles require reviewing the selection again.
 
+For an unresolved application, open its **Review** job link and click **Check Application Status**. This checks Active submissions and refreshes the exact job-detail page without submitting anything. A confirmed earlier submission stays confirmed; an interruption before Submit requires a new review. An unknown Submit is never retried automatically. Apple must provide job-specific confirmation; a base-only ID, generic Submitted label or Apply button cannot clear an unknown outcome. See [Application Recovery](docs/application-recovery.md).
+
 The scan summary counts jobs found and strong matches in **This Scan**. **Scan Details** shows cached jobs across filters separately. If pagination pauses, reopen the same filter and choose **Resume Scan**; completed scores are kept. A changed resume or filter requires **Scan And Rank**. Partial scans do not start automatic applications.
 
 **Queue Top N** shows how many jobs it can add: the smaller of your Top setting, available results, and open slots. For example, one available result with 13 open slots shows **Queue Top 1**. You can set Top below the number of open slots.

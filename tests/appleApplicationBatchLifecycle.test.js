@@ -246,7 +246,8 @@ test("preparing a reviewed batch reconciles a paused owner against complete inve
   assert.equal(fullInventoryReads(h).length, 1);
   assert.equal(h.data.appleApplicationWorkflow.id, sessionId, "review does not claim a new application owner");
   assert.equal(h.data.appleApplicationWorkflow.reconciliationRequired, false);
-  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].reconciliation, "absent");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].reconciliation, "not_attempted");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].submissionOutcome, "not_attempted");
   assert.equal(prepared.data.capacity.known, true);
   assert.equal(prepared.data.capacity.submitted, 0);
   assert.equal(prepared.data.capacity.remaining, 50);

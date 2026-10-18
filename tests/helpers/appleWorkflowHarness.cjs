@@ -79,7 +79,7 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
   const intervals = new Map();
   let intervalId = 0;
   const calls = { checkpoints: [], messages: [], injected: [], removed: [], created: [], updated: [],
-    intervalDelays: [], clearedIntervals: [], platformReads: 0 };
+    intervalDelays: [], clearedIntervals: [], platformReads: 0, reloaded: [] };
   const get = async keys => Object.fromEntries((typeof keys === "string" ? [keys] : keys || Object.keys(data))
     .filter(key => Object.hasOwn(data, key)).map(key => [key, structuredClone(data[key])]));
   const store = { get, set: async updates => Object.assign(data, structuredClone(updates)),
@@ -111,6 +111,7 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
           tabs.push(tab); return { ...tab };
         },
         update: async (id, updates) => { calls.updated.push({ id, ...updates }); const tab = tabs.find(tab => tab.id === id); Object.assign(tab, updates); return { ...tab }; },
+        reload: async (id, properties) => { calls.reloaded.push({ id, ...properties }); },
         remove: async id => calls.removed.push(id),
         sendMessage: async (id, message) => {
           calls.messages.push(message);
