@@ -3230,6 +3230,18 @@ function isSavedPersonalQuestion(text, profile = {}) {
     /\b(?:gender|race|ethnicity|veteran|disabilit(?:y|ies))\b/i.test(text);
 }
 
+function isHistoricalProfileDateField(element, container, label) {
+  if (!/^(?:start|end) date\s*\*?$/i.test(normalizeText(label))) return false;
+  // Verified Apple profile markup: a Start Date fieldset lives within an
+  // Employment Summary section. Only an explicit employment/education summary
+  // context identifies historical dates.
+  // Do not use a broad page ancestor: availability elsewhere on the same form
+  // must still be checked against the user's explicit saved answer.
+  const section = container?.closest?.("section") || element?.closest?.("section");
+  const heading = normalizeText(section?.querySelector?.("h2, h3")?.textContent || "");
+  return /^(?:employment|education) summary$/i.test(heading);
+}
+
 function readSavedPersonalSelection(element, container, kind) {
   if (kind === "select") {
     return Array.from(element.selectedOptions || element.options || [])
@@ -3264,6 +3276,7 @@ async function verifySavedApplicationAnswers(steps, options = {}, { readOnlyRevi
     const kind = getRequiredFieldAuditKind(element);
     const container = getAgentFieldContainer(element);
     const label = getSavedApplicationQuestionText(container) || getApplicationControlQuestionLabel(element);
+    if (isHistoricalProfileDateField(element, container, label)) continue;
     if (!isSavedPersonalQuestion(label, options.applicationAnswers) || !shouldAgentAnswerRequiredControl(element, label, { includeUnmarked: true })) continue;
     if (groups.has(container)) continue;
     groups.add(container);
@@ -4668,13 +4681,13 @@ function buildAlreadyAppliedStepResult(signal, priorSteps = []) {
 }
 
 async function waitForApplicationFormToSettle(options = {}) {
-  const timeoutMs = options.timeoutMs ?? 9000;
+  const timeoutMs = options.timeoutMs ?? 30000;
   const intervalMs = options.intervalMs ?? 200;
   const stableChecksRequired = options.stableChecksRequired ?? 5;
   const minimumWaitMs = options.minimumWaitMs ?? 0;
   const startedAt = Date.now();
   const deadline = Date.now() + timeoutMs;
-  let lastCount = -1;
+  let lastSnapshot = null;
   let stableCount = 0;
   const siteConfig = getSiteConfig();
   const applicationPage = Boolean(siteConfig?.isApplicationUrl(getCurrentUrl()));
@@ -4692,11 +4705,23 @@ async function waitForApplicationFormToSettle(options = {}) {
     }
 
     const currentCount = countInteractiveElements();
-    const applicationControlsPresent = !applicationPage || Boolean(document.getElementById(siteConfig.primaryActionId)) ||
+    // Apple's Add Resume shell renders a disabled "Submit" placeholder while
+    // the saved resume loads. Its mere presence is not form readiness.
+    const loading = applicationPage && Array.from(document.querySelectorAll(
+      "main [aria-busy='true'], main [role='progressbar'], main [aria-label='Loading indicator']"
+    )).some(isElementVisible);
+    const primary = findPrimaryActionButton(siteConfig);
+    // Some forms intentionally disable Continue until required answers are
+    // filled. Those controls may be audited without authorizing a click.
+    const fillableForm = applicationPage && Boolean(document.getElementById(siteConfig.primaryActionId)) &&
+      getRequiredFieldAuditControls().some(isApplicationFormControl);
+    const applicationControlsPresent = !applicationPage || Boolean(primary) || fillableForm ||
       Boolean(findClickableByText(siteConfig.continuePattern || /^continue$/i)) ||
       Boolean(findClickableByText(siteConfig.finalSubmitPattern || /^submit$/i));
+    const snapshot = JSON.stringify([getCurrentUrl(), document.querySelector("h1")?.innerText || "",
+      currentCount, primary ? getActionLabel(primary) : null]);
 
-    if (applicationControlsPresent && currentCount > 0 && currentCount === lastCount) {
+    if (!loading && applicationControlsPresent && currentCount > 0 && snapshot === lastSnapshot) {
       stableCount += 1;
       if (stableCount >= stableChecksRequired && Date.now() - startedAt >= minimumWaitMs) {
         return { ready: true, alreadyAppliedSignal: null };
@@ -4705,7 +4730,7 @@ async function waitForApplicationFormToSettle(options = {}) {
       stableCount = 0;
     }
 
-    lastCount = currentCount;
+    lastSnapshot = snapshot;
     await delay(intervalMs);
   }
 

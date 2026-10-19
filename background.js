@@ -2087,6 +2087,11 @@ function translateKnownSiteStep(entry, context = {}) {
     };
   }
 
+  if (entry.step === "Verify saved application answers") {
+    return { tool: "verify", label: "Saved Application Answers", status: "error",
+      observation: entry.label || "A saved personal answer could not be verified. Review this step manually." };
+  }
+
   if (entry.step === "Wait for submit result") {
     return { tool: "read_page", label: "Submission confirmation", status: "pending", observation: entry.label || "still loading" };
   }

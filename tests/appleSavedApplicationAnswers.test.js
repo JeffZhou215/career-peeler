@@ -153,6 +153,38 @@ test('prefilled start dates require agreement with the saved setting', async () 
   }
 });
 
+for (const heading of ['Employment Summary', 'Education Summary']) {
+  test(`historical Start Date in ${heading} is preserved without using availability`, async () => {
+    const sandbox = createContentHarness();
+    const fixture = nativeQuestion(sandbox, 'Start Date', ['January', 'February'], 'January');
+    const section = { querySelector: selector => selector === 'h2, h3' ? { textContent: heading } : null };
+    fixture.field.closest = selector => selector === 'section' ? section : null;
+    const result = await sandbox.verifySavedApplicationAnswers([], { applicationAnswers: { availableStartDate: 'immediate' } });
+    assert.equal(result.unresolvedReason, null);
+    assert.equal(fixture.select.value, 'January');
+    assert.equal(fixture.changes(), 0);
+  });
+}
+
+test('a standalone ambiguous Start Date still blocks instead of inventing an availability answer', async () => {
+  const sandbox = createContentHarness();
+  const fixture = nativeQuestion(sandbox, 'Start Date', ['Immediately', 'June 1, 2099'], 'Immediately');
+  const result = await sandbox.verifySavedApplicationAnswers([], { applicationAnswers: { availableStartDate: 'immediate' } });
+  assert.match(result.unresolvedReason, /unambiguously/);
+  assert.equal(fixture.changes(), 0);
+});
+
+test('an explicit availability question inside a profile history section is still checked', async () => {
+  const sandbox = createContentHarness();
+  installResolver(sandbox, {});
+  const fixture = nativeQuestion(sandbox, 'What is your earliest available start date?', ['Immediately']);
+  fixture.field.closest = selector => selector === 'section'
+    ? { querySelector: () => ({ textContent: 'Employment Summary' }) } : null;
+  const result = await sandbox.verifySavedApplicationAnswers([], { applicationAnswers: {} });
+  assert.match(result.unresolvedReason, /explicit|saved|save/i);
+  assert.equal(fixture.changes(), 0);
+});
+
 test('required prefilled EEO answers are validated and never silently overwritten', async () => {
   for (const saved of ['', 'female', 'male']) {
     const sandbox = createContentHarness();

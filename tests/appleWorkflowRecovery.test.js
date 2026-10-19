@@ -292,6 +292,91 @@ test("completed sessions survive restart without being relabeled as interrupted"
   assert.equal(next.calls.messages.length, 0);
 });
 
+for (const overwritten of [false, true]) {
+  test(`completed failures retain their original diagnosis after restart (previously overwritten: ${overwritten})`, async () => {
+    const h = await session();
+    await step(h);
+    const reason = "Apple's existing personal answer conflicts with the saved answer. Review it manually.";
+    await h.sandbox.checkpointAppleWorkflowResult(h.id, job.jobId, h.stepId, result(h, {
+      clicked: false, pausedForReview: true, summary: reason, errorType: "saved_application_answer_unresolved",
+      heading: "Profile Information", visibleActions: ["Continue"],
+      steps: [{ step: "Verify saved application answers", status: "blocked" }]
+    }));
+    await h.sandbox.finishAppleApplicationSession(h.id);
+    const resultAt = h.data[key].jobs[job.jobId].resultAt;
+    h.data.appleJobRanking.applicationFailures[baseId] = { ...job, status: "needs_review",
+      reason: overwritten ? "The extension worker restarted." : reason,
+      errorType: overwritten ? "worker_interrupted" : "saved_application_answer_unresolved", failedAt: resultAt };
+    h.data.appleJobRanking.jobs[baseId].queueStatus = "needs_review";
+    Object.assign(h.data.appleJobRanking, { running: false, phase: "Ranking paused", error: "Synthetic ranking failure" });
+    const next = await restart(h);
+    const failure = h.data.appleJobRanking.applicationFailures[baseId];
+    assert.equal(failure.reason, reason);
+    assert.equal(failure.errorType, "saved_application_answer_unresolved");
+    assert.equal(failure.failedAt, resultAt);
+    assert.equal(h.data.appleJobRanking.phase, "Ranking paused");
+    assert.equal(h.data.appleJobRanking.error, "Synthetic ranking failure");
+    assert.equal(h.data[key].reconciliationRequired, false);
+    await restart(next);
+    assert.equal(h.data.appleJobRanking.applicationFailures[baseId].reason, reason);
+    assert.equal(next.calls.messages.length, 0);
+  });
+}
+
+test("recovery of a completed failure does not undo a later reviewed queue selection or confirmed result", async () => {
+  const h = await session();
+  await step(h);
+  await h.sandbox.checkpointAppleWorkflowResult(h.id, job.jobId, h.stepId, result(h, {
+    clicked: false, pausedForReview: true, summary: "A saved answer needs review"
+  }));
+  await h.sandbox.finishAppleApplicationSession(h.id);
+  h.data.appleJobRanking.phase = "Rankings saved";
+  h.data.appleJobRanking.jobs[baseId].queueStatus = "queued";
+  h.data.appleJobRanking.applicationFailures[baseId] = { ...job, status: "submitted", resolvedAt: Date.now(),
+    errorType: "worker_interrupted", reason: "Historical failure" };
+  await restart(h);
+  assert.equal(h.data.appleJobRanking.jobs[baseId].queueStatus, "queued");
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].status, "submitted");
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].reason, "Historical failure");
+});
+
+test("a known failed role keeps its diagnosis while a different role's pending Submit still blocks the batch", async () => {
+  const h = await session();
+  await step(h);
+  const reason = "The saved personal answer needs manual review.";
+  await h.sandbox.checkpointAppleWorkflowResult(h.id, job.jobId, h.stepId, result(h, {
+    clicked: false, pausedForReview: true, summary: reason, errorType: "saved_application_answer_unresolved"
+  }));
+  h.tabs[0].url = job.url.replace(job.jobId, otherJob.jobId);
+  const otherStep = await h.sandbox.checkpointAppleWorkflowStep(h.id, otherJob, 1);
+  await h.sandbox.authorizeAppleWorkflowAction({ workflowSessionId: h.id, workflowStepId: otherStep,
+    expectedJobId: otherJob.jobId, action: "submit" }, { tab: h.tabs[0] });
+  const next = await restart(h);
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].reason, reason);
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].submissionOutcomeUnknown, false);
+  assert.equal(h.data[key].jobs[otherJob.jobId].state, "uncertain");
+  assert.equal(h.data[key].reconciliationRequired, true);
+  assert.ok(h.data.appleJobRanking.reservations.some(item => item.jobId === otherJob.jobId));
+  await assert.rejects(next.sandbox.claimAppleApplicationSession([job]), /reconciliation/);
+});
+
+test("an acknowledged failure repairs fallback history if the worker stops before saving the queue failure", async () => {
+  const h = await session();
+  await step(h);
+  const reason = "The application form did not finish loading.";
+  await h.sandbox.checkpointAppleWorkflowResult(h.id, job.jobId, h.stepId, result(h, {
+    clicked: false, pausedForReview: true, summary: reason, errorType: "application_not_ready"
+  }));
+  h.data.appleJobRanking.jobs[baseId].queueStatus = "applying";
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId], undefined);
+  await restart(h);
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].reason, reason);
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].errorType, "application_not_ready");
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].submissionOutcomeUnknown, false);
+  assert.equal(h.data.appleJobRanking.jobs[baseId].queueStatus, "needs_review");
+  assert.equal(h.data[key].reconciliationRequired, true, "an interrupted running batch still requires reconciliation");
+});
+
 test("stale IPC commands lack authority even if they reach a restarted content script", async () => {
   const content = createContentHarness();
   assert.equal((await content.dispatch({ type: "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP", expectedJobId: job.jobId })).ok, false);

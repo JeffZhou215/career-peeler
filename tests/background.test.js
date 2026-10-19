@@ -907,6 +907,15 @@ test("translateKnownSiteStep surfaces deterministic authorization selection and 
   );
 });
 
+test("translateKnownSiteStep preserves the reason a saved-answer check stopped an application", () => {
+  const blocked = translateKnownSiteStep({ step: "Verify saved application answers", status: "blocked",
+    label: "Apple's existing personal answer conflicts with the saved setting." });
+  assert.equal(blocked.tool, "verify");
+  assert.equal(blocked.status, "error");
+  assert.equal(blocked.label, "Saved Application Answers");
+  assert.match(blocked.observation, /conflicts with the saved setting/);
+});
+
 test("translateKnownSiteStep maps already-submitted/already-applied detection to a successful read", () => {
   for (const stepName of ["Detect already submitted", "Detect already submitted after waiting", "Detect already applied notice"]) {
     const detected = translateKnownSiteStep({ step: stepName, status: "detected", label: "Submitted" });
