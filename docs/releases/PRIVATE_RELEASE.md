@@ -1,10 +1,10 @@
 # Private Chrome Release Preparation
 
-Prepared October 18, 2026. Target: **Rolebeam 0.2.7**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
+Prepared October 18, 2026. Target: **Rolebeam 0.2.8**, Apple Careers only, Chrome MV3. **Not published.** The owner has authorized local preparation, not a store upload or release.
 
 ## Prepared Material
 
-- Installable ZIP: `release/rolebeam-0.2.7-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
+- Installable ZIP: `release/rolebeam-0.2.8-private-beta.zip` (contents of the validated `dist/`, with `manifest.json` at ZIP root).
 - Publisher/listing worksheet: `store-assets/PRIVATE_LISTING.md`.
 - Hosted privacy policy: https://jeffzhou215.github.io/career-peeler/privacy.html. Source: `PRIVACY.md`. Hosting and update instructions: [GitHub Pages](GITHUB_PAGES.md).
 - Approved Rolebeam Letterform icon, promotional images and sanitized source-rendered UI screenshots: `store-assets/`.
@@ -21,10 +21,10 @@ npm run release:private
 
 This runs the full offline automated suite, runtime syntax checks and production build, then packages the validated `dist/` using `scripts/package-private-release.mjs`. It writes:
 
-- `release/rolebeam-0.2.7-private-beta.zip`
-- `release/rolebeam-0.2.7-private-beta.zip.sha256`
-- `release/rolebeam-0.2.7-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
-- `release/rolebeam-0.2.7-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
+- `release/rolebeam-0.2.8-private-beta.zip`
+- `release/rolebeam-0.2.8-private-beta.zip.sha256`
+- `release/rolebeam-0.2.8-private-beta.json` (file hashes, source commit, working-tree state and prepared/not-published status)
+- `release/rolebeam-0.2.8-store-materials/` (listing, privacy policy, checklist and matching store images; not part of the extension ZIP)
 
 The runtime allowlist excludes repository/developer material. Review the JSON and checksum; a dirty source flag means the package includes changes beyond the recorded base commit, so retain that exact reviewable source state. Running this command does not upload, invite testers or publish.
 
@@ -35,7 +35,7 @@ Rolebeam replaces the Career Peeler display name and assets. The Letterform mark
 ## Before Upload
 
 - [ ] Full test suite, runtime syntax checks and production build pass on the exact package source.
-- [ ] Inspect ZIP entry list and manifest: Rolebeam name and Letterform icon, version 0.2.7, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
+- [ ] Inspect ZIP entry list and manifest: Rolebeam name and Letterform icon, version 0.2.8, Apple/OpenAI hosts only, current withdrawal recovery module included, no retired platform/CLI runtime files.
 - [ ] Verify the package digest and retain the source commit reference.
 - [ ] Load the ZIP's extracted files in a **new separate Chrome profile**. Do not copy a developer Chrome profile or IndexedDB data.
 - [ ] Confirm fresh install opens Jobs/Submissions/Setup, has no PDF/key/history and leaves application consent disabled.

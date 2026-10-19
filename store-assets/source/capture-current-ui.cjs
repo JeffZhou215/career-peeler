@@ -73,6 +73,6 @@ const local={appleCareersUserProfile:{userYearsOfExperience:2,afterRanking:'revi
   await sharp(bg).composite([{input:raw,left:24,top:0}]).png().toFile(path.join(out,file));
  }
  if(errors.length)throw new Error(errors.join('\n'));
- console.log('Captured five actual React UI screenshots for 0.2.7. External network requests blocked.');
+ console.log('Captured five actual React UI screenshots for 0.2.8. External network requests blocked.');
  } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

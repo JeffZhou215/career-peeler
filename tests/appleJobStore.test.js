@@ -47,6 +47,26 @@ test("Submit intent and cancellation commit atomically and ranking writes cannot
   } finally { h.close(); }
 });
 
+test("scan failures and completed-page identities survive metadata-only writes and adapter restart", async () => {
+  const h = storageHarness();
+  try {
+    const store = h.context();
+    const search = { scanId: "partial-scan", complete: false, pagesRead: 2,
+      pageSignatures: { 1: "100", 2: "101" }, processedJobIds: ["100", "101"],
+      failure: { message: "Apple repeated earlier results on search page 3. Choose Resume Scan.",
+        errorType: "search_navigation_retry_exhausted", expectedPage: 3, at: 1000 } };
+    await store.set({ [rankingKey]: { searches: { filter: search }, latestSearchKey: "filter",
+      jobs: {}, applicationFailures: {}, error: search.failure.message } });
+    await store.patch(rankingKey, { searches: {}, jobs: {}, applicationFailures: {}, error: null,
+      phase: "Application interrupted; reconciliation required" }, { jobs: [], applicationFailures: [] });
+    const reopened = await h.context().get(rankingKey);
+    assert.equal(reopened[rankingKey].error, null);
+    assert.deepEqual(plain(reopened[rankingKey].searches.filter), search);
+    await h.context().patch(rankingKey, { ...reopened[rankingKey], searches: { filter: { ...search, failure: null } } }, { searches: ["filter"] });
+    assert.equal((await h.context().get(rankingKey))[rankingKey].searches.filter.failure, null);
+  } finally { h.close(); }
+});
+
 function storageHarness(seed = {}, { abortMigration = false } = {}) {
   const indexedDB = new IDBFactory();
   const data = structuredClone(seed);

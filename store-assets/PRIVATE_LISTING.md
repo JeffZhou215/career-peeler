@@ -1,19 +1,19 @@
 # Chrome Web Store Private Release Worksheet
 
-Prepared October 18, 2026 for the Apple-only **Rolebeam 0.2.7** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
+Prepared October 18, 2026 for the Apple-only **Rolebeam 0.2.8** private beta. This worksheet is draft submission material; nothing has been uploaded, published, or approved. Replace placeholders before submission. Private visibility does not bypass Chrome Web Store review.
 
 ## Release Target
 
 | Field | Prepared Value |
 | --- | --- |
 | Name | Rolebeam |
-| Version | 0.2.7 |
+| Version | 0.2.8 |
 | Visibility | Private — Trusted Testers |
 | Audience | Explicitly invited Google accounts / publisher-owned tester group |
 | Category | Productivity |
 | Language | English (United States) |
 | Runtime | Chrome Manifest V3 side-panel extension; Apple Careers only |
-| Package | `release/rolebeam-0.2.7-private-beta.zip` |
+| Package | `release/rolebeam-0.2.8-private-beta.zip` |
 | Support | https://github.com/JeffZhou215/career-peeler/issues |
 | Hosted Privacy Policy | https://jeffzhou215.github.io/career-peeler/privacy.html |
 
@@ -38,7 +38,7 @@ Never enter tester emails, API keys, real resumes or Apple credentials in this t
 - Setup's PDF supports matching; Apple applications use the resume saved in the tester's Apple account.
 - Apple live DOM behavior, Chrome debugger/native click ordering and eventual server updates are not fully established by the offline tests. No real submissions or withdrawals are required for reviewer testing.
 - The OpenAI key and PDF are retained locally without additional application-level encryption. Disclose that accurately.
-- Earlier Career Peeler ZIPs and screenshots are superseded by this rebrand. Upload only the freshly validated Rolebeam 0.2.7 package/assets.
+- Earlier Career Peeler ZIPs and screenshots are superseded by this rebrand. Upload only the freshly validated Rolebeam 0.2.8 package/assets.
 
 ## Listing Copy
 

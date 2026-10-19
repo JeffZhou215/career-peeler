@@ -2012,12 +2012,13 @@ function readAppleSearchPagination(expectedSearchUrl) {
   return { currentPage, pageCount, hasNextPage: currentPage < pageCount, next };
 }
 
-async function waitForVerifiedAppleSearchPage({ expectedSearchUrl, expectedPage, previousPageSignature = null,
+async function waitForVerifiedAppleSearchPage({ expectedSearchUrl, expectedPage, previousPageSignature = null, seenPageSignatures = [],
   timeoutMs = 30000, intervalMs = 300, stableChecksRequired = 4 } = {}) {
   if (!Number.isInteger(expectedPage) || expectedPage < 1 || !expectedSearchUrl) {
     throw appleSearchPaginationError("The intended Apple search page is missing.", "search_page_identity_missing", false);
   }
   const deadline = Date.now() + timeoutMs;
+  const earlierPages = new Set(seenPageSignatures);
   let lastSignature = null;
   let stableReads = 0;
   let lastError = null;
@@ -2029,8 +2030,9 @@ async function waitForVerifiedAppleSearchPage({ expectedSearchUrl, expectedPage,
       }
       const links = collectJobLinks();
       const signature = appleSearchPageSignature(links);
+      const repeated = earlierPages.has(signature);
       if (page.currentPage === expectedPage && links.length &&
-        links.every(link => /^\d+(?:-\d+)?$/.test(String(link.jobId))) && signature !== previousPageSignature) {
+        links.every(link => /^\d+(?:-\d+)?$/.test(String(link.jobId))) && signature !== previousPageSignature && !repeated) {
         const identity = `${page.currentPage}|${page.pageCount}|${signature}`;
         stableReads = identity === lastSignature ? stableReads + 1 : 1;
         lastSignature = identity;
@@ -2040,7 +2042,9 @@ async function waitForVerifiedAppleSearchPage({ expectedSearchUrl, expectedPage,
       } else {
         stableReads = 0;
         lastSignature = null;
-        lastError = appleSearchPaginationError(`Apple's search page ${expectedPage} has not finished loading.`, "search_page_not_ready");
+        lastError = page.currentPage === expectedPage && repeated
+          ? appleSearchPaginationError(`Apple repeated earlier results on search page ${expectedPage}. Waiting for this page's results.`, "search_page_repeated")
+          : appleSearchPaginationError(`Apple's search page ${expectedPage} has not finished loading.`, "search_page_not_ready");
       }
     } catch (error) {
       if (error.retryable === false) throw error;

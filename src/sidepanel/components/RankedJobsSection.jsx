@@ -35,7 +35,8 @@ export function RankingRecoveryFeedback({ view, error = "", interruptedRanking =
   const recovery = view?.recovery;
   const unresolved = recovery?.reconciliationRequired === true;
   const job = unresolved ? recoveryRole(view) : null;
-  const displayError = error || view?.error;
+  const scanError = !view?.running && !latestSearch?.complete ? latestSearch?.failure?.message : null;
+  const displayError = error || view?.error || scanError;
   const duplicateRecoveryError = unresolved && (displayError === recovery.message || [
     "The worker restarted. Sync Submissions before starting another application; no application was resumed.",
     "The recovered role's full Apple job ID could not be reconciled.",
@@ -60,7 +61,7 @@ export function RankingRecoveryFeedback({ view, error = "", interruptedRanking =
       : "The previous workflow was interrupted. Saved scores and queued jobs remain available. Check Activity for applications needing review."}</p>}
     {!unresolved && checkResult}
     {displayError && !duplicateRecoveryError && <p className="submitted-history-error" role="alert">{displayError}
-      {!error && view?.errorJob && (!job || view.errorJob.jobId !== job.jobId) && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
+      {!error && view?.error && view?.errorJob && (!job || view.errorJob.jobId !== job.jobId) && <> <a href={view.errorJob.url} target="_blank" rel="noopener noreferrer">
         Review {view.errorJob.title} (Job ID {view.errorJob.jobId})
       </a></>}
     </p>}
@@ -401,6 +402,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     : view?.recovery?.stopRequested ? "Application Stopped"
       : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
       : view?.error ? /Application queue/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Application Needs Review" : "Application Queue Paused" : "Ranking Paused"
+      : latestSearch?.failure && !latestSearch.complete ? "Ranking Paused"
       : /Application queue/i.test(view?.phase || "") ? view.workflowMode === "current_role" ? /stopped/i.test(view.phase) ? "Application Stopped" : "Application Finished" : /stopped/i.test(view.phase) ? "Application Queue Stopped" : "Application Queue Finished"
         : /50-application target/i.test(view?.phase || "") ? "Application Limit Reached"
           : /Ranking stopped/i.test(view?.phase || "") ? "Scan Stopped"

@@ -179,6 +179,39 @@ test("a target ordinal with unchanged job IDs remains unverified", async () => {
   assert.equal(h.clicks, 1);
 });
 
+test("an earlier nonadjacent page must settle to new results before collection succeeds", async () => {
+  const h = fixture({ current: 3, total: 4 });
+  h.schedule(2100, () => { h.state.ids = ["200000005-0836"]; });
+  const response = await h.collect({ previousPageSignature: "200000003-0836|200000004-0836",
+    seenPageSignatures: ["200000001-0836|200000002-0836", "200000003-0836|200000004-0836"] });
+  assert.equal(response.ok, true);
+  assert.equal(response.data.links[0].jobId, "200000005-0836");
+  assert.equal(h.now, 3000, "old results lasting longer than the settling window cannot pass");
+});
+
+test("Next does not accept an older page's results or click twice during rerendering", async () => {
+  const h = fixture({ current: 2, total: 4, ids: ["200000003-0836"], onClick: ({ state, schedule }) => {
+    state.current = 3;
+    state.ids = ["200000001-0836"];
+    schedule(1800, () => { state.ids = ["200000005-0836"]; });
+  } });
+  const response = await h.advance({ expectedFromPage: 2, expectedPage: 3,
+    previousPageSignature: "200000003-0836", seenPageSignatures: ["200000001-0836", "200000003-0836"] });
+  assert.equal(response.ok, true);
+  assert.equal(h.now, 2700);
+  assert.equal(h.clicks, 1);
+});
+
+test("persistently repeated nonadjacent results return a retryable failure", async () => {
+  const h = fixture({ current: 3, total: 4 });
+  const response = await h.collect({ previousPageSignature: "200000003-0836",
+    seenPageSignatures: ["200000001-0836|200000002-0836", "200000003-0836"], timeoutMs: 1500 });
+  assert.equal(response.ok, false);
+  assert.equal(response.data.errorType, "search_page_repeated");
+  assert.equal(response.data.retryable, true);
+  assert.match(response.error, /page 3/);
+});
+
 test("a replay after the intended transition verifies without another click", async () => {
   const h = fixture({ current: 2, ids: ["200000003-0836"] });
   const response = await h.advance();

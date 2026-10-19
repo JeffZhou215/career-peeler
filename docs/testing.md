@@ -25,7 +25,7 @@ npm run check
 | Inventory | Confirmed empty versus unknown, pagination, stale counts, later applications and final-withdrawal reconciliation |
 | Submission Sync | Read-only automatic navigation/activation checks, persisted status/throttles, deferred pagination/workflows, interrupted checks, legacy requests, explicit Sync/Analyze, tab reuse/restoration and pre-application capacity checks |
 | Ranking | Complete/partial discovery scope, retained caches, filter drift, restart plan validation, exact identities, manual selection, live applicability, slot limits, reserved outcomes and queue edits |
-| Search Pagination | Stable full-ID content and live ordinals, delayed/disabled/hidden controls, SPA rerenders, unchanged pages, lost navigation replies, bounded recovery, exact-filter checkpoints, cancellation, resumption and scan-scoped counters |
+| Search Pagination | Stable full-ID content and live ordinals, delayed/disabled/hidden controls, SPA rerenders, earlier-page repeats, unchanged pages, lost navigation replies, bounded recovery, exact-filter checkpoints, cancellation, resumption, durable failures, scoped worker activity and scan-scoped counters |
 | IndexedDB | Real migration/transaction code, retained profile and protected roles, rollback, cleanup retry, concurrent contexts, record patches and notifications |
 | UI/Withdrawal | Disclosure behavior/markup, withdrawal lost replies and queue-stop rules |
 | Submission Collection | Unified cached inventories, partial overlay/legacy pages, authoritative complete snapshots, exact-ID deduplication, status filters, selection/protection reconciliation and status subscriptions on reopening |

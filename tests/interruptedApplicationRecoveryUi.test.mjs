@@ -73,6 +73,19 @@ test("unrelated errors remain visible beside the single recovery notice", () => 
   assert.equal((html.match(/role="alert"/g) || []).length, 2);
 });
 
+test("a partial scan keeps its failure visible after global progress is overwritten on restart", () => {
+  const message = "Could not verify Apple search page 38 after bounded recovery. Choose Resume Scan.";
+  const latestSearch = { complete: false, pagesRead: 37, failure: { message, expectedPage: 38 } };
+  const html = render({ view: { recovered: false, error: null, errorJob: job }, latestSearch });
+  assert.match(html, /Could not verify Apple search page 38/);
+  assert.doesNotMatch(html, /Review ML Engineer|href=|Check Application Status/);
+  assert.equal((html.match(/role="alert"/g) || []).length, 1);
+  const existingError = render({ view: { error: message }, latestSearch });
+  assert.equal((existingError.match(/Could not verify Apple search page 38/g) || []).length, 1);
+  const running = render({ view: { running: true }, latestSearch });
+  assert.doesNotMatch(running, /Could not verify Apple search page 38/);
+});
+
 test("the returned check reason is shown above the button and identifies the checked job", () => {
   const message = "Open the reviewed job link, then Check Application Status again.";
   const html = render({ result: { message, jobId: recovery.jobId } });

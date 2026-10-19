@@ -168,7 +168,7 @@ function workerHarness(options = {}) {
   };
   const sandbox = {
     ...core, CareerPeelerRanking: ranking, CareerPeelerApplicationSafety: safety, CareerPeelerJobStore: adapter,
-    console: { error() {} }, URL,
+    console: { error() {}, warn() {} }, URL,
     setInterval: (callback, interval) => {
       const id = ++intervalId;
       intervals.set(id, { callback, interval, nextAt: clock + interval });
@@ -177,7 +177,7 @@ function workerHarness(options = {}) {
     },
     clearInterval: id => { intervals.delete(id); calls.intervalsCleared.push(id); },
     Date: class extends Date { static now() { return clock; } },
-    APPLE_SUBMITTED_ROLE_REVIEWS_KEY: "reviews", APPLIED_JOBS_KEY: "applied", USER_PROFILE_KEY: "profile",
+    APPLE_SUBMITTED_ROLE_REVIEWS_KEY: "reviews", APPLIED_JOBS_KEY: "applied", USER_PROFILE_KEY: "profile", KNOWN_SITE_ACTIVITY_KEY: "knownActivity",
     APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY: "details", submittedRoleAnalysisRuns: new Map(),
     scanState: core.createIdleState(), currentScanActivitySteps: [],
     chrome: { runtime: { getPlatformInfo: async () => { calls.workerPulses++; return { os: "mac", arch: "arm64" }; } },
@@ -617,6 +617,90 @@ test("pagination retry exhaustion retains its real failure reason and never star
   assert.deepEqual(h.calls.applied, []);
   assert.equal(h.calls.capacityReads.length, 0);
   assert.equal(h.store.appleJobRanking.jobs["100"].score, 90);
+});
+
+test("nonadjacent repeated results use bounded recovery of the exact target without skipping jobs", async () => {
+  const h = workerHarness();
+  h.mocks.pages = [100, 101, 102, 103].map(id => ({ links: [searchLink(String(id))] }));
+  let thirdPageReads = 0;
+  h.mocks.collect = async (_tab, message, page) => {
+    const current = h.mocks.currentSearchPage;
+    if (current === 3) {
+      assert.deepEqual([...message.seenPageSignatures], ["100", "101"]);
+    }
+    return { ok: true, data: { ...page, url: h.mocks.currentSearchUrl, paginationVerified: true,
+      currentPage: current, pageCount: 4, hasNextPage: current < 4,
+      links: current === 3 && ++thirdPageReads === 1 ? [searchLink("100")] : page.links } };
+  };
+  await h.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA }, profile);
+  const search = Object.values(h.store.appleJobRanking.searches)[0];
+  assert.equal(search.complete, true);
+  assert.equal(search.pagesRead, 4);
+  assert.deepEqual([...search.processedJobIds], ["100", "101", "102", "103"]);
+  assert.equal(h.calls.scored, 4);
+  assert.equal(h.calls.next.length, 3, "recovery must not replay Next");
+  assert.equal(h.calls.updated.length, 1);
+  assert.equal(new URL(h.calls.updated[0].url).searchParams.get("page"), "3");
+  assert.deepEqual([...h.calls.next[1].seenPageSignatures], ["100", "101"]);
+});
+
+test("repeated-page exhaustion saves the failure with the checkpoint and Resume skips completed jobs", async () => {
+  const first = workerHarness();
+  first.mocks.pages = [100, 101, 100].map(id => ({ links: [searchLink(String(id))] }));
+  await first.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, autoApply: true }, profile);
+  const partial = Object.values(first.store.appleJobRanking.searches)[0];
+  assert.equal(partial.complete, false);
+  assert.equal(partial.pagesRead, 2);
+  assert.deepEqual([...partial.processedJobIds], ["100", "101"]);
+  assert.equal(first.calls.updated.length, 2);
+  assert.deepEqual(first.calls.applied, []);
+  assert.equal(first.calls.capacityReads.length, 0);
+  assert.equal(partial.failure.errorType, "search_navigation_retry_exhausted");
+  assert.equal(partial.failure.expectedPage, 3);
+  assert.match(partial.failure.message, /repeated.*page 3.*Resume Scan/);
+
+  // An older, already reconciled application can replace global progress during
+  // an idle worker restart. The scan's own failure must survive that recovery.
+  first.store.appleApplicationWorkflow = { id: "older-application", owner: "earlier-worker", recoveredAt: 1,
+    status: "paused", reconciliationRequired: false, currentJobId: "200670922-0836", startedAt: 1,
+    jobs: { "200670922-0836": { jobId: "200670922-0836", title: "Earlier confirmed role",
+      url: "https://jobs.apple.com/en-us/details/200670922-0836/engineer", state: "submitted",
+      submissionOutcome: "confirmed", resultAt: 2, workflowSessionId: "older-application" } } };
+  first.sandbox.appliedJobLedger["apple:200670922-0836"] = { site: "apple", jobId: "200670922-0836" };
+  await first.sandbox.recoverAppleApplicationSession();
+  assert.deepEqual(Object.values(first.store.appleJobRanking.searches)[0].failure, partial.failure);
+  const restored = workerHarness({ store: first.store });
+  restored.mocks.pages = [100, 101, 102].map(id => ({ links: [searchLink(String(id))] }));
+  await restored.api.runAppleJobRanking({ sourceTabId: 1, searchUrl: filterA, resume: true }, profile);
+  const complete = Object.values(restored.store.appleJobRanking.searches)[0];
+  assert.equal(new URL(restored.calls.pageUrls[0]).searchParams.get("page"), "3");
+  assert.equal(complete.complete, true);
+  assert.equal(complete.failure, null);
+  assert.equal(restored.calls.scored, 1);
+  assert.deepEqual([...complete.processedJobIds], ["100", "101", "102"]);
+  assert.equal(complete.scanId, partial.scanId);
+});
+
+test("active ranking retains worker activity during slow page replies and releases it on every exit", async () => {
+  for (const outcome of ["complete", "stop", "error"]) {
+    const h = workerHarness();
+    const run = { sourceTabId: 1, searchUrl: filterA };
+    h.mocks.pages = [{ links: [searchLink("100")] }];
+    h.mocks.collect = async (_tab, _message, page) => {
+      await h.sandbox.delay(61000);
+      if (outcome === "stop") run.stopRequested = true;
+      if (outcome === "error") return { ok: false, error: "Synthetic search unavailable", retryable: false };
+      return { ok: true, data: { ...page, url: filterA, paginationVerified: true,
+        currentPage: 1, pageCount: 1, hasNextPage: false } };
+    };
+    await h.api.runAppleJobRanking(run, profile);
+    assert.ok(h.calls.workerPulses >= 4, "an explicit scan remains active through long content replies");
+    const pulses = h.calls.workerPulses;
+    await h.sandbox.delay(61000);
+    assert.equal(h.calls.workerPulses, pulses);
+    assert.equal(run.releaseWorkerActivity, null);
+    assert.equal(h.calls.intervalsStarted.length, h.calls.intervalsCleared.length);
+  }
 });
 
 test("wrong page ordinals or a changing page count cannot certify a complete scan", async () => {
