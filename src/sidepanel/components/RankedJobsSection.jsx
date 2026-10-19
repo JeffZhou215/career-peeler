@@ -399,7 +399,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     ? /^Checking Apple submission/i.test(view.phase || "") ? "Checking Submission Capacity"
       : /^Applying/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Applying This Role" : "Applying Application Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
-    : view?.recovery?.stopRequested ? "Application Stopped"
+    : view?.recovery?.stopRequested && view.recovery.reconciliationRequired ? "Application Stopped"
       : view?.recovered ? interruptedRanking ? "Scan Interrupted" : "Workflow Interrupted"
       : view?.error ? /Application queue/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Application Needs Review" : "Application Queue Paused" : "Ranking Paused"
       : latestSearch?.failure && !latestSearch.complete ? "Ranking Paused"

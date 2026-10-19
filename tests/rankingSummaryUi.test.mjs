@@ -66,3 +66,16 @@ test("the panel keeps cache totals in Scan Details and resumes from the complete
   assert.doesNotMatch(source, /interrupted on page \$\{\(latestSearch\.pageIndex/);
   assert.match(source, /latestSearch\.complete \? "All Pages Ranked" : "Partial Scan"/);
 });
+
+test("an old reconciled application Stop cannot disguise a stopped or completed job scan", async () => {
+  const source = await readFile(new URL("../src/sidepanel/components/RankedJobsSection.jsx", import.meta.url), "utf8");
+  const begin = source.indexOf("  const progressLabel =");
+  const end = source.indexOf("\n\n  function jobCard", begin);
+  assert.ok(begin >= 0 && end > begin);
+  const label = new Function("view", "latestSearch", "interruptedRanking", `${source.slice(begin, end)}\nreturn progressLabel;`);
+  const recovery = { stopRequested: true, reconciliationRequired: false };
+  assert.equal(label({ recovery, phase: "Ranking stopped; results saved" }, { complete: false }, false), "Scan Stopped");
+  assert.equal(label({ recovery, phase: "Filtered search ranked" }, { complete: true }, false), "Ranking Complete");
+  assert.equal(label({ recovery: { ...recovery, reconciliationRequired: true }, phase: "Application stopped" }, {}, false), "Application Stopped");
+  assert.equal(label({ running: true, recovery, phase: "Ranking page 6: Software Engineer" }, {}, false), "Ranking Page 6");
+});

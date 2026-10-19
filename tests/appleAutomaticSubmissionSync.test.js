@@ -119,6 +119,32 @@ test("workflow recovery defers automatic sync without acknowledging uncertain ou
   assert.deepEqual(h.calls.messages, []);
 });
 
+test("a late workflow deferral cannot overwrite analysis verification during an awaited status read", async () => {
+  const h = await harness();
+  vm.runInContext("submittedRoleAnalysisRuns.set('analysis', { inventoryVerified: false })", h.sandbox);
+  const originalGet = h.sandbox.chrome.storage.local.get;
+  let release, entered;
+  const paused = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  let reads = 0;
+  h.sandbox.chrome.storage.local.get = async keys => {
+    const value = await originalGet(keys);
+    if (keys === statusKey && ++reads === 2) { entered(); await gate; }
+    return value;
+  };
+  const deferred = h.sandbox.deferAppleSubmissionSync("workflow", "Another workflow is running.");
+  await paused;
+  vm.runInContext("submittedRoleAnalysisRuns.get('analysis').inventoryVerified = true", h.sandbox);
+  await h.sandbox.completeAppleSubmissionSync({ complete: true, inventoryState: "confirmed", roles: [role("200000001")] });
+  const lastSuccessAt = h.data[statusKey].lastSuccessAt;
+  release();
+  await deferred;
+  assert.equal(h.data[statusKey].state, "synced");
+  assert.equal(h.data[statusKey].lastSuccessAt, lastSuccessAt);
+  assert.equal(h.data[statusKey].lastVerifiedCount, 1);
+  assert.deepEqual(h.calls.messages, []);
+});
+
 test("successful automatic reads retain pending reservations and do not rewrite uncertain queue results", async () => {
   const h = await harness({ ok: true, data: page([]) }, {
     appleJobRanking: { jobs: { "200000003": { jobId: "200000003", queueStatus: "uncertain" } }, searches: {},
@@ -205,6 +231,37 @@ test("a ready-page message can retry a failed loading read without waiting for t
   assert.equal(result.ok, true);
   assert.equal(h.data[statusKey].state, "synced");
   assert.equal(h.calls.messages.length, 2);
+});
+
+test("ready content retries a missing receiver even when its inventory signature matches the previous document", async () => {
+  const signature = "1|1|200000001";
+  let ready = false;
+  const h = await harness(() => {
+    if (!ready) throw new Error("Could not establish connection. Receiving end does not exist.");
+    return { ok: true, data: page([role("200000001")]) };
+  }, { [statusKey]: { state: "synced", lastPageSignature: signature, lastSuccessAt: Date.now() - 120000 } });
+  assert.equal((await request(h)).ok, false);
+  assert.equal(h.data[statusKey].state, "failed");
+  assert.equal((await h.sandbox.appleRankingCapacity(await h.sandbox.readAppleRankingState())).known, false);
+  ready = true;
+  const result = await h.sandbox.dispatch({ type: "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY", signature }, { tab: h.tabs[0] });
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, undefined);
+  assert.equal(h.data[statusKey].state, "synced");
+  assert.equal(h.calls.messages.length, 2);
+  assert.deepEqual(h.calls.injected, []);
+  assert.deepEqual(h.calls.created, []);
+});
+
+test("repeated failed readiness messages with the same signature still respect the retry throttle", async () => {
+  const h = await harness({ ok: false, error: "Still loading" });
+  const signature = "same-ready-document";
+  await request(h);
+  for (let n = 0; n < 4; n++) {
+    await h.sandbox.dispatch({ type: "APPLE_CAREERS_CHECK_SUBMISSION_CAPACITY", signature }, { tab: h.tabs[0] });
+  }
+  assert.equal(h.calls.messages.length, 2, "one ready retry after activation, not one retry per event");
+  assert.equal(h.data[statusKey].state, "failed");
 });
 
 test("explicit Sync cannot launch a concurrent inventory read during automatic synchronization", async () => {

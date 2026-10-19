@@ -3215,6 +3215,7 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
   let warning = null;
   let storageWarning = null;
   const invalidateCapacity = async () => {
+    run.inventoryVerified = false;
     const ranking = await readAppleRankingState();
     ranking.capacitySnapshot = { ...ranking.capacitySnapshot, roles: ranking.capacitySnapshot?.roles || [], complete: false,
       inventoryState: "unknown", updatedAt: Date.now(), warning };
@@ -3264,7 +3265,8 @@ async function analyzeAllAppleSubmittedRoles(tabId, userProfile, analysisId) {
       ranking.capacitySnapshot = archive.latestScan;
       ranking.reservations = unresolvedAppleWorkflowReservations(workflow);
       await saveAppleRankingState(ranking, { jobs: [], applicationFailures: [] });
-      await completeAppleSubmissionSync(inventory, { recoveryWarning });
+      run.inventoryVerified = true;
+      await completeAppleSubmissionSync(inventory, { recoveryWarning, tabId });
     }
   };
   const publish = async (review) => {

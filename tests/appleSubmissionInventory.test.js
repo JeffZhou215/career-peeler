@@ -169,6 +169,44 @@ test("failed all-submissions scan preserves the saved complete ranking but inval
   assert.equal((await h.sandbox.appleRankingCapacity(await h.sandbox.readAppleRankingState())).known, false);
 });
 
+test("restoring the page after complete analysis cannot replace verified sync with a stale workflow deferral", async () => {
+  const h = await workerInventory();
+  h.sandbox.getTaskWindowId = async () => 1;
+  h.sandbox.scoreAppleSubmittedRoles = async roles => ({ roles: roles.map(item => ({ ...item, score: 80 })) });
+  let current = 1, restorationChecks = 0;
+  const pages = [page([role("200000001")], 1, 2), page([role("200000002")], 2, 2)];
+  h.sandbox.sendMessageWithFallback = async (_id, message) => {
+    if (message.type === "APPLE_CAREERS_ADVANCE_SUBMITTED_HISTORY_PAGE") {
+      return { ok: true, data: { advanced: true, page: pages[current++] } };
+    }
+    if (message.type === "APPLE_CAREERS_SET_SUBMITTED_HISTORY_PAGE") {
+      current = message.pageIndex;
+      if (h.data[reviewsKey]?.latestScan?.complete) {
+        restorationChecks++;
+        await h.sandbox.passivelySyncAppleSubmissions({ id: 1, windowId: 1, active: true,
+          url: "https://jobs.apple.com/app/en-us/profile/roles" });
+      }
+    }
+    return { ok: true, data: pages[current - 1] };
+  };
+  const result = await h.sandbox.analyzeAllAppleSubmittedRoles(1, {}, "completed-analysis");
+  assert.equal(result.pagesRead, 2);
+  assert.equal(restorationChecks, 1);
+  assert.equal(current, 1);
+  assert.equal(h.data[reviewsKey].latestScan.complete, true);
+  assert.equal(h.data.appleSubmissionSyncStatus.state, "synced");
+  assert.equal(h.data.appleSubmissionSyncStatus.reason, null);
+  assert.equal(h.data.appleSubmissionSyncStatus.lastVerifiedCount, 2);
+  assert.ok(h.data.appleSubmissionSyncStatus.lastSuccessAt);
+  assert.equal((await h.sandbox.appleRankingCapacity(await h.sandbox.readAppleRankingState())).remaining, 48);
+  assert.equal(h.data.appleSubmissionSyncStatus.lastAttemptTabId, 1);
+  h.sandbox.sendMessageWithFallback = async () => assert.fail("Restoration must not immediately re-read a freshly verified inventory");
+  const afterCompletion = await h.sandbox.passivelySyncAppleSubmissions({ id: 1, windowId: 1, active: true,
+    url: "https://jobs.apple.com/app/en-us/profile/roles" });
+  assert.equal(afterCompletion.skipped, true);
+  assert.equal(h.data.appleSubmissionSyncStatus.state, "synced");
+});
+
 test("incomplete pagination and malformed scan pages cannot reuse a cached zero count", async () => {
   for (const incomplete of [true, false]) {
     const h = await workerInventory();
