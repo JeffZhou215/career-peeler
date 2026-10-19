@@ -1104,9 +1104,18 @@ function extractAppleSubmittedRoleDetails() {
   const preferredQualifications = normalizeText(preferredElement?.innerText || "");
   const title = getJobTitle();
   const jobId = getJobId();
+  // Observed Apple's explicit not-found view. A URL alone, a blank loading
+  // shell, or generic network feedback does not establish unavailability.
+  const unavailableButton = document.querySelector("#jobdetails-open-positions-button");
+  const unavailableView = unavailableButton?.parentElement;
+  const unavailableReason = normalizeText(unavailableView?.querySelector("p")?.innerText || "");
+  const postingUnavailable = Boolean(!document.querySelector("#jobdetails-wrapper") &&
+    unavailableButton?.isConnected && unavailableView?.isConnected && isElementVisible(unavailableButton) &&
+    normalizeText(unavailableView.querySelector("h1")?.innerText || "") === "Page not found." &&
+    unavailableReason === "Sorry, this role does not exist or is no longer available.");
   const jobText = [description, minimumQualifications, preferredQualifications].filter(Boolean).join("\n\n");
   const ready = Boolean(
-    jobId &&
+    !postingUnavailable && jobId &&
     title &&
     description.length > 80 &&
     (!minimumElement || minimumQualifications.length > 25) &&
@@ -1117,6 +1126,8 @@ function extractAppleSubmittedRoleDetails() {
     jobId,
     title,
     url: window.location.href,
+    postingUnavailable,
+    unavailableReason: postingUnavailable ? unavailableReason : null,
     description,
     minimumQualifications,
     minimumQualificationItems: Array.from(minimumElement?.querySelectorAll("li") || [])

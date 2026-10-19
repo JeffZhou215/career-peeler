@@ -3469,26 +3469,51 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
   return { detailsByJobId, fetchedCount, cachedCount, unavailableCount, cacheSaveFailed };
 }
 
-async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs = 15000) {
+async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs = 15000, { forApplication = false } = {}) {
   const deadline = Date.now() + timeoutMs;
+  let unavailableChecks = 0;
+  let lastReadError = null;
   while (Date.now() < deadline) {
+    let response;
     try {
-      const response = await sendMessageWithFallback(tabId, {
+      response = await sendMessageWithFallback(tabId, {
         type: "APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS"
       });
-      if (
-        response?.ok &&
-        response.data?.ready &&
-        normalizeAppleSubmittedJobId(response.data.jobId) === normalizeAppleSubmittedJobId(expectedJobId) &&
-        response.data.description
-      ) {
-        return response.data;
-      }
-    } catch (_error) {
+    } catch (error) {
       // The content script may not be ready on the first poll after Apple finishes navigation.
+      lastReadError = error?.message || "The job page could not be read.";
+    }
+    const details = response?.ok ? response.data : null;
+    if (response && !response.ok) lastReadError = response.error || "The job page could not be read.";
+    if (forApplication && details) {
+      const currentTab = await chrome.tabs.get(tabId);
+      if (!CareerPeelerApplicationSafety.matchesJob(expectedJobId, currentTab.url) ||
+          (details.jobId && String(details.jobId) !== String(expectedJobId)) ||
+          (details.url && !CareerPeelerApplicationSafety.matchesJob(expectedJobId, details.url))) {
+        throw Object.assign(new Error("The live posting identifies a different Apple job. Review the selected full job ID before applying."),
+          { code: "job_identity_mismatch" });
+      }
+    }
+    const exactIdentity = String(details?.jobId) === String(expectedJobId) &&
+      CareerPeelerApplicationSafety.matchesJob(expectedJobId, details?.url);
+    // Repeated observations avoid treating a brief SPA rerender as a removed
+    // posting. This is a per-role failure, never permission to apply elsewhere.
+    unavailableChecks = details?.postingUnavailable === true && details.ready === false && exactIdentity
+      ? unavailableChecks + 1 : 0;
+    if (unavailableChecks >= 3) {
+      if (forApplication) throw Object.assign(new Error("Apple says this role does not exist or is no longer available. No application was started; the remaining selected jobs can continue."),
+        { code: "job_unavailable" });
+      return null;
+    }
+    if (details?.ready && !details.postingUnavailable && details.description &&
+        (forApplication ? exactIdentity :
+          normalizeAppleSubmittedJobId(details.jobId) === normalizeAppleSubmittedJobId(expectedJobId))) {
+      return details;
     }
     await delay(300);
   }
+  if (forApplication) throw Object.assign(new Error(`Apple's job description did not load or could not be verified.${lastReadError ? ` ${lastReadError}` : ""} No application was started. Open the selected job page, wait for it to load, then review the batch again.`),
+    { code: "job_identity_unverified" });
   return null;
 }
 

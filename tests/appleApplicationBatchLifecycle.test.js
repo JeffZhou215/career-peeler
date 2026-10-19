@@ -44,6 +44,14 @@ async function fixture(options = {}) {
         if (options.capacityResult) return options.capacityResult;
         return { ok: true, data: { pages: [inventoryPage], pageCount: 1 } };
       }
+      if (message.type === "APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS") {
+        const jobId = h.sandbox.CareerPeelerApplicationSafety.jobIdFromUrl(tab.url);
+        if (options.unavailableJob === jobId) return { ok: true, data: { jobId, url: tab.url,
+          ready: false, postingUnavailable: true, unavailableReason: "Sorry, this role does not exist or is no longer available." } };
+        if (options.changedDetailJob === jobId) return { ok: true, data: { ...details, ready: true,
+          jobId: ids[2], url: `https://jobs.apple.com/en-us/details/${ids[2]}/engineer` } };
+        return { ok: true, data: { ...details, jobId, url: tab.url, ready: true } };
+      }
       if (message.type === "APPLE_CAREERS_EXTRACT_JOB") return { ok: true, data: {
         jobId: message.expectedJobId, url: tab.url, identityVerified: true, canApply: true, alreadySubmitted: false } };
       if (message.type === "APPLE_CAREERS_VERIFY_WORKFLOW_IDENTITY") return { ok: true,
@@ -85,7 +93,7 @@ async function fixture(options = {}) {
     score: 95 - index, eligible: true, queueStatus: "queued", profileSignature: signature,
     postingSignature: core.fingerprintText(JSON.stringify(ranking.postingInput(details)))
   }])), searches: {}, reservations: [], applicationFailures: {} };
-  h.sandbox.waitForAppleSubmittedRoleDetails = async (tabId, jobId) => ({ ...details, jobId,
+  if (!options.liveDetailReads) h.sandbox.waitForAppleSubmittedRoleDetails = async (tabId, jobId) => ({ ...details, jobId,
     url: h.tabs.find(tab => tab.id === tabId).url });
   const originalRunner = h.sandbox.runAppleJobQueue;
   h.sandbox.runAppleJobQueue = (...args) => {
@@ -129,6 +137,51 @@ async function interruptedSession(h, { jobId = ids[2], state = "in_progress", ca
 }
 
 const fullInventoryReads = h => h.calls.messages.filter(message => message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
+
+test("an explicitly unavailable posting is recorded without Submit and the remaining reviewed batch continues", async () => {
+  const h = await fixture({ liveDetailReads: true, unavailableJob: ids[0] });
+  await h.start();
+  await h.finished;
+  const failed = h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])];
+  assert.equal(failed.errorType, "job_unavailable");
+  assert.match(failed.reason, /no longer available/);
+  assert.equal(failed.submissionOutcomeUnknown, false);
+  assert.equal(h.stages.has(ids[0]), false, "no application step is sent for the unavailable role");
+  assert.equal(h.stages.get(ids[1]), 4, "the next selected role completes all mocked application steps");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "needs_review");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "submitted");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[2])].queueStatus, "queued");
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 1);
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.failed, 1);
+  assert.equal(h.data.appleJobRanking.reservations.some(item => item.jobId === ids[0]), false);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionAttemptCount, 0);
+});
+
+test("a genuine posting identity change still pauses before any application in the batch", async () => {
+  const h = await fixture({ liveDetailReads: true, changedDetailJob: ids[0] });
+  await h.start();
+  await h.finished;
+  assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].errorType, "job_identity_mismatch");
+  assert.equal(h.stages.size, 0);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "queued");
+  assert.equal(h.data.appleJobRanking.reservations.length, 0);
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 0);
+});
+
+test("an unavailable middle posting preserves prior confirmed results and continues the remaining reviewed selection", async () => {
+  const h = await fixture({ liveDetailReads: true, unavailableJob: ids[1] });
+  await h.start(ids);
+  await h.finished;
+  assert.equal(h.stages.get(ids[0]), 4);
+  assert.equal(h.stages.has(ids[1]), false);
+  assert.equal(h.stages.get(ids[2]), 4);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "submitted");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "needs_review");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[2])].queueStatus, "submitted");
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 2);
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.failed, 1);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[1]].submissionAttemptCount, 0);
+});
 
 test("a role paused for manual review keeps its application draft through queue cleanup", async () => {
   const h = await fixture({ manualReviewJob: ids[0] });
