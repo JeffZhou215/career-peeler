@@ -2545,8 +2545,9 @@ async function runApplicationWorkflow(tab, options = {}) {
       if (response.data.pausedForReview) {
         standaloneCycleResult = getKnownSiteCycleResult("needs_review");
         await markActiveKnownSiteCycleNeedsAttention(activitySteps);
-        // Leave the tab open (skip cleanupWorkflowTabs) so the user can see the drafted answer
-        // live and submit it themselves -- unlike every other exit path here, this is not a failure.
+        // Hand the paused draft to the user. Queue-wide cleanup also runs after
+        // this function returns, so skipping local cleanup alone is insufficient.
+        ownedWorkflowTabIds.delete(workflowTabId);
         return {
           ok: true,
           data: {

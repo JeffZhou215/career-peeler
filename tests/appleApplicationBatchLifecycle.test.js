@@ -56,6 +56,18 @@ async function fixture(options = {}) {
       if (options.blockStage === stage && id === ids[0]) { entered.resolve(); await gate.promise; }
       if (options.lostReplyJob === id) throw new Error("Synthetic content reply was lost.");
       await h.sandbox.authorizeAppleWorkflowAction({ ...message, action: stage === 3 ? "submit" : "form" }, { tab });
+      if (options.manualReviewJob === id && stage === 2) return { ok: true, data: {
+        expectedJobId: id, identityVerified: true, url: tab.url, clicked: false, done: false,
+        pausedForReview: true, submissionOutcome: "not_attempted", errorType: "saved_application_answer_unresolved",
+        summary: "An explicit saved answer is missing.", heading: "Questions",
+        steps: [{ step: "Verify saved application answers", status: "blocked", label: "An explicit saved answer is missing." }]
+      } };
+      if (options.unknownOutcomeJob === id && stage === 3) return { ok: true, data: {
+        expectedJobId: id, identityVerified: true, url: tab.url, clicked: true, done: false,
+        pausedForReview: true, submissionOutcome: "unknown", errorType: "clicked_but_unconfirmed",
+        summary: "Synthetic Submit outcome is unknown.", heading: "Review & Submit",
+        steps: [{ step: "Submit application", status: "clicked" }]
+      } };
       const labels = ["Open application flow", "Continue application step", "Continue application step", "Submit application"];
       if (stage === 3) await h.sandbox.recordAppleSubmitObservation({ ...message,
         identityVerified: true, submissionOutcome: "confirmed" }, { tab });
@@ -117,6 +129,35 @@ async function interruptedSession(h, { jobId = ids[2], state = "in_progress", ca
 }
 
 const fullInventoryReads = h => h.calls.messages.filter(message => message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES");
+
+test("a role paused for manual review keeps its application draft through queue cleanup", async () => {
+  const h = await fixture({ manualReviewJob: ids[0] });
+  await h.start([ids[0]]);
+  await h.finished;
+  const application = h.tabs.find(tab => tab.url === `https://jobs.apple.com/app/en-us/apply/${ids[0]}`);
+  assert.ok(application, "the runner opened the selected role's application");
+  assert.equal(h.calls.removed.includes(application.id), false, "cleanup must preserve the paused draft");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionOutcome, "not_attempted");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionAttemptCount, 0);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "needs_review");
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 0);
+});
+
+test("an uncertain application stays open for reconciliation without releasing its reservation or replaying Submit", async () => {
+  const h = await fixture({ unknownOutcomeJob: ids[0] });
+  await h.start([ids[0]]);
+  await h.finished;
+  const application = h.tabs.find(tab => tab.url === `https://jobs.apple.com/app/en-us/apply/${ids[0]}`);
+  assert.equal(h.calls.removed.includes(application.id), false);
+  assert.equal(h.data.appleApplicationWorkflow.reconciliationRequired, true);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionOutcome, "unknown");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionAttemptCount, 1);
+  assert.ok(h.data.appleJobRanking.reservations.some(item => item.jobId === ids[0]));
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "uncertain");
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 0);
+  await assert.rejects(h.sandbox.claimAppleApplicationSession([{ jobId: ids[0] }]), /reconciliation/);
+  assert.equal(h.stages.get(ids[0]), 4);
+});
 
 test("real reviewed multi-role batch completes four stages for each exact selected job and retains the unselected job", async () => {
   const h = await fixture();

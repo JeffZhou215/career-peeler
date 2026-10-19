@@ -3272,6 +3272,7 @@ async function verifySavedApplicationAnswers(steps, options = {}, { readOnlyRevi
   };
   const records = [];
   const groups = new Set();
+  let reviewSnapshot = null;
   for (const element of getRequiredFieldAuditControls()) {
     const kind = getRequiredFieldAuditKind(element);
     const container = getAgentFieldContainer(element);
@@ -3283,21 +3284,48 @@ async function verifySavedApplicationAnswers(steps, options = {}, { readOnlyRevi
     records.push({ element, container, kind, label });
   }
   if (readOnlyReview) {
-    // Use the existing semantic container reader, not guessed Apple review ids. A recognizable
-    // question with no associated single answer is blocked instead of inferred from the profile.
-    const reviewContainers = Array.from(document.querySelectorAll("fieldset, section, div, li"))
+    // Verified Apple review markup. The footer's equal-opportunity notice is
+    // outside this form and must not be interpreted as a personal question.
+    const reviewRoot = document.querySelector("#apply-reviewAndSubmit-form") || document.querySelector("main") || document;
+    reviewSnapshot = { element: reviewRoot, text: String(reviewRoot.innerText || "") };
+    const reviewContainers = Array.from(reviewRoot.querySelectorAll("fieldset, section, div, li"))
       .filter(element => isElementVisible(element))
       .map(element => {
         const lines = String(element.innerText || "").split(/\n/).map(normalizeText).filter(Boolean);
         const questions = lines.filter(line => isSavedPersonalQuestion(line, options.applicationAnswers) &&
           !isOptionalApplicationQuestion(element, line) &&
           (!isStartDateQuestion(line) || /\b(?:earliest|available|availability)\b|when can you start|\?/i.test(line)));
-        return { element, lines, questions };
+        // Apple renders screening rows as h3.question + p.answer, and EEO rows
+        // as label + span.info. An answer such as "not a protected veteran"
+        // contains a personal keyword, but is still an answer. Require exactly
+        // this two-child association; unknown or combined rows retain the
+        // conservative coverage checks below.
+        const children = Array.from(element.children || []);
+        const [labelNode, answerNode] = children;
+        const paired = children.length === 2 && (
+          labelNode.matches?.("h3.question") && answerNode.matches?.("p.answer") ||
+          labelNode.matches?.("label") && answerNode.matches?.("span.info"));
+        const rawLabel = paired ? String(labelNode.innerText || "").trim() : "";
+        const label = normalizeText(rawLabel);
+        const answer = paired ? String(answerNode.innerText || "").trim() : "";
+        // Known profile values are not screening questions. In particular, a
+        // job description saying "over 12,000 images" must not become an age
+        // eligibility question merely because the policy recognizes "over 12".
+        const dataField = paired && labelNode.matches?.("label") && answerNode.matches?.("span.info") &&
+          !Array.from(labelNode.children || []).length && !Array.from(answerNode.children || []).length &&
+          ["apply-contact", "apply-educationDegrees", "apply-employments"].includes(element.closest?.("section")?.id) &&
+          /^(?:first name|last name|preferred name|preferred phone number|school|degree|major\/field of study|graduated\/completed|employer|job title|current employer|start date|end date|job description)$/i.test(label);
+        const semantic = dataField ? { dataField: true } : paired && label && answer && !rawLabel.includes("\n") && !answer.includes("\n") &&
+          !Array.from(labelNode.children || []).length && !Array.from(answerNode.children || []).length &&
+          isSavedPersonalQuestion(label, options.applicationAnswers) &&
+          !isOptionalApplicationQuestion(element, label) ? { label, selected: [normalizeText(answer)] } : null;
+        return { element, lines, questions, semantic };
       })
       .filter(record => record.questions.length > 0)
       .filter(record => !records.some(editable => editable.container === record.element ||
         editable.container.contains?.(record.element) || record.element.contains?.(editable.element)));
-    const candidates = reviewContainers.filter(record => record.questions.length === 1 && record.lines.join(" ").length <= 1000);
+    const candidates = reviewContainers.filter(record => record.semantic?.dataField ||
+      (record.semantic || record.questions.length === 1) && record.lines.join(" ").length <= 1000);
     const rows = candidates.filter(record => !candidates.some(other => other.element !== record.element && record.element.contains?.(other.element)));
     // A section can render several question/answer pairs in p/span children. Dropping that
     // section because it has more than one question would bypass every saved-answer check.
@@ -3313,9 +3341,10 @@ async function verifySavedApplicationAnswers(steps, options = {}, { readOnlyRevi
       }
     }
     for (const record of rows) {
-      const label = record.questions[0];
+      if (record.semantic?.dataField) continue;
+      const label = record.semantic?.label || record.questions[0];
       const index = record.lines.indexOf(label);
-      const selected = record.lines.slice(index + 1).filter(line => !/^(?:edit|change|modify)$/i.test(line));
+      const selected = record.semantic?.selected || record.lines.slice(index + 1).filter(line => !/^(?:edit|change|modify)$/i.test(line));
       records.push({ element: record.element, container: record.element, kind: "review", label, selected });
     }
   }
@@ -3395,6 +3424,10 @@ async function verifySavedApplicationAnswers(steps, options = {}, { readOnlyRevi
           JSON.stringify(readSavedPersonalSelection(record.element, record.container, record.kind)) !== JSON.stringify(record.verifiedSelection))) {
       return fail("Apple changed a verified personal answer before navigation. Review it manually.");
     }
+  }
+  if (reviewSnapshot && (reviewSnapshot.element.isConnected === false ||
+      String(reviewSnapshot.element.innerText || "") !== reviewSnapshot.text)) {
+    return fail("Apple changed the application review during verification. Review this step manually; Submit was not clicked.");
   }
   return { unresolvedReason: null };
 }
