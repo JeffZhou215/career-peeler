@@ -23,6 +23,26 @@ before(async () => {
 after(async () => { await server?.close(); });
 const render = props => renderToStaticMarkup(createElement(List, { failures: ids.map(failure), selectedIds: [], busy: false,
   running: false, onSelect() {}, onSelectAll() {}, onClear() {}, onReturn() {}, onRetry() {}, onCheck() {}, onVerify() {}, onOpenSetup() {}, ...props }));
+const renderActivity = failures => renderToStaticMarkup(createElement(Activity, { view: { applicationFailures: failures, running: false } }));
+const historyStatuses = ['submitted', 'requeued', 'unavailable', 'page_submitted'];
+function groupList(html, label) {
+  return html.match(new RegExp(`<ul\\b(?=[^>]*aria-label="${label}")[^>]*>([\\s\\S]*?)<\\/ul>`))?.[1] || '';
+}
+function needsReviewSection(html) {
+  const section = html.match(/<section\b(?=[^>]*aria-label="Needs Review")[^>]*>([\s\S]*?)<\/section>/);
+  assert.ok(section, 'Needs Review has a labelled section');
+  return section[1];
+}
+function assertCollapsedHistory(html, count) {
+  const openingTag = html.match(/<details\b(?=[^>]*class="[^"]*\bapplication-history\b)[^>]*>/)?.[0];
+  assert.ok(openingTag, 'History uses its own details disclosure');
+  assert.doesNotMatch(openingTag, /\bopen(?:\s|=|>)/, 'History starts collapsed');
+  const summary = html.slice(html.indexOf(openingTag) + openingTag.length).match(/^<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1];
+  assert.ok(summary, 'History has a summary');
+  const summaryText = summary.replace(/<[^>]*>/g, ' ');
+  assert.match(summaryText, /\bHistory\b/);
+  assert.match(summaryText, new RegExp(`\\b${count}\\b`));
+}
 
 test('known failures provide batch selection, setup, and individual Review & Retry without a Submit button', () => {
   const html = render({ selectedIds: [ids[0]] });
@@ -68,9 +88,8 @@ test('explicit previous-application verification is offered only for blocked rec
     assert.match(html, /type="checkbox"[^>]*disabled=""/);
     assert.doesNotMatch(html, /Review &amp; Retry/);
   }
-  for (const overrides of [{}, { retryWorkflowSessionId: 'previous-session', canReturnToQueue: true },
-    { retryWorkflowSessionId: 'previous-session', retryBlockedType: 'assessment_stale' },
-    { retryWorkflowSessionId: 'previous-session', status: 'submitted' }]) {
+  for (const overrides of [{}, { retryWorkflowSessionId: 'previous-session', canReturnToQueue: true, retryBlockedType: 'workflow_recovery_required' },
+    { retryWorkflowSessionId: 'previous-session', retryBlockedType: 'assessment_stale' }]) {
     const html = render({ failures: [{ ...failure(ids[0]), canReturnToQueue: false,
       retryBlockedType: 'submission_outcome_unknown', ...overrides }] });
     assert.doesNotMatch(html, /Verify Previous Application/);
@@ -92,24 +111,107 @@ test('a durable unknown override stays visible when old failure metadata claimed
   assert.doesNotMatch(html, /Review &amp; Retry/);
 });
 
-test('requeued and submitted failures remain available as folded history without unresolved counts', () => {
-  const failures = [{ ...failure(ids[0]), status: 'requeued' }, { ...failure(ids[1]), status: 'submitted' }];
-  const html = render({ failures });
-  assert.match(html, /Requeued/); assert.match(html, /Submitted Later/); assert.match(html, /Previous Failure/);
-  assert.doesNotMatch(html, /type="checkbox"|Review &amp; Retry|Return Selected To Application Queue/);
-  const activity = renderToStaticMarkup(createElement(Activity, { view: { applicationFailures: failures, running: false } }));
-  assert.doesNotMatch(activity, /\d+ Needs Review/);
+test('mixed applications separate review actions from collapsed history and count only unresolved roles', () => {
+  const review = failure(ids[0]);
+  const blocked = { ...failure(ids[1]), canReturnToQueue: false, submissionOutcomeUnknown: true,
+    retryBlockedType: 'submission_outcome_unknown', retryWorkflowSessionId: 'previous-session' };
+  const history = historyStatuses.map((status, index) => ({ ...failure(`20000020${index}-0836`), status,
+    lastStep: 'Questions', applicationHeading: 'Application Answers', retryWorkflowSessionId: 'old-session' }));
+  const failures = [history[0], review, history[1], blocked, ...history.slice(2)];
+  const html = render({ failures, selectedIds: [review.jobId, history[0].jobId] });
+  const reviewList = groupList(html, 'Applications Needing Review');
+  const historyList = groupList(html, 'Application History');
+  const section = needsReviewSection(html);
+  assertCollapsedHistory(html, history.length);
+  assert.equal((reviewList.match(/<li\b/g) || []).length, 2);
+  assert.equal((historyList.match(/<li\b/g) || []).length, 4);
+  assert.match(section, /Return Selected To Application Queue \(1\)/);
+  assert.match(section, /1 Retryable · 1 Not Ready To Retry/);
+  for (const job of [review, blocked]) {
+    assert.ok(reviewList.includes(job.jobId));
+    assert.ok(!historyList.includes(job.jobId));
+  }
+  for (const job of history) {
+    assert.ok(historyList.includes(job.jobId), 'History keeps the full job ID');
+    assert.ok(historyList.includes(job.title), 'History keeps the role title');
+    assert.ok(historyList.includes(`href="${job.url}"`), 'History keeps the original role link');
+    assert.ok(!reviewList.includes(job.jobId));
+    assert.ok(!section.includes(job.jobId));
+  }
+  for (const label of ['Submitted Later', 'Requeued', 'Posting Removed', 'Submitted On Apple']) assert.ok(historyList.includes(label));
+  assert.equal((historyList.match(/<summary>Previous Failure<\/summary>/g) || []).length, 4);
+  assert.match(historyList, /An explicit answer was missing\./);
+  assert.match(historyList, /Last Step: Questions/);
+  assert.match(historyList, /Application Step: Application Answers/);
+  assert.doesNotMatch(historyList, /<input\b|<button\b|Review &amp; Retry|Check Job Status|Verify Previous Application|Complete Answers/);
+  assert.match(renderActivity(failures), /2 Needs Review/);
 });
 
-test('removed and page-submitted jobs are folded history without retry or selection controls', () => {
-  const failures = [{ ...failure(ids[0]), status: 'unavailable', canReturnToQueue: false },
-    { ...failure(ids[1]), status: 'page_submitted', canReturnToQueue: false }];
-  const html = render({ failures });
-  assert.match(html, /Posting Removed/); assert.match(html, /Submitted On Apple/);
-  assert.match(html, /Previous Failure/);
-  assert.doesNotMatch(html, /type="checkbox"|Review &amp; Retry|Return Selected|Check Job Status/);
-  const activity = renderToStaticMarkup(createElement(Activity, { view: { applicationFailures: failures } }));
-  assert.doesNotMatch(activity, /\d+ Needs Review/);
+test('all history leaves an empty Needs Review message and no review controls or unresolved count', () => {
+  const failures = historyStatuses.map((status, index) => ({ ...failure(`20000030${index}-9999`), status,
+    retryWorkflowSessionId: 'previous-session', retryBlockedType: 'workflow_recovery_required' }));
+  const html = render({ failures, selectedIds: failures.map(job => job.jobId) });
+  assertCollapsedHistory(html, failures.length);
+  assert.match(needsReviewSection(html), /No Applications Need Review\./);
+  assert.equal(groupList(html, 'Applications Needing Review'), '');
+  assert.doesNotMatch(html, /<input\b|<button\b|Review &amp; Retry|Return Selected|Check Job Status|Verify Previous Application|Complete Answers/);
+  assert.doesNotMatch(renderActivity(failures), /\d+ Needs Review/);
+});
+
+test('review-only and empty application sets do not render a History disclosure', () => {
+  const reviewOnly = render({ failures: ids.map(failure) });
+  assert.ok(groupList(reviewOnly, 'Applications Needing Review'));
+  assert.doesNotMatch(reviewOnly, /application-history|aria-label="Application History"/);
+  assert.match(needsReviewSection(reviewOnly), /Select Retryable \(2\)/);
+  const empty = render({ failures: [] });
+  assert.equal(empty, '');
+});
+
+test('explicit unknown outcomes keep conflicting resolved statuses in Needs Review for verification', () => {
+  for (const status of historyStatuses) {
+    for (const unknown of [{ submissionOutcomeUnknown: true }, { retryBlockedType: 'submission_outcome_unknown' }]) {
+      const job = { ...failure(ids[0]), status, canReturnToQueue: false,
+        retryBlockedType: 'submission_outcome_unknown', retryWorkflowSessionId: 'previous-session', ...unknown };
+      if (!unknown.retryBlockedType) job.retryBlockedType = 'workflow_recovery_required';
+      const html = render({ failures: [job] });
+      const reviewList = groupList(html, 'Applications Needing Review');
+      assert.ok(reviewList.includes(job.jobId));
+      assert.match(reviewList, /Outcome Unknown/);
+      assert.match(reviewList, /Verify Previous Application/);
+      assert.match(reviewList, /Check Job Status/);
+      assert.match(reviewList, /type="checkbox"[^>]*disabled=""/);
+      assert.doesNotMatch(html, /application-history|Previous Failure|Review &amp; Retry/);
+      assert.match(renderActivity([job]), /1 Needs Review/);
+    }
+  }
+});
+
+test('unknown outcomes cannot be selected or retried when stale metadata still claims retry readiness', () => {
+  for (const unknown of [{ submissionOutcomeUnknown: true }, { retryBlockedType: 'submission_outcome_unknown' }]) {
+    const job = { ...failure(ids[0]), status: 'submitted', retryBlockedType: 'workflow_recovery_required',
+      retryWorkflowSessionId: 'previous-session', ...unknown };
+    const html = render({ failures: [job], selectedIds: [job.jobId] });
+    assert.match(needsReviewSection(html), /0 Retryable · 1 Not Ready To Retry/);
+    assert.match(html, /type="checkbox"[^>]*disabled=""/);
+    assert.doesNotMatch(html.match(/<input\b[^>]*>/)?.[0] || '', /\bchecked=""/);
+    assert.match(html, /Return Selected To Application Queue \(0\)/);
+    assert.match(html, /Verify Previous Application/);
+    assert.doesNotMatch(html, /Review &amp; Retry|application-history/);
+  }
+});
+
+test('resolved roles move from Needs Review into History when Activity refreshes', () => {
+  for (const status of historyStatuses) {
+    const before = ids.map(failure);
+    assert.equal((groupList(render({ failures: before }), 'Applications Needing Review').match(/<li\b/g) || []).length, 2);
+    const after = [{ ...before[0], status }, before[1]];
+    const html = render({ failures: after });
+    assert.ok(!groupList(html, 'Applications Needing Review').includes(ids[0]));
+    assert.ok(groupList(html, 'Applications Needing Review').includes(ids[1]));
+    assert.ok(groupList(html, 'Application History').includes(ids[0]));
+    assertCollapsedHistory(html, 1);
+    assert.match(renderActivity(after), /1 Needs Review/);
+  }
 });
 
 test('running workflows disable every return, retry, and selection action', () => {
@@ -128,6 +230,36 @@ test('retry confirmation shows the previous failure and still requires the expli
   assert.match(html, /button[^>]*disabled=""[^>]*>Confirm And Apply \(1\)/);
 });
 
+function selectionHarness(failures) {
+  const state = { selected: [...ids] };
+  const sandbox = { failures, setSelectedIds: update => { state.selected = update(state.selected); } };
+  vm.createContext(sandbox);
+  const helpersStart = source.indexOf('const resolvedStatuses');
+  const helpersEnd = source.indexOf('\nfunction FailureDetails', helpersStart);
+  const start = source.indexOf('  useEffect(() => {');
+  const end = source.indexOf('\n  }, [view]);', start);
+  assert.ok(helpersStart > 0 && helpersEnd > helpersStart && start > helpersEnd && end > start);
+  vm.runInContext(`${source.slice(helpersStart, helpersEnd)}\nglobalThis.refreshSelection = () => { ${source.slice(start + '  useEffect(() => {'.length, end)} };`, sandbox);
+  return { sandbox, state };
+}
+
+test('Activity refresh removes resolved and newly blocked roles from the selected retry set', () => {
+  for (const status of historyStatuses) {
+    const h = selectionHarness(ids.map(failure));
+    const initialSelection = h.state.selected;
+    h.sandbox.refreshSelection();
+    assert.equal(h.state.selected, initialSelection, 'Unchanged retryable selections keep their existing state');
+    h.sandbox.failures = [{ ...failure(ids[0]), status }, failure(ids[1])];
+    h.sandbox.refreshSelection();
+    assert.deepEqual([...h.state.selected], [ids[1]], `${status} is removed from the retry selection`);
+  }
+  for (const unknown of [{ submissionOutcomeUnknown: true }, { retryBlockedType: 'submission_outcome_unknown' }]) {
+    const h = selectionHarness([{ ...failure(ids[0]), status: 'submitted', ...unknown }, failure(ids[1])]);
+    h.sandbox.refreshSelection();
+    assert.deepEqual([...h.state.selected], [ids[1]], 'Unknown outcomes are removed even when stale metadata says they are retryable');
+  }
+});
+
 function handlerHarness(options = {}) {
   const messages = [], reviews = [], statuses = [];
   const state = { selected: [...ids], error: '', rows: {}, busy: false };
@@ -143,7 +275,8 @@ function handlerHarness(options = {}) {
   vm.createContext(sandbox);
   const begin = source.indexOf('  async function returnToQueue('), end = source.indexOf('\n\n  return <details', begin);
   assert.ok(begin > 0 && end > begin);
-  vm.runInContext(`${source.slice(begin, end)}\nglobalThis.returnJobs = returnToQueue; globalThis.checkJob = checkStatus; globalThis.verifyJob = verifyPreviousApplication;`, sandbox);
+  const helpers = source.slice(source.indexOf('const resolvedStatuses'), source.indexOf('\nfunction FailureDetails'));
+  vm.runInContext(`${helpers}\n${source.slice(begin, end)}\nglobalThis.returnJobs = returnToQueue; globalThis.checkJob = checkStatus; globalThis.verifyJob = verifyPreviousApplication;`, sandbox);
   return { sandbox, state, messages, reviews, statuses };
 }
 
@@ -198,11 +331,12 @@ test('Check Job Status remains page-only even for an unknown result with a recov
 });
 
 test('explicit verification sends only the exact previous session and job without saving, requeuing, or applying', async () => {
-  for (const [retryBlockedType, resolved] of [['submission_outcome_unknown', false], ['workflow_recovery_required', true]]) {
+  for (const [retryBlockedType, resolved, overrides] of [['submission_outcome_unknown', false, {}],
+    ['workflow_recovery_required', true, {}], ['submission_outcome_unknown', false, { status: 'submitted', canReturnToQueue: true }]]) {
     const h = handlerHarness({ save: () => assert.fail('Verification must not save the profile'),
       sendMessage: async () => ({ ok: true, data: { resolved, message: 'Previous application verified; review its status.' } }) });
     await h.sandbox.verifyJob({ ...failure(ids[1]), canReturnToQueue: false, retryBlockedType,
-      retryWorkflowSessionId: 'previous-session' });
+      retryWorkflowSessionId: 'previous-session', ...overrides });
     assert.equal(h.messages.length, 1);
     assert.deepEqual({ ...h.messages[0] }, { type: 'APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION',
       workflowSessionId: 'previous-session', jobId: ids[1], tab: h.messages[0].tab });
@@ -217,7 +351,7 @@ test('explicit verification sends only the exact previous session and job withou
 
 test('verification refuses missing sessions and rows that are not blocked for recovery', async () => {
   for (const overrides of [{ retryWorkflowSessionId: undefined }, { retryWorkflowSessionId: '' },
-    { retryBlockedType: 'assessment_stale' }, { canReturnToQueue: true }]) {
+    { retryBlockedType: 'assessment_stale' }, { canReturnToQueue: true, retryBlockedType: 'workflow_recovery_required' }]) {
     const h = handlerHarness({ getActiveTab: () => assert.fail('Invalid verification must not read a tab'),
       save: () => assert.fail('Verification must not save the profile') });
     await h.sandbox.verifyJob({ ...failure(ids[0]), canReturnToQueue: false,

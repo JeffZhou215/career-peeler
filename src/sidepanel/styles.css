@@ -1646,6 +1646,7 @@ body { min-width: 300px; min-height: 0; overflow: hidden; }
 .ios-activity > summary { display: flex; align-items: center; gap: 8px; list-style: none; font-size: 13px; }
 .ios-activity > summary::after { content: "›"; color: var(--color-text-secondary); }
 .ios-activity[open] > summary { margin-bottom: 12px; }
+.ios-activity .activity-subsection-title { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
 .ios-app .queue-failure-list { max-height: none; overflow: visible; }
 .ios-app .activity-log { border: 0; padding: 0; }
 .ios-app .activity-log h2 { display: none; }

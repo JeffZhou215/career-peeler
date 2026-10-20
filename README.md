@@ -92,6 +92,8 @@ To retry known failures, expand **Activity**, complete any missing answers in **
 
 Activity shows how many roles are retryable. For an interrupted workflow, use **Verify Previous Application** to check Active submissions and reconcile its saved operation. A verified interruption before Submit becomes selectable again; an unresolved Submit remains locked. Verification does not queue or apply a role. Then select retryable roles and use **Return Selected To Application Queue**.
 
+**Needs Review** contains roles that need retry, profile updates, or verification. Submitted, requeued, and removed-role records are kept in the collapsed **History** section with their job links and previous failure details. History rows cannot be selected for another application.
+
 To apply one reviewed role, open its Apple job page and choose **Apply This Role** in the Jobs tab. Review the role and confirm submission. The extension checks available slots, then completes the application stages using your saved profile. It does not require a queue entry or a strong match score. If a step fails, the application stays open and Activity records the job link and reason. A previous unknown Submit outcome requires reconciliation; absence from the submissions list alone does not authorize an automatic retry.
 
 Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.
