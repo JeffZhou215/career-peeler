@@ -318,11 +318,11 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       if (type === "APPLE_CAREERS_QUEUE_TOP_JOBS") { setQueueOpen(true); setSelectedIds([]); }
       if (type === "APPLE_CAREERS_APPLY_JOB_QUEUE") {
         setApplyOpen(false); setSelectedQueueIds([]);
-        setView(current => current ? { ...current, running: true, phase: "Checking Apple submission capacity" } : current);
+        setView(current => current ? { ...current, running: true, workflowMode: "queue", phase: "Checking selected job status" } : current);
       }
       setStatusMessage(type === "APPLE_CAREERS_QUEUE_TOP_JOBS" ? `${response.count} top-ranked jobs saved to the application queue.${response.reviewCount ? ` ${response.reviewCount} have match concerns to review before applying.` : ""}`
         : type === "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY" ? "Active submission count refreshed without LLM matching."
-        : type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? "Checking Apple submission count, then applying only the selected roles in score order."
+        : type === "APPLE_CAREERS_APPLY_JOB_QUEUE" ? "Checking selected job pages. Capacity is verified once before applying."
           : type === "APPLE_CAREERS_STOP_JOB_RANKING" ? "Stopping after the current action; saved matches remain available."
             : "Ranking all pages of the current filtered Apple search. Results appear as jobs are scored.");
       if (type === "APPLE_CAREERS_APPLY_JOB_QUEUE") refresh(requestedTopN).catch(console.error);
@@ -442,6 +442,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const progressLabel = view?.running
     ? /^Checking applications for retry/i.test(view.phase || "") ? "Checking Applications For Retry"
       : /^Checking Apple submission/i.test(view.phase || "") ? "Checking Submission Capacity"
+      : /^Checking\b/i.test(view.phase || "") && ["queue", "current_role"].includes(view.workflowMode) ? "Checking Job Status"
       : /^Applying/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Applying This Role" : "Applying Application Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
     : view?.recovery?.stopRequested && view.recovery.reconciliationRequired ? "Application Stopped"
@@ -497,7 +498,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     headerAction={view?.running && <button type="button" className="danger" disabled={busy} onClick={() => act("APPLE_CAREERS_STOP_JOB_RANKING")}>Stop</button>}
     help="Rank the complete filtered search against your resume, then choose roles for Application Queue. Applying checks available slots before submission.">
     <CurrentRoleApplication save={save} running={busy || view?.running || applyOpen} setStatusMessage={setStatusMessage} onOpenSetup={onOpenSetup}
-      onStarted={() => { setView(current => current ? { ...current, running: true, workflowMode: "current_role", phase: "Checking Apple submission capacity" } : current); refresh().catch(console.error); }} />
+      onStarted={() => { setView(current => current ? { ...current, running: true, workflowMode: "current_role", phase: "Checking selected job status" } : current); refresh().catch(console.error); }} />
     <div className="ranking-controls">
       <label className="field-label" htmlFor="after-ranking">After Ranking<HelpTooltip label="After Ranking" text="Auto Apply uses only strong matches observed in this completed filtered scan. Cached roles remain available for explicit manual selection. Every application checks the live job, apply action, and capacity." /></label>
       <select id="after-ranking" disabled={view?.running} value={profile.afterRanking} onChange={(event) => save({ afterRanking: event.target.value })}><option value="review">Review Then Apply</option><option value="auto">Auto Apply Strong Matches</option></select>

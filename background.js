@@ -2399,7 +2399,7 @@ async function runApplicationWorkflow(tab, options = {}) {
           tabId: workflowTabId, windowId: workflowWindowId, rankingState: options.rankingState });
         if (verified.confirmed) {
           const confirmation = { step: "Confirm application submitted", status: "detected",
-            label: "Fresh exact-job Submitted controls and complete Active inventory verified this application." };
+            label: "Fresh exact-job Submitted controls verified this application's current Submit operation." };
           response.data = { ...response.data, identityVerified: true, clicked: true, done: true,
             pausedForReview: false, submissionOutcome: "confirmed", errorType: null, url: verified.proof.url,
             summary: confirmation.label, steps: [...response.data.steps, confirmation] };

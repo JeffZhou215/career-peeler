@@ -1094,6 +1094,17 @@ function findApplePostingSection(label, selectors) {
   return null;
 }
 
+function getApplePostingUnavailableSignal() {
+  // This is Apple's observed explicit unavailable view. Neither a matching
+  // URL, a loading shell, nor generic network feedback establishes removal.
+  const button = document.querySelector("#jobdetails-open-positions-button");
+  const view = button?.parentElement;
+  const reason = normalizeText(view?.querySelector("p")?.innerText || "");
+  return !document.querySelector("#jobdetails-wrapper") && button?.isConnected && view?.isConnected &&
+    isElementVisible(button) && normalizeText(view.querySelector("h1")?.innerText || "") === "Page not found." &&
+    reason === "Sorry, this role does not exist or is no longer available." ? { reason } : null;
+}
+
 function extractAppleSubmittedRoleDetails() {
   const descriptionElement = findApplePostingSection("Description", "#jobdetails-jobdescription");
   const minimumElement = findApplePostingSection("Minimum Qualifications", "#jobdetails-minimumqualifications");
@@ -1104,15 +1115,8 @@ function extractAppleSubmittedRoleDetails() {
   const preferredQualifications = normalizeText(preferredElement?.innerText || "");
   const title = getJobTitle();
   const jobId = getJobId();
-  // Observed Apple's explicit not-found view. A URL alone, a blank loading
-  // shell, or generic network feedback does not establish unavailability.
-  const unavailableButton = document.querySelector("#jobdetails-open-positions-button");
-  const unavailableView = unavailableButton?.parentElement;
-  const unavailableReason = normalizeText(unavailableView?.querySelector("p")?.innerText || "");
-  const postingUnavailable = Boolean(!document.querySelector("#jobdetails-wrapper") &&
-    unavailableButton?.isConnected && unavailableView?.isConnected && isElementVisible(unavailableButton) &&
-    normalizeText(unavailableView.querySelector("h1")?.innerText || "") === "Page not found." &&
-    unavailableReason === "Sorry, this role does not exist or is no longer available.");
+  const unavailable = getApplePostingUnavailableSignal();
+  const postingUnavailable = Boolean(unavailable);
   const jobText = [description, minimumQualifications, preferredQualifications].filter(Boolean).join("\n\n");
   const ready = Boolean(
     !postingUnavailable && jobId &&
@@ -1127,7 +1131,7 @@ function extractAppleSubmittedRoleDetails() {
     title,
     url: window.location.href,
     postingUnavailable,
-    unavailableReason: postingUnavailable ? unavailableReason : null,
+    unavailableReason: unavailable?.reason || null,
     description,
     minimumQualifications,
     minimumQualificationItems: Array.from(minimumElement?.querySelectorAll("li") || [])
@@ -2552,21 +2556,30 @@ async function waitForJobSpecificApplyAction(siteConfig, jobId, timeoutMs = 6000
 
 async function readAppleJobApplicability(expectedJobId) {
   const assertIdentity = () => assertAppleWorkflowIdentity({ expectedJobId });
-  assertIdentity();
-  const site = getSiteConfig();
-  if (getSessionRequiredSignal()) {
-    return { jobId: getJobId(), url: window.location.href, identityVerified: true, canApply: false, alreadySubmitted: false,
-      errorType: "session_or_login_required" };
+  const result = (extra = {}) => ({ jobId: getJobId(), url: window.location.href, identityVerified: true,
+    canApply: false, alreadySubmitted: false, postingUnavailable: false, ...extra });
+  const deadline = Date.now() + 6000;
+  let unavailableChecks = 0;
+  // An attempt cap also bounds synthetic/frozen-clock environments. Status does
+  // not require a loaded description or any resume-matching information.
+  for (let poll = 0; poll <= 20; poll += 1) {
+    assertIdentity();
+    const site = getSiteConfig();
+    if (getSessionRequiredSignal()) return result({ errorType: "session_or_login_required" });
+    if (!site?.isJobDetailUrl(getCurrentUrl())) return result();
+    const unavailable = getApplePostingUnavailableSignal();
+    unavailableChecks = unavailable ? unavailableChecks + 1 : 0;
+    if (unavailableChecks >= 3) return result({ postingUnavailable: true, errorType: "job_unavailable" });
+    if (!unavailable) {
+      if (getSubmittedSignal() || getAlreadyAppliedSignal()) return result({ alreadySubmitted: true });
+      const action = findJobSpecificApplyAction(site, expectedJobId);
+      if (action && action.isConnected !== false && !isActionDisabled(action)) return result({ canApply: true });
+    }
+    if (Date.now() >= deadline || poll === 20) break;
+    await delay(300);
   }
-  if (!site?.isJobDetailUrl(getCurrentUrl())) {
-    return { jobId: getJobId(), url: window.location.href, identityVerified: true, canApply: false, alreadySubmitted: false };
-  }
-  const alreadySubmitted = () => Boolean(getSubmittedSignal() || getAlreadyAppliedSignal());
-  let action = null;
-  if (!alreadySubmitted()) action = await waitForJobSpecificApplyAction(site, expectedJobId, 6000, { assertIdentity });
   assertIdentity();
-  return { jobId: getJobId(), url: window.location.href, identityVerified: true,
-    alreadySubmitted: alreadySubmitted(), canApply: Boolean(action && !isActionDisabled(action)) };
+  return result();
 }
 
 // Recovery needs stronger evidence than a generic Submitted button or an

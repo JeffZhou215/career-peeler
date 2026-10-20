@@ -189,9 +189,38 @@ test("a newly claimed queue stops before applications when its capacity check re
   assert.equal((await explicitSync(h)).ok, true);
   assert.equal(h.data[workflowKey].reconciliationRequired, false);
   h.setInventory(inventory([activeRole(baseId)]));
+  const profile = h.sandbox.normalizeUserProfile({});
+  const details = { title: other.title, description: 'Build backend services for developer platforms.',
+    minimumQualifications: 'Experience building software services.', preferredQualifications: '' };
+  const core = require('../lib/core.js');
+  const ranking = require('../lib/jobRanking.js');
+  Object.assign(h.data[rankingKey].jobs[other.jobId.split('-')[0]], { eligible: true, score: 90,
+    profileSignature: h.sandbox.appleRankingProfileSignature(profile),
+    postingSignature: core.fingerprintText(JSON.stringify(ranking.postingInput(details))) });
+  const observed = { status: 0, description: 0, capacity: 0 };
+  const sendMessage = h.sandbox.chrome.tabs.sendMessage;
+  h.sandbox.chrome.tabs.sendMessage = async (tabId, message) => {
+    const tab = h.tabs.find(item => item.id === tabId);
+    if (message.type === 'APPLE_CAREERS_EXTRACT_JOB') {
+      observed.status++;
+      assert.equal(message.expectedJobId, other.jobId);
+      assert.equal(tab.url, other.url);
+      return { ok: true, data: { jobId: other.jobId, url: tab.url, identityVerified: true,
+        canApply: true, alreadySubmitted: false, postingUnavailable: false } };
+    }
+    if (message.type === 'APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS') {
+      observed.description++;
+      assert.equal(tab.url, other.url);
+      return { ok: true, data: { ...details, jobId: other.jobId, url: tab.url, ready: true } };
+    }
+    if (message.type === 'APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES') observed.capacity++;
+    return sendMessage(tabId, message);
+  };
   const run = { sourceTabId: 2, sourceWindowId: 1, applying: true, stopRequested: false,
     selectedJobIds: new Set([other.jobId]) };
-  await h.sandbox.runAppleJobQueue(run, h.sandbox.normalizeUserProfile({}));
+  await h.sandbox.runAppleJobQueue(run, profile);
+  assert.deepEqual(observed, { status: 1, description: 1, capacity: 1 },
+    'a valid applicable queued role must reach one fresh inventory check before recovery blocks its form');
   assert.notEqual(run.workflowSessionId, undefined, "the new batch claimed ownership before discovering ambiguous inventory");
   assert.equal(h.data[workflowKey].id, run.workflowSessionId);
   assert.equal(h.data[workflowKey].jobs[other.jobId].state, "not_started");

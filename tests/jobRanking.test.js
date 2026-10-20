@@ -127,10 +127,13 @@ test("OpenAI 429 errors preserve the actionable provider message and retry metad
 function workerHarness(options = {}) {
   let clock = 100000;
   let intervalId = 0;
+  let nextActiveTabId = 99;
   const intervals = new Map();
+  const taskUrls = new Map();
   const store = options.store || {};
   const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [], capacityReads: [], capacityTabs: [],
-    collected: [], next: [], updated: [], detailOptions: [], workerPulses: 0, intervalsStarted: [], intervalsCleared: [] };
+    collected: [], next: [], updated: [], activeTabs: [], detailOptions: [], statusReads: [], descriptionReads: [], browserEvents: [],
+    workerPulses: 0, intervalsStarted: [], intervalsCleared: [] };
   const mocks = { pages: [], activeRoles: [], live: details, workflow: { ok: true, data: { submitted: true } } };
   const adapter = {
     get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(store[key])])),
@@ -206,12 +209,16 @@ function workerHarness(options = {}) {
       onActivated: { addListener() {} }, onUpdated: { addListener() {} },
       query: async () => mocks.capacityTabs || [],
       create: async ({ url }) => ({ id: 42, url }),
-      get: async (id) => ({ id, url: mocks.currentSearchUrl, windowId: 1, status: "complete" }),
+      get: async (id) => ({ id, url: taskUrls.get(id) || mocks.currentSearchUrl, windowId: 1, status: "complete" }),
       update: async (id, updates) => {
         calls.updated.push({ id, ...structuredClone(updates) });
         if (mocks.update) return mocks.update(id, updates);
-        if (updates.url) setSearchUrl(updates.url);
-        return { id, url: mocks.currentSearchUrl, windowId: 1, status: "complete" };
+        if (updates.url) {
+          taskUrls.set(id, updates.url);
+          if (updates.url.includes('/search')) setSearchUrl(updates.url);
+          else if (updates.url.includes('/details/')) mocks.currentJobUrl = updates.url;
+        }
+        return { id, url: taskUrls.get(id) || mocks.currentSearchUrl, windowId: 1, status: "complete" };
       },
       sendMessage: searchMessage,
       remove: async (id) => calls.removed.push(id)
@@ -221,11 +228,28 @@ function workerHarness(options = {}) {
     } }, waitForTabComplete: async () => {}, activateTab: async () => {},
     initializeKnownSiteScanActivity: async () => {}, saveScanState: async () => {},
     closeOwnedWorkflowTabs: async () => {}, finishKnownSiteScanRun: async () => {},
-    createActiveWorkflowTab: async (url) => { mocks.currentJobUrl = url; return { id: 99, url }; },
-    createTaskTab: async url => { if (url.includes("/search")) { setSearchUrl(url); calls.pageUrls.push(url); } return { id: 42, url }; }, getTaskWindowId: async () => 1,
-    appliedJobLedger: {}, errorJobLedger: {}, currentScanActivityCycles: [],
+    createActiveWorkflowTab: async (url) => {
+      const id = nextActiveTabId++;
+      mocks.currentJobUrl = url;
+      taskUrls.set(id, url);
+      sandbox.ownedWorkflowTabIds.add(id);
+      calls.activeTabs.push({ id, url });
+      return { id, url };
+    },
+    createTaskTab: async url => {
+      taskUrls.set(42, url);
+      if (url.includes("/search")) { setSearchUrl(url); calls.pageUrls.push(url); }
+      else if (url.includes('/details/')) mocks.currentJobUrl = url;
+      return { id: 42, url };
+    }, getTaskWindowId: async () => 1,
+    appliedJobLedger: {}, errorJobLedger: {}, currentScanActivityCycles: [], ownedWorkflowTabIds: new Set(),
     beginKnownSiteActivityCycle: async () => "test-cycle", finishKnownSiteActivityCycle: async () => {},
-    waitForAppleSubmittedRoleDetails: async (_tab, jobId) => ({ jobId, url: mocks.currentJobUrl, ...mocks.live }),
+    waitForAppleSubmittedRoleDetails: async (tabId, jobId) => {
+      calls.descriptionReads.push(jobId);
+      calls.browserEvents.push(`description:${jobId}`);
+      if (mocks.onDescription) await mocks.onDescription(jobId);
+      return { jobId, url: taskUrls.get(tabId) || mocks.currentJobUrl, ...mocks.live };
+    },
     getAutoApplyReadinessError: () => null,
     sendMessageWithFallback: async (tabId, message) => {
       if (message.type === "APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE") return { ok: true, data: {
@@ -238,14 +262,22 @@ function workerHarness(options = {}) {
       if (message.type === "APPLE_CAREERS_GO_TO_NEXT_PAGE") throw new Error("Mutating pagination must not use generic message replay.");
       if (message.type === "APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES") {
         calls.capacityReads.push({ tabId, restoreOriginalPage: message.restoreOriginalPage });
-        return {
+        calls.browserEvents.push('capacity');
+        return mocks.inventoryResponse || {
           ok: !mocks.signedOut, data: { pageCount: 1, pages: [{ roles: mocks.activeRoles,
             pageIndex: 1, pageCount: 1, hasNextPage: false, withdrawalConfirmationOpen: false,
             accountVerified: true, inventoryState: mocks.activeRoles.length ? "confirmed" : "confirmed_empty" }] }
         };
       }
-      if (message.type === "APPLE_CAREERS_EXTRACT_JOB") return { ok: true, data: { jobId: message.expectedJobId,
-        url: mocks.currentJobUrl, identityVerified: true, canApply: true, alreadySubmitted: false, ...mocks.status } };
+      if (message.type === "APPLE_CAREERS_EXTRACT_JOB") {
+        calls.statusReads.push(message.expectedJobId);
+        calls.browserEvents.push(`status:${message.expectedJobId}`);
+        const status = { jobId: message.expectedJobId, url: taskUrls.get(tabId) || mocks.currentJobUrl,
+          identityVerified: true, canApply: true, alreadySubmitted: false, postingUnavailable: false, ...mocks.status,
+          ...mocks.statusByJobId?.[message.expectedJobId] };
+        if (mocks.onStatus) return mocks.onStatus(message.expectedJobId, status, tabId);
+        return { ok: true, data: status };
+      }
       if (message.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") return { ok: true, data: { score: 90 } };
       throw new Error(`Unexpected message ${message.type}`);
     },
@@ -266,6 +298,7 @@ function workerHarness(options = {}) {
       assert.equal(persisted.jobs[ranking.idOf(options.jobContext.jobId)].queueStatus, "applying");
       assert.ok(persisted.reservations.some((role) => role.jobId === options.jobContext.jobId));
       calls.applied.push(options.jobContext.jobId);
+      calls.browserEvents.push(`apply:${options.jobContext.jobId}`);
       if (mocks.onApplied) await mocks.onApplied(options.jobContext, options);
       return mocks.workflow;
     }
@@ -454,6 +487,252 @@ test("49 active submissions permits exactly one highest-ranked application, leav
   assert.equal(h.calls.scored, 0, "applying uses saved scores rather than LLM matching again");
 });
 
+function selectedQueuePreflightFixture() {
+  const h = workerHarness();
+  const ids = ['200685673-0836', '200667649-3956'];
+  h.store.appleJobRanking = { jobs: Object.fromEntries(ids.map((id, index) => [ranking.idOf(id), h.queuedJob(id, 95 - index)])),
+    searches: {}, applicationFailures: {}, reservations: [] };
+  const run = { sourceTabId: 1, selectedJobIds: new Set(ids) };
+  return { ...h, ids, run, apply: () => h.api.runAppleJobQueue(run, profile) };
+}
+
+test('a selected batch of Submitted pages is excluded without inventory, descriptions, or application actions', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.status = { alreadySubmitted: true, canApply: false };
+  h.mocks.onDescription = () => assert.fail('Submitted status must not require job-description extraction');
+  await h.apply();
+  assert.deepEqual(h.calls.applied, []);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.calls.descriptionReads.length, 0);
+  assert.deepEqual([...new Set(h.calls.statusReads)].sort(), [...h.ids].sort());
+  for (const id of h.ids) {
+    const saved = h.store.appleJobRanking.jobs[ranking.idOf(id)];
+    assert.equal(saved.queueStatus, 'page_submitted');
+    assert.equal(saved.submissionQueueExclusion.state, 'submitted');
+    assert.equal(saved.submissionQueueExclusion.jobId, id);
+    assert.notEqual(h.store.appleApplicationWorkflow?.jobs?.[id]?.submissionOutcome, 'confirmed');
+  }
+  assert.equal(h.store.appleJobRanking.lastBatchSummary.submitted, 0);
+  assert.equal(h.store.appleJobRanking.reservations.length, 0);
+  assert.equal(h.store.applied, undefined, 'a page label is not a confirmed active-inventory ledger receipt');
+});
+
+test('a selected batch of verified removed pages is excluded without inventory or descriptions', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.status = { postingUnavailable: true, alreadySubmitted: false, canApply: false };
+  h.mocks.onDescription = () => assert.fail('a verified removed page must not need a description');
+  await h.apply();
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.calls.descriptionReads.length, 0);
+  for (const id of h.ids) {
+    const saved = h.store.appleJobRanking.jobs[ranking.idOf(id)];
+    assert.equal(saved.queueStatus, 'unavailable');
+    assert.equal(saved.submissionQueueExclusion.state, 'unavailable');
+  }
+  assert.equal(h.store.appleJobRanking.lastBatchSummary.submitted, 0);
+  assert.equal(h.store.applied, undefined);
+});
+
+test('mixed Submitted and applicable jobs use one fresh capacity read before applying only remaining roles', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.statusByJobId = { [h.ids[0]]: { alreadySubmitted: true, canApply: false } };
+  await h.apply();
+  assert.deepEqual(h.calls.applied, [h.ids[1]]);
+  assert.equal(h.calls.capacityReads.length, 1);
+  assert.equal(h.store.appleJobRanking.jobs[ranking.idOf(h.ids[0])].queueStatus, 'page_submitted');
+  assert.equal(h.calls.descriptionReads.includes(h.ids[0]), false);
+  const capacityIndex = h.calls.browserEvents.indexOf('capacity');
+  assert.ok(capacityIndex > h.calls.browserEvents.indexOf(`status:${h.ids[0]}`));
+  assert.ok(capacityIndex > h.calls.browserEvents.indexOf(`status:${h.ids[1]}`));
+  assert.ok(h.calls.browserEvents.indexOf(`description:${h.ids[1]}`) > h.calls.browserEvents.indexOf(`status:${h.ids[1]}`));
+  assert.ok(capacityIndex < h.calls.browserEvents.indexOf(`apply:${h.ids[1]}`));
+  assert.ok(h.calls.statusReads.filter(id => id === h.ids[1]).length >= 2,
+    'applicability must be freshly checked again before the actual application');
+});
+
+test('a changed cached posting cannot mask direct Submitted status or require rescoring', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.run.selectedJobIds = new Set([h.ids[0]]);
+  h.mocks.status = { alreadySubmitted: true, canApply: false };
+  h.mocks.live = { ...details, description: 'A changed role description that differs from its saved assessment.' };
+  await h.apply();
+  assert.equal(h.store.appleJobRanking.jobs[ranking.idOf(h.ids[0])].queueStatus, 'page_submitted');
+  assert.equal(h.calls.descriptionReads.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.calls.scored, 0);
+  assert.equal(h.store.appleJobRanking.jobs[ranking.idOf(h.ids[1])].queueStatus, 'queued');
+  assert.equal(h.calls.statusReads.includes(h.ids[1]), false, 'unselected queued roles are not inspected');
+});
+
+for (const [name, status] of [
+  ['loading or ambiguous', { canApply: false, alreadySubmitted: false, postingUnavailable: false }],
+  ['authentication required', { canApply: false, alreadySubmitted: false, errorType: 'session_or_login_required' }],
+  ['malformed identity', { canApply: false, alreadySubmitted: true, identityVerified: false }],
+  ['conflicting Submit and Submitted', { canApply: true, alreadySubmitted: true }],
+  ['conflicting Submit and removed', { canApply: true, alreadySubmitted: false, postingUnavailable: true }],
+  ['another location', { canApply: false, alreadySubmitted: true, jobId: '200685673-0157',
+    url: 'https://jobs.apple.com/en-us/details/200685673-0157/engineer' }],
+]) test(`${name} preflight cannot exclude a selected role or authorize an application`, async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.status = status;
+  await h.apply();
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  for (const id of h.ids) {
+    const saved = h.store.appleJobRanking.jobs[ranking.idOf(id)];
+    assert.equal(saved.submissionQueueExclusion, undefined);
+    assert.ok(!['submitted', 'page_submitted', 'unavailable'].includes(saved.queueStatus));
+  }
+});
+
+test('stopping during selected-job preflight prevents capacity navigation and applications', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.onStatus = async (_id, status) => { h.run.stopRequested = true; return { ok: true, data: status }; };
+  await h.apply();
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.calls.applied.length, 0);
+  assert.ok(h.ids.every(id => h.store.appleJobRanking.jobs[ranking.idOf(id)].queueStatus === 'queued'));
+});
+
+test('incomplete capacity inventory after successful preflight cannot start applications', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.inventoryResponse = { ok: true, data: { pageCount: 2, pages: [{ pageIndex: 1, pageCount: 2,
+    hasNextPage: true, accountVerified: true, withdrawalConfirmationOpen: false, inventoryState: 'confirmed',
+    roles: [{ jobId: '200000001', active: true }] }] } };
+  await h.apply();
+  assert.equal(h.calls.capacityReads.length, 1);
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.store.appleJobRanking.capacitySnapshot.inventoryState, 'unknown');
+  assert.equal(h.store.appleJobRanking.reservations.length, 0);
+});
+
+test('fresh inventory presence cannot be ignored because an earlier job-page check offered Apply', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.activeRoles = [{ jobId: h.ids[0], title: details.title, active: true }];
+  await h.apply();
+  assert.equal(h.calls.applied.includes(h.ids[0]), false,
+    'an active inventory record must prevent starting another application for the same exact role');
+  assert.equal(h.calls.capacityReads.length, 1);
+  assert.notEqual(h.store.appleJobRanking.jobs[ranking.idOf(h.ids[0])].queueStatus, 'submitted',
+    'contradictory page status and inventory must not fabricate an exact-role submission receipt');
+  assert.notEqual(h.store.appleApplicationWorkflow?.jobs?.[h.ids[0]]?.submissionOutcome, 'confirmed');
+});
+
+test('direct job-page preflight cannot bypass a selected role with a previous unknown Submit', async () => {
+  const h = selectedQueuePreflightFixture();
+  const id = h.ids[0];
+  h.run.selectedJobIds = new Set([id]);
+  h.store.appleApplicationWorkflow = { id: 'prior-unknown-owner', status: 'paused', reconciliationRequired: false,
+    jobs: { [id]: { ...h.store.appleJobRanking.jobs[ranking.idOf(id)], state: 'uncertain', submissionOutcome: 'unknown',
+      submissionAttemptCount: 1, submitIntentAt: 100, submitAuthorizedStep: 'old-step' } } };
+  h.store.appleJobRanking.reservations = [{ jobId: id, startedAt: 100 }];
+  const before = structuredClone(h.store.appleApplicationWorkflow);
+  h.mocks.status = { alreadySubmitted: true, canApply: false };
+  await h.apply();
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.calls.applied.length, 0);
+  assert.deepEqual(h.store.appleApplicationWorkflow, before);
+  assert.deepEqual(h.store.appleJobRanking.reservations, [{ jobId: id, startedAt: 100 }]);
+});
+
+for (const unavailable of [false, true]) test(`a role becoming ${unavailable ? 'removed' : 'Submitted'} after its initial check is rechecked before form actions`, async () => {
+  const h = selectedQueuePreflightFixture();
+  h.run.selectedJobIds = new Set([h.ids[0]]);
+  let reads = 0;
+  h.mocks.onStatus = async (_id, status) => ({ ok: true, data: ++reads === 1 ? status : {
+    ...status, canApply: false, alreadySubmitted: !unavailable, postingUnavailable: unavailable } });
+  await h.apply();
+  assert.equal(h.calls.capacityReads.length, 1);
+  assert.equal(h.calls.applied.length, 0);
+  assert.ok(h.calls.descriptionReads.length <= 1, 'a changed final status does not trigger another description read');
+  assert.equal(h.store.appleJobRanking.jobs[ranking.idOf(h.ids[0])].queueStatus, unavailable ? 'unavailable' : 'page_submitted');
+});
+
+for (const unavailable of [false, true]) test(`queue closes its final ${unavailable ? 'removed' : 'Submitted'} preflight tab`, async () => {
+  const h = selectedQueuePreflightFixture();
+  h.mocks.status = { canApply: false, alreadySubmitted: !unavailable, postingUnavailable: unavailable };
+  await h.apply();
+  assert.equal(h.calls.applied.length, 0);
+  assert.ok(h.calls.activeTabs.length > 0);
+  assert.ok(h.calls.activeTabs.every(tab => h.calls.removed.includes(tab.id)), 'every untouched agent-owned detail tab is closed');
+  assert.equal(h.sandbox.ownedWorkflowTabIds.size, 0);
+});
+
+test('zero available capacity closes the agent-owned detail tab without invoking an application', async () => {
+  const h = selectedQueuePreflightFixture();
+  h.run.selectedJobIds = new Set([h.ids[0]]);
+  h.mocks.activeRoles = Array.from({ length: 50 }, (_, index) => ({ jobId: String(index + 1), active: true }));
+  await h.apply();
+  assert.equal(h.calls.capacityReads.length, 1);
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.calls.activeTabs.length, 1);
+  assert.ok(h.calls.removed.includes(h.calls.activeTabs[0].id));
+  assert.equal(h.store.appleJobRanking.jobs[ranking.idOf(h.ids[0])].queueStatus, 'queued');
+});
+
+for (const stopped of [false, true]) test(`${stopped ? 'cancellation' : 'status error'} before form invocation closes only the agent preflight tab`, async () => {
+  const h = selectedQueuePreflightFixture();
+  h.run.selectedJobIds = new Set([h.ids[0]]);
+  if (stopped) h.mocks.onStatus = async (_id, status) => { h.run.stopRequested = true; return { ok: true, data: status }; };
+  else h.mocks.status = { canApply: false, alreadySubmitted: false, postingUnavailable: false };
+  await h.apply();
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.calls.capacityReads.length, 0);
+  assert.equal(h.calls.activeTabs.length, 1);
+  assert.ok(h.calls.removed.includes(h.calls.activeTabs[0].id));
+  assert.equal(h.calls.removed.includes(1), false, 'the caller/source tab is preserved');
+});
+
+test('the current-role user tab is preserved when its status is already Submitted', async () => {
+  const h = selectedQueuePreflightFixture();
+  const current = h.store.appleJobRanking.jobs[ranking.idOf(h.ids[0])];
+  h.setSearchUrl(current.url);
+  h.mocks.currentJobUrl = current.url;
+  h.sandbox.ownedWorkflowTabIds.add(1);
+  h.mocks.status = { canApply: false, alreadySubmitted: true };
+  await h.api.runAppleJobQueue({ sourceTabId: 1, sourceWindowId: 1, singleJob: current }, profile);
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.calls.activeTabs.length, 0);
+  assert.equal(h.calls.removed.includes(1), false, 'single-job flows never close the reviewed source tab during preflight');
+});
+
+for (const unknown of [false, true]) test(`${unknown ? 'unknown-result' : 'manual-review'} workflow drafts survive preflight cleanup`, async () => {
+  const h = selectedQueuePreflightFixture();
+  h.run.selectedJobIds = new Set([h.ids[0]]);
+  h.mocks.workflow = { ok: true, data: { pausedForReview: true, submitted: false,
+    errorType: unknown ? 'clicked_but_unconfirmed' : 'saved_application_answer_unresolved',
+    submissionAttempted: unknown, submissionOutcomeUnknown: unknown,
+    submissionOutcome: unknown ? 'unknown' : 'not_attempted', summary: 'Leave this draft for manual review.' } };
+  await h.apply();
+  assert.deepEqual(h.calls.applied, [h.ids[0]]);
+  assert.equal(h.calls.activeTabs.length, 1);
+  assert.equal(h.calls.removed.includes(h.calls.activeTabs[0].id), false,
+    'once form automation runs, its draft and unknown-outcome retention rules remain authoritative');
+});
+
+for (const change of ['URL', 'window']) test(`a preflight tab with changed ${change} is handed to the user rather than closed`, async () => {
+  const h = selectedQueuePreflightFixture();
+  h.run.selectedJobIds = new Set([h.ids[0]]);
+  const getTab = h.sandbox.chrome.tabs.get;
+  let changed = false;
+  h.sandbox.chrome.tabs.get = async id => {
+    const tab = await getTab(id);
+    if (changed && h.calls.activeTabs.some(active => active.id === id)) {
+      if (change === 'URL') tab.url = 'https://jobs.apple.com/en-us/details/200999999-0157/user-opened-role';
+      else tab.windowId = 2;
+    }
+    return tab;
+  };
+  h.mocks.onStatus = async (_id, status) => { changed = true; return { ok: true, data: status }; };
+  await h.apply();
+  assert.equal(h.calls.applied.length, 0);
+  assert.equal(h.calls.activeTabs.length, 1);
+  const activeId = h.calls.activeTabs[0].id;
+  assert.equal(h.calls.removed.includes(activeId), false, 'preflight cleanup cannot close a page the user navigated or moved');
+  assert.equal(h.sandbox.ownedWorkflowTabIds.has(activeId), false, 'later queue cleanup must not reclaim this user-controlled tab');
+});
+
 test("an uncertain outcome reserves its slot and stops before the next job", async () => {
   const h = workerHarness();
   h.store.appleJobRanking = { jobs: { "100": h.queuedJob("100", 95), "101": h.queuedJob("101", 85) }, searches: {}, reservations: [] };
@@ -523,6 +802,7 @@ test("a multi-job selected queue keeps worker activity scoped to the active batc
   h.mocks.onApplied = async () => { await h.sandbox.delay(45000); };
   await h.api.runAppleJobQueue({ sourceTabId: 1, selectedJobIds: new Set(["100", "101"]) }, profile);
   assert.deepEqual(h.calls.applied, ["100", "101"]);
+  assert.equal(h.calls.capacityReads.length, 1, "one verified inventory plus reservations governs this selected batch");
   assert.equal(h.store.appleJobRanking.lastBatchSummary.submitted, 2);
   assert.deepEqual(h.calls.intervalsStarted, [20000]);
   assert.ok(h.calls.workerPulses >= 5, "long active Apple replies retain extension API activity");
@@ -1171,9 +1451,11 @@ test("live applicability probe is read-only and distinguishes enabled, unavailab
     content.getSubmittedSignal = () => scenario === "submitted" ? { text: "Submitted" } : null;
     content.getAlreadyAppliedSignal = () => null;
     let clicks = 0;
-    content.waitForJobSpecificApplyAction = async () => {
+    content.getApplePostingUnavailableSignal = () => scenario === "unavailable" ? "This role does not exist." : null;
+    content.findJobSpecificApplyAction = () => ["unavailable", "changed"].includes(scenario) ? null
+      : { isConnected: true, disabled: scenario === "disabled", getAttribute: () => null, click() { clicks++; } };
+    content.delay = async () => {
       if (scenario === "changed") content.window.location = new URL(searchLink("200987654-0836").url);
-      return scenario === "unavailable" ? null : { disabled: scenario === "disabled", getAttribute: () => null, click() { clicks++; } };
     };
     if (scenario === "changed") await assert.rejects(content.readAppleJobApplicability("200123456-0836"), /job identity/i);
     else {

@@ -42,6 +42,126 @@ for (const [scenario, options] of [
   });
 }
 
+function applicabilityPage(sequence = ['loading'], { frozenClock = false } = {}) {
+  const h = unavailablePage();
+  const unavailableSelector = h.document.querySelector;
+  let position = 0, clock = 0, delays = 0;
+  const mode = () => sequence[Math.min(position, sequence.length - 1)];
+  const actions = Object.fromEntries(['submit', 'submitted', 'disabled'].map(state => [state, {
+    tagName: 'A', isConnected: true, disabled: state === 'disabled',
+    innerText: state === 'submitted' ? 'Submitted' : 'Submit Resume',
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 180, height: 40, top: 0 }),
+    click() { throw new Error('A status check must never click an application control.'); }
+  }]));
+  Object.defineProperty(h.document.body, 'innerText', { get: () => mode() === 'auth'
+    ? 'Please sign in to continue' : mode() === 'network' ? 'We were unable to retrieve your information.' : '' });
+  h.document.querySelector = selector => {
+    if (selector === '#jobdetails-open-positions-button') return mode() === 'unavailable' ? unavailableSelector(selector) : null;
+    if (selector === '#jobdetails-wrapper') return null;
+    if (selector.startsWith('#jobdetails-jobdescription')) throw new Error('Applicability must not require description extraction.');
+    return null;
+  };
+  h.document.querySelectorAll = selector => [
+    "button, input[type='button'], input[type='submit'], a, [role='button']",
+    "button, [role='button'], a, [aria-label], span, div"
+  ].includes(selector) && actions[mode()] ? [actions[mode()]] : [];
+  h.Date = class extends Date { static now() { return clock; } };
+  h.delay = async ms => {
+    delays += 1;
+    if (!frozenClock) clock += ms;
+    position += 1;
+    if (mode() === 'mismatched') h.window.location = new URL(url.replace(jobId, '200636174-9999'));
+  };
+  return { h, read: () => h.dispatch({ type: 'APPLE_CAREERS_EXTRACT_JOB', verifyApplicability: true, expectedJobId: jobId }),
+    delays: () => delays };
+}
+
+test('applicability confirms Submitted immediately without descriptions or inventory navigation', async () => {
+  const fixture = applicabilityPage(['submitted']);
+  const result = await fixture.read();
+  assert.equal(result.ok, true);
+  assert.equal(result.data.jobId, jobId);
+  assert.equal(result.data.identityVerified, true);
+  assert.equal(result.data.alreadySubmitted, true);
+  assert.equal(result.data.canApply, false);
+  assert.equal(result.data.postingUnavailable, false);
+  assert.equal(fixture.delays(), 0);
+  assert.equal(fixture.h.observationCalls.messages.length, 0);
+});
+
+test('applicability confirms an enabled Submit Resume control before descriptions load', async () => {
+  const fixture = applicabilityPage(['submit']);
+  const result = await fixture.read();
+  assert.equal(result.ok, true);
+  assert.equal(result.data.canApply, true);
+  assert.equal(result.data.alreadySubmitted, false);
+  assert.equal(fixture.delays(), 0);
+});
+
+test('applicability requires three exact unavailable-page observations', async () => {
+  const fixture = applicabilityPage(['unavailable']);
+  const result = await fixture.read();
+  assert.equal(result.ok, true);
+  assert.equal(result.data.postingUnavailable, true);
+  assert.equal(result.data.errorType, 'job_unavailable');
+  assert.equal(result.data.canApply, false);
+  assert.equal(result.data.alreadySubmitted, false);
+  assert.equal(fixture.delays(), 2);
+});
+
+test('applicability resets transient unavailable observations and accepts a settled apply control', async () => {
+  const fixture = applicabilityPage(['unavailable', 'unavailable', 'loading', 'unavailable', 'unavailable', 'submit']);
+  const result = await fixture.read();
+  assert.equal(result.data.canApply, true);
+  assert.equal(result.data.postingUnavailable, false);
+  assert.equal(fixture.delays(), 5);
+});
+
+for (const state of ['loading', 'network', 'disabled']) {
+  test(`applicability leaves a ${state} page unknown instead of removed or submitted`, async () => {
+    const fixture = applicabilityPage([state]);
+    const result = await fixture.read();
+    assert.equal(result.ok, true);
+    assert.equal(result.data.postingUnavailable, false);
+    assert.equal(result.data.alreadySubmitted, false);
+    assert.equal(result.data.canApply, false);
+    assert.equal(fixture.delays(), 20);
+  });
+}
+
+test('applicability observes a delayed Submitted control without waiting for a description', async () => {
+  const fixture = applicabilityPage(['loading', 'loading', 'submitted']);
+  const result = await fixture.read();
+  assert.equal(result.data.alreadySubmitted, true);
+  assert.equal(fixture.delays(), 2);
+});
+
+test('applicability stops when authentication is lost during polling', async () => {
+  const fixture = applicabilityPage(['unavailable', 'auth']);
+  const result = await fixture.read();
+  assert.equal(result.data.errorType, 'session_or_login_required');
+  assert.equal(result.data.postingUnavailable, false);
+  assert.equal(result.data.canApply, false);
+  assert.equal(fixture.delays(), 1);
+});
+
+test('applicability never accepts unavailable evidence after the exact job identity changes', async () => {
+  const fixture = applicabilityPage(['unavailable', 'mismatched']);
+  const result = await fixture.read();
+  assert.equal(result.ok, false);
+  assert.equal(result.data.errorType, 'job_identity_mismatch');
+  assert.equal(fixture.delays(), 1);
+});
+
+test('applicability polling is bounded even if the clock does not advance', async () => {
+  const fixture = applicabilityPage(['loading'], { frozenClock: true });
+  const result = await fixture.read();
+  assert.equal(result.data.canApply, false);
+  assert.equal(result.data.postingUnavailable, false);
+  assert.equal(fixture.delays(), 20);
+});
+
 async function pollFixture(responses, { currentUrl = url } = {}) {
   let reads = 0, clock = 0;
   const h = createBackgroundHarness([{ id: 1, windowId: 1, status: 'complete', url: currentUrl }], {
