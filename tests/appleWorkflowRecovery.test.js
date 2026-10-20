@@ -237,7 +237,9 @@ test("revocation blocks a granted-but-delayed page action before it clicks Submi
     return reply;
   };
   const clicks = [];
-  const button = { innerText: "Submit", scrollIntoView() {}, click: () => clicks.push("submit") };
+  const button = { tagName: "BUTTON", innerText: "Submit", isConnected: true, disabled: false,
+    getAttribute: () => null, getBoundingClientRect: () => ({ width: 100, height: 40 }),
+    scrollIntoView() {}, click: () => clicks.push("submit") };
   content.getVisibleValidationErrors = () => [];
   const options = { ...action(h), assertIdentity() {} };
   options.assertOwnership = kind => content.assertAppleWorkflowOwnership(options, kind);
@@ -396,7 +398,9 @@ test("restart after an actual synthetic Submit click does not replay it, even on
   const outcome = new Promise(resolve => { releaseOutcome = resolve; });
   const clicked = new Promise(resolve => { signalClick = resolve; });
   let count = 0;
-  const button = { innerText: "Submit", scrollIntoView() {}, click() { count++; signalClick(); } };
+  const button = { tagName: "BUTTON", innerText: "Submit", isConnected: true, disabled: false,
+    getAttribute: () => null, getBoundingClientRect: () => ({ width: 100, height: 40 }),
+    scrollIntoView() {}, click() { count++; signalClick(); } };
   content.getVisibleValidationErrors = () => [];
   content.waitForSubmissionOutcome = () => outcome;
   const options = { ...action(h), assertIdentity() {} };
@@ -537,7 +541,9 @@ test("a reused Continue button changing to Submit cannot bypass durable Submit p
   await step(h);
   const content = createContentHarness();
   let clicks = 0;
-  const button = { innerText: "Continue", scrollIntoView() {}, click() {
+  const button = { tagName: "BUTTON", innerText: "Continue", isConnected: true, disabled: false,
+    getAttribute: () => null, getBoundingClientRect: () => ({ width: 100, height: 40 }),
+    scrollIntoView() {}, click() {
     assert.equal(h.data[key].jobs[job.jobId].submissionOutcome, "unknown");
     assert.equal(h.data[key].jobs[job.jobId].submissionAttemptCount, 1);
     clicks++;
@@ -577,7 +583,9 @@ test("confirmed rejection is durable before same-step field recovery and survive
   content.chrome.runtime.sendMessage = message => h.sandbox.dispatch(message, { tab: h.tabs[0] });
   const options = { ...action(h), assertIdentity() {} };
   options.assertOwnership = kind => content.assertAppleWorkflowOwnership(options, kind);
-  const button = { innerText: "Submit", scrollIntoView() {}, click() {} };
+  const button = { tagName: "BUTTON", innerText: "Submit", isConnected: true, disabled: false,
+    getAttribute: () => null, getBoundingClientRect: () => ({ width: 100, height: 40 }),
+    scrollIntoView() {}, click() {} };
   const rejected = await content.clickAndDetectSubmission(button, [], options);
   assert.equal(rejected.submissionOutcome, "rejected");
   assert.equal(h.data[key].jobs[job.jobId].submissionOutcome, "rejected");

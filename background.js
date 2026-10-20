@@ -612,16 +612,18 @@ function delay(ms) {
 }
 
 async function waitForTabComplete(tabId, timeoutMs = TAB_LOAD_TIMEOUT_MS) {
-  const tab = await chrome.tabs.get(tabId);
-
-  if (tab.status === "complete") {
-    return tab;
-  }
-
   return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
+    let settled = false;
+    const finish = (error, tab) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
       chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error("Timed out waiting for tab to load."));
+      if (error) reject(error);
+      else resolve(tab);
+    };
+    const timeoutId = setTimeout(() => {
+      finish(new Error("Timed out waiting for tab to load."));
     }, timeoutMs);
 
     function listener(updatedTabId, changeInfo, updatedTab) {
@@ -629,12 +631,15 @@ async function waitForTabComplete(tabId, timeoutMs = TAB_LOAD_TIMEOUT_MS) {
         return;
       }
 
-      clearTimeout(timeoutId);
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve(updatedTab);
+      finish(null, updatedTab);
     }
 
+    // Subscribe before the asynchronous snapshot: completion may arrive while
+    // tabs.get is returning a stale "loading" status.
     chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === "complete") finish(null, tab);
+    }).catch(error => finish(error));
   });
 }
 
@@ -2378,12 +2383,35 @@ async function runApplicationWorkflow(tab, options = {}) {
       if (!response?.ok) {
         throw new Error(response?.error || "The application workflow step failed.");
       }
-      const responseJobVerified = response.data?.identityVerified === true && response.data.expectedJobId === jobId;
+      // Preserve observed actions even if the result later fails identity
+      // verification. A lost confirmation must not hide a real Submit click.
+      steps.push(...(response.data.steps || []).map(step => ({ ...step, attempt })));
+      await pushKnownSiteActivitySteps(activitySteps, response.data.steps || []);
+      let responseJobVerified = response.data?.identityVerified === true && response.data.expectedJobId === jobId;
       const actionSubmitted = (response.data.steps || []).some(step => step.step === "Submit application" && step.status === "clicked");
+      let afterStepTab = await chrome.tabs.get(workflowTabId);
+      if (!responseJobVerified && response.data.expectedJobId === jobId && actionSubmitted &&
+          response.data.errorType === "job_identity_unverified" &&
+          CareerPeelerApplicationSafety.isConfirmationUrl(response.data.url) &&
+          CareerPeelerApplicationSafety.isConfirmationUrl(afterStepTab.url)) {
+        const verified = await verifyAppleOwnedSubmitAfterRedirect({ workflowSessionId, workflowStepId,
+          job: { ...jobContext, jobId, url: jobContext?.url || liveTab.url },
+          tabId: workflowTabId, windowId: workflowWindowId, rankingState: options.rankingState });
+        if (verified.confirmed) {
+          const confirmation = { step: "Confirm application submitted", status: "detected",
+            label: "Fresh exact-job Submitted controls and complete Active inventory verified this application." };
+          response.data = { ...response.data, identityVerified: true, clicked: true, done: true,
+            pausedForReview: false, submissionOutcome: "confirmed", errorType: null, url: verified.proof.url,
+            summary: confirmation.label, steps: [...response.data.steps, confirmation] };
+          steps.push({ ...confirmation, attempt });
+          await pushKnownSiteActivitySteps(activitySteps, [confirmation]);
+          responseJobVerified = true;
+        }
+        afterStepTab = await chrome.tabs.get(workflowTabId);
+      }
       if (response.data.expectedJobId === jobId && /^job_identity_/.test(response.data.errorType || "") &&
         !actionSubmitted && response.data.submissionOutcome !== "unknown") workflowStepInFlight = false;
       const permitsConfirmation = (allowConfirmation || actionSubmitted) && response.data.done && responseJobVerified;
-      const afterStepTab = await chrome.tabs.get(workflowTabId);
       if (!responseJobVerified ||
         (!CareerPeelerApplicationSafety.matchesJob(jobId, response.data.url) &&
           !(permitsConfirmation && CareerPeelerApplicationSafety.isConfirmationUrl(response.data.url))) ||
@@ -2441,14 +2469,6 @@ async function runApplicationWorkflow(tab, options = {}) {
         errorType: response.data.errorType || null,
         visibleActions: response.data.visibleActions || []
       });
-
-      steps.push(
-        ...response.data.steps.map((step) => ({
-          ...step,
-          attempt
-        }))
-      );
-      await pushKnownSiteActivitySteps(activitySteps, response.data.steps);
 
       const openedApplication =
         response.data.clicked &&

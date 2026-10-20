@@ -62,6 +62,8 @@ const sandbox = {
   CareerPeelerJobStore: jobStore,
   URL,
   console,
+  setTimeout,
+  clearTimeout,
   // background.js's real importScripts("lib/core.js") loads that file into the same global scope
   // (classic MV3 service workers support importScripts natively) -- simulate that here by
   // pre-populating the sandbox with lib/core.js's exports instead of actually loading a file.
@@ -1155,6 +1157,7 @@ asyncTest("application workflow carries bounded validation-recovery state across
   try {
     sandbox.delay = async () => {};
     sandbox.chrome.tabs = {
+      ...originalTabs,
       async get() {
         return liveTab;
       },

@@ -2459,6 +2459,20 @@ function getActionLabel(element) {
   return normalizeText(element.innerText || element.value || element.getAttribute("aria-label") || "");
 }
 
+function assertCurrentApplicationAction(element, pattern, options = {}) {
+  if (options.workflowSessionId && revokedAppleWorkflows.has(options.workflowSessionId)) {
+    throw Object.assign(new Error("The application workflow was stopped. No further action was clicked."),
+      { code: "workflow_owner_revoked" });
+  }
+  const primaryId = getSiteConfig()?.primaryActionId;
+  if (!element || element.isConnected === false || !isElementVisible(element) || isActionDisabled(element) ||
+      !pattern.test(getActionLabel(element)) || primaryId &&
+      (element.id === primaryId || element.getAttribute("id") === primaryId) && document.getElementById(primaryId) !== element) {
+    throw Object.assign(new Error("The application action changed while answers were checked. Review this step before continuing."),
+      { code: "workflow_action_changed" });
+  }
+}
+
 function getClickableCandidates() {
   return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit'], a, [role='button']"))
     .filter((element) => isElementVisible(element))
@@ -2746,6 +2760,7 @@ async function clickAction(pattern, stepName, steps, options = {}) {
   }
   await options.assertSavedAnswers?.();
   options.assertIdentity?.();
+  assertCurrentApplicationAction(element, pattern, options);
   element.click();
   steps.push({
     step: stepName,
@@ -2814,10 +2829,12 @@ async function clickAndDetectSubmission(element, steps, options = {}) {
   if (existingValidation.length) return blockedSubmissionResult(options.submissionOutcome || "not_attempted", "blocked_by_validation",
     `Submit was not clicked because validation is already visible: ${existingValidation.join("; ")}`);
   await options.assertSavedAnswers?.();
+  assertCurrentApplicationAction(element, getSiteConfig()?.finalSubmitPattern || /^submit$/i, options);
   await options.assertOwnership?.("submit");
   options.assertIdentity?.();
   await options.assertSavedAnswers?.();
   options.assertIdentity?.();
+  assertCurrentApplicationAction(element, getSiteConfig()?.finalSubmitPattern || /^submit$/i, options);
   const postPermitBlock = checkSubmissionPermission(options);
   if (postPermitBlock) return postPermitBlock;
   const submissionKey = options.expectedJobId || getJobId();
@@ -3027,6 +3044,7 @@ async function clickPrimaryAction(siteConfig, steps, options = {}) {
         scrollBottom: true,
         timeoutMs: 5000,
         recordMissing: false,
+        workflowSessionId: options.workflowSessionId,
         assertIdentity: options.assertIdentity,
         assertOwnership: options.assertOwnership,
         assertSavedAnswers: options.assertSavedAnswers,
@@ -3101,11 +3119,22 @@ async function clickPrimaryAction(siteConfig, steps, options = {}) {
   }
   await options.assertSavedAnswers?.();
   options.assertIdentity?.();
+  // Apple reuses this node across SPA steps. The answer audit can await long
+  // enough for Continue to become Submit; classify again after the last await.
+  if (findPrimaryActionButton(siteConfig) !== primaryButton) {
+    throw Object.assign(new Error("The application action was replaced while answers were checked. Review this step before continuing."),
+      { code: "workflow_action_changed" });
+  }
+  if ((siteConfig?.finalSubmitPattern || /^submit$/i).test(getActionLabel(primaryButton))) {
+    return clickAndDetectSubmission(primaryButton, steps, options);
+  }
+  assertCurrentApplicationAction(primaryButton, siteConfig?.continuePattern || /^continue$/i, options);
+  const currentLabel = getActionLabel(primaryButton);
   primaryButton.click();
   steps.push({
     step: "Continue application step",
     status: "clicked",
-    label
+    label: currentLabel
   });
   await delay(WORKFLOW_STEP_DELAY_MS);
 

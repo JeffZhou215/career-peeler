@@ -913,8 +913,12 @@ asyncTest("a Submit click that reveals validation errors stops for review instea
     }
   };
   const submit = {
+    tagName: "BUTTON",
     innerText: "Submit",
     value: "",
+    isConnected: true,
+    disabled: false,
+    getBoundingClientRect() { return { width: 100, height: 40 }; },
     getAttribute() {
       return null;
     },
@@ -954,8 +958,12 @@ asyncTest("existing field validation prevents another final Submit click", async
     }
   };
   const submit = {
+    tagName: "BUTTON",
     innerText: "Submit",
     value: "",
+    isConnected: true,
+    disabled: false,
+    getBoundingClientRect() { return { width: 100, height: 40 }; },
     getAttribute() {
       return null;
     },
@@ -989,8 +997,12 @@ asyncTest("unanswered fields alone leave Submit unknown rather than authorizing 
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   const originalAuditRequiredApplicationFields = sandbox.auditRequiredApplicationFields;
   const submit = {
+    tagName: "BUTTON",
     innerText: "Submit",
     value: "",
+    isConnected: true,
+    disabled: false,
+    getBoundingClientRect() { return { width: 100, height: 40 }; },
     getAttribute() {
       return null;
     },

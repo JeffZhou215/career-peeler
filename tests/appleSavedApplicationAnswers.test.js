@@ -249,7 +249,9 @@ test('the last saved-answer check runs after asynchronous Submit ownership and b
   installResolver(sandbox, profile);
   const fixture = nativeQuestion(sandbox, 'Gender', ['Male', 'Female'], 'Female');
   let clicks = 0;
-  const button = { innerText: 'Submit', scrollIntoView() {}, getAttribute: () => null, click() { clicks++; } };
+  const button = { tagName: 'BUTTON', innerText: 'Submit', isConnected: true, disabled: false,
+    getBoundingClientRect: () => ({ width: 160, height: 40, top: 0 }),
+    scrollIntoView() {}, getAttribute: () => null, click() { clicks++; } };
   const result = await sandbox.clickAndDetectSubmission(button, [], {
     assertSavedAnswers: async () => {
       const audit = await sandbox.verifySavedApplicationAnswers([], { applicationAnswers: profile });

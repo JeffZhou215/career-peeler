@@ -128,7 +128,8 @@ function submitFixture(sandbox, outcome = null) {
   sandbox.waitForSubmissionOutcome = async () => outcome;
   sandbox.getVisibleValidationErrors = () => [];
   sandbox.getLoadingSignal = () => null;
-  const button = { innerText: "Submit", value: "", getAttribute: () => null,
+  const button = { tagName: "BUTTON", innerText: "Submit", value: "", isConnected: true, disabled: false,
+    getAttribute: () => null, getBoundingClientRect: () => ({ width: 100, height: 40 }),
     scrollIntoView() {}, click() { clicks++; } };
   return { button, clicks: () => clicks };
 }
@@ -511,7 +512,8 @@ test("four synthetic Apple stages use saved answers and confirm exactly one subm
   const sponsorship = radioQuestion("Will you require visa sponsorship?");
   let stage = 0;
   let submitClicks = 0;
-  const button = { get innerText() { return stage === 3 ? "Submit" : "Continue"; }, value: "", getAttribute: () => null,
+  const button = { tagName: "BUTTON", isConnected: true, disabled: false,
+    get innerText() { return stage === 3 ? "Submit" : "Continue"; }, value: "", getAttribute: () => null,
     getBoundingClientRect: () => ({ width: 100, height: 40 }), scrollIntoView() {},
     click() { if (stage === 3) submitClicks++; stage++; } };
   sandbox.getSessionRequiredSignal = () => null;
