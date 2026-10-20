@@ -1,6 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createBackgroundHarness } = require("./helpers/appleWorkflowHarness.cjs");
+const core = require("../lib/core.js");
 
 // Worker-side contract tests for Apple's verified disabled Submitted controls.
 // The content parser has its own DOM tests; this fixture exercises actual worker
@@ -12,6 +13,12 @@ const sessionId = "reviewed-submitted-controls-session";
 const role = { jobId, title: "ML Engineer, Apple Foundation Models",
   url: `https://jobs.apple.com/en-us/details/${jobId}/ml-engineer` };
 const rolesUrl = "https://jobs.apple.com/app/en-us/profile/roles";
+const queuedId = "200000123-0836";
+const pdf = "data:application/pdf;base64,offline";
+const profile = core.normalizeUserProfile({ resumeFileDataUrl: pdf, resumeText: "Built Python backend APIs.",
+  resumeTextFingerprint: core.fingerprintText(pdf), userYearsOfExperience: 1.5,
+  llmEnabled: true, llmModel: "gpt-4o", llmApiKey: "sk-offline", llmApiKeyValidationStatus: "valid",
+  llmApiKeyValidatedFingerprint: core.fingerprintText("sk-offline"), workAuthorized: "yes", requiresSponsorship: "no" });
 const activeRole = (id, title = role.title) => ({ jobId: id, title, active: true,
   url: `https://jobs.apple.com/en-us/details/${id}/ml-engineer` });
 function submittedControlEvidence() {
@@ -37,7 +44,9 @@ async function fixture(options = {}) {
           submissionAttemptCount: 1, submitIntentAt: clock.now - 600, submitAuthorizedStep: "reviewed-step",
           stepId: "reviewed-step", tabId: 1 } } },
     appleJobRanking: { version: 1, jobs: { [baseId]: { ...role, queueStatus: "uncertain" } }, searches: {},
-      applicationFailures: {}, reservations: [{ jobId, startedAt: clock.now - 600 }] } };
+      applicationFailures: { [baseId]: { ...role, workflowSessionId: sessionId, status: "uncertain",
+        submissionOutcomeUnknown: true, errorType: "submission_unconfirmed", failedAt: clock.now - 500 } },
+      reservations: [{ jobId, startedAt: clock.now - 600 }] } };
   const tabs = [{ id: 1, windowId: 1, status: "complete", url: role.url },
     { id: 2, windowId: 1, status: "complete", url: rolesUrl }];
   const observed = { inventoryReads: 0, statusReads: 0, messages: [] };
@@ -65,10 +74,16 @@ async function fixture(options = {}) {
   await h.ready;
   h.sandbox.Date = class extends Date { static now() { return clock.now; } };
   h.sandbox.callOpenAi = async () => { assert.fail("Submission status reconciliation cannot use AI"); };
+  h.data.appleJobRanking.jobs[queuedId.split("-")[0]] = {
+    jobId: queuedId, title: "Queued Software Engineer", url: `https://jobs.apple.com/en-us/details/${queuedId}/queued`,
+    queueStatus: "queued", eligible: true, score: 90, profileSignature: h.sandbox.appleRankingProfileSignature(profile)
+  };
   h.clock = clock;
   h.observed = observed;
   h.check = () => h.sandbox.dispatch({ type: "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION",
     tab: tabs[1], workflowSessionId: sessionId, jobId });
+  h.prepare = (selectedIds = [queuedId]) => h.sandbox.dispatch({ type: "APPLE_CAREERS_PREPARE_APPLICATION_BATCH",
+    userProfile: profile, selectedIds, tab: tabs[1], reviewRequestId: "submitted-control-batch-review" });
   return h;
 }
 
@@ -362,3 +377,204 @@ test("checking an already cancelled operation can confirm status without restori
   assert.equal(h.data[workflowKey].jobs[jobId].submissionAttemptCount, 1);
   assertReadOnly(h);
 });
+
+test("batch Retry Check corroborates a base-only Active role with exact Submitted controls before returning another reviewed selection", async () => {
+  const h = await fixture();
+  const original = structuredClone(h.data[workflowKey]);
+  const result = await h.prepare();
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.data.reconciliationPerformed, true);
+  assert.deepEqual([...result.data.jobs.map(job => job.jobId)], [queuedId]);
+  assert.ok(result.data.batchToken);
+  const journal = h.data[workflowKey];
+  assert.equal(journal.id, original.id, "preparation cannot create a new application session");
+  assert.equal(journal.owner, original.owner, "the previous operation retains its identity");
+  assert.equal(journal.status, "paused");
+  assert.equal(journal.reconciliationRequired, false);
+  assert.equal(journal.jobs[jobId].submissionOutcome, "confirmed");
+  assert.equal(journal.jobs[jobId].submissionAttemptCount, 1);
+  assert.equal(journal.jobs[queuedId], undefined, "preparation cannot begin the next selected role");
+  assert.equal(h.data.appleJobRanking.reservations.length, 0);
+  assert.equal(h.data.appleJobRanking.jobs[queuedId.split("-")[0]].queueStatus, "queued");
+  assert.equal(h.observed.statusReads, 1);
+  const view = await h.sandbox.getAppleRankingView(profile);
+  const recovered = view.applicationFailures.find(job => job.jobId === jobId);
+  assert.equal(recovered.status, "submitted", "confirmed recovery belongs in History");
+  assert.equal(recovered.submissionOutcomeUnknown, false);
+  assert.equal(recovered.canReturnToQueue, false);
+  assert.notEqual(recovered.retryBlockedType, "submission_outcome_unknown");
+  assertReadOnly(h);
+});
+
+test("batch Retry Check without the exact reviewed detail tab stays unknown with an actionable job link", async () => {
+  const h = await fixture();
+  h.tabs[0].url = "https://jobs.apple.com/en-us/search?team=MLAI";
+  const result = await h.prepare();
+  assert.equal(result.ok, false);
+  assert.equal(result.errorJob.jobId, jobId);
+  assert.equal(result.errorJob.url, role.url);
+  assert.match(result.error, /open.*reviewed|reviewed.*link|review.*job.*page/i);
+  assertUnknown(h);
+  assert.equal(h.observed.statusReads, 0);
+  assertReadOnly(h);
+});
+
+for (const invalid of ["incomplete inventory", "generic Submitted label"]) {
+  test(`batch Retry Check cannot clear an unknown operation from ${invalid}`, async () => {
+    const h = await fixture(invalid === "incomplete inventory" ? {
+      inventoryResponse: () => ({ ok: true, data: { ...inventory([activeRole(baseId)]), pageCount: 2 } })
+    } : { status: ({ proof }) => ({ ok: true, data: { ...proof, proof: "generic_submitted_label" } }) });
+    const result = await h.prepare();
+    assert.equal(result.ok, false);
+    assert.equal(result.errorJob.jobId, jobId);
+    assertUnknown(h);
+    assertReadOnly(h);
+  });
+}
+
+test("cancelling batch Retry Check during a pending detail read rejects late confirmation and never returns a ready batch", async () => {
+  const h = await fixture({ status: async ({ h, proof }) => {
+    const stopped = await h.sandbox.dispatch({ type: "APPLE_CAREERS_STOP_JOB_RANKING", reviewRequestId: "submitted-control-batch-review" });
+    assert.equal(stopped.ok, true, stopped.error);
+    return { ok: true, data: proof };
+  } });
+  const result = await h.prepare();
+  assert.equal(result.ok, false);
+  assert.equal(result.errorType, "stopped_by_user");
+  assert.equal(result.data, undefined);
+  assertUnknown(h);
+  assertReadOnly(h);
+});
+
+test("a selected recovered role becoming submitted requires reselection instead of silently changing the reviewed batch", async () => {
+  const h = await fixture();
+  const result = await h.prepare([jobId, queuedId]);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /no longer queued|review.*selection/i);
+  assert.equal(h.data[workflowKey].jobs[jobId].submissionOutcome, "confirmed");
+  assert.equal(h.data[workflowKey].jobs[jobId].submissionAttemptCount, 1);
+  assert.equal(h.data[workflowKey].jobs[queuedId], undefined);
+  assert.equal(h.data.appleJobRanking.jobs[queuedId.split("-")[0]].queueStatus, "queued");
+  assertReadOnly(h);
+});
+
+test("competing batch and explicit recovery checks cannot own the same pending Submitted verification", async () => {
+  let competingBatch, competingCheck;
+  const h = await fixture({ status: async ({ h, proof }) => {
+    competingBatch = await h.prepare();
+    competingCheck = await h.check();
+    return { ok: true, data: proof };
+  } });
+  const result = await h.prepare();
+  assert.equal(result.ok, true, result.error);
+  assert.equal(competingBatch.ok, false);
+  assert.equal(competingCheck.ok, false);
+  assert.match(competingBatch.error, /stop.*current/i);
+  assert.match(competingCheck.error, /stop.*current/i);
+  assert.equal(h.observed.statusReads, 1);
+  assert.equal(h.data[workflowKey].jobs[jobId].submissionAttemptCount, 1);
+  assertReadOnly(h);
+});
+
+test("confirmed recovery cannot clear a saved unknown failure belonging to another workflow session", async () => {
+  const h = await fixture();
+  h.data.appleJobRanking.applicationFailures[baseId].workflowSessionId = "another-pending-operation";
+  const result = await h.check();
+  assert.equal(result.ok, true, result.error);
+  assert.equal(h.data[workflowKey].jobs[jobId].submissionOutcome, "confirmed");
+  const view = await h.sandbox.getAppleRankingView(profile);
+  const failure = view.applicationFailures.find(item => item.jobId === jobId);
+  assert.equal(failure.submissionOutcomeUnknown, true);
+  assert.equal(failure.retryBlockedType, "submission_outcome_unknown");
+  assert.equal(failure.canReturnToQueue, false);
+  assert.equal(h.data.appleJobRanking.applicationFailures[baseId].workflowSessionId, "another-pending-operation");
+  assertReadOnly(h);
+});
+
+for (const timestampMatches of [true, false]) {
+  test(`legacy interruption ${timestampMatches ? "with" : "without"} the exact recovery timestamp ${timestampMatches ? "can" : "cannot"} inherit its confirmed result`, async () => {
+    const h = await fixture();
+    const failure = h.data.appleJobRanking.applicationFailures[baseId];
+    delete failure.workflowSessionId;
+    failure.errorType = "worker_interrupted";
+    failure.failedAt = h.data[workflowKey].recoveredAt + (timestampMatches ? 0 : 1);
+    const result = await h.check();
+    assert.equal(result.ok, true, result.error);
+    const view = await h.sandbox.getAppleRankingView(profile);
+    const saved = view.applicationFailures.find(item => item.jobId === jobId);
+    assert.equal(saved.submissionOutcomeUnknown, !timestampMatches);
+    assert.equal(saved.canReturnToQueue, false);
+    assert.equal(saved.status, timestampMatches ? "submitted" : "uncertain");
+    assertReadOnly(h);
+  });
+}
+
+for (const replacement of ["unknown operation", "failure session"]) {
+  test(`atomic confirmation metadata repair preserves a replacement ${replacement} arriving after its snapshot`, async () => {
+    const h = await fixture();
+    const result = await h.check();
+    assert.equal(result.ok, true, result.error);
+    // A delayed transport failure can arrive after durable confirmation. The
+    // view may repair that exact session, but must recheck at the write boundary.
+    Object.assign(h.data.appleJobRanking.applicationFailures[baseId], { status: "uncertain", submissionOutcomeUnknown: true });
+    const state = await h.sandbox.readAppleRankingState();
+    const journal = structuredClone(h.data[workflowKey]);
+    const store = h.sandbox.CareerPeelerJobStore;
+    const update = store.updateCollections;
+    let injected = false;
+    store.updateCollections = async (keys, callback) => {
+      if (!injected) {
+        injected = true;
+        if (replacement === "unknown operation") {
+          Object.assign(h.data[workflowKey].jobs[jobId], { state: "uncertain", submissionOutcome: "unknown",
+            stepId: "replacement-step", submitIntentAt: h.clock.now + 1 });
+          h.data[workflowKey].reconciliationRequired = true;
+        } else {
+          h.data.appleJobRanking.applicationFailures[baseId].workflowSessionId = "new-failure-session";
+        }
+      }
+      return update(keys, callback);
+    };
+    await h.sandbox.repairAppleReconciledFailureMetadata(state, journal);
+    assert.equal(injected, true, "probe must reach the atomic commit boundary");
+    assert.equal(h.data.appleJobRanking.applicationFailures[baseId].submissionOutcomeUnknown, true);
+    const view = await h.sandbox.getAppleRankingView(profile);
+    const saved = view.applicationFailures.find(item => item.jobId === jobId);
+    assert.equal(saved.submissionOutcomeUnknown, true);
+    assert.equal(saved.canReturnToQueue, false);
+    assert.equal(saved.retryBlockedType, "submission_outcome_unknown");
+    assertReadOnly(h);
+  });
+}
+
+for (const [description, patch] of [
+  ["stale document", { documentStartedAt: 1 }],
+  ["different full job ID", { jobId: "200670922-9999" }]
+]) {
+  test(`batch Retry Check rejects ${description} proof while preserving the pending Submit`, async () => {
+    const h = await fixture({ status: ({ proof }) => ({ ok: true, data: { ...proof, ...patch } }) });
+    const result = await h.prepare();
+    assert.equal(result.ok, false);
+    assert.equal(result.errorType, "job_identity_unverified");
+    assert.equal(result.errorJob.jobId, jobId);
+    assertUnknown(h);
+    assertReadOnly(h);
+  });
+}
+
+for (const changed of ["owner", "step"]) {
+  test(`batch Retry Check cannot overwrite a changed ${changed} during its Submitted read`, async () => {
+    const h = await fixture({ status: ({ h, proof }) => {
+      if (changed === "owner") h.data[workflowKey].owner = "replacement-owner";
+      else h.data[workflowKey].jobs[jobId].stepId = "replacement-step";
+      return { ok: true, data: proof };
+    } });
+    const result = await h.prepare();
+    assert.equal(result.ok, false);
+    assertUnknown(h);
+    assert.equal(h.data[workflowKey].jobs[jobId].recoveryProof, undefined);
+    if (changed === "owner") assert.equal(h.data[workflowKey].owner, "replacement-owner");
+    else assert.equal(h.data[workflowKey].jobs[jobId].stepId, "replacement-step");
+    assertReadOnly(h);
+  });
+}

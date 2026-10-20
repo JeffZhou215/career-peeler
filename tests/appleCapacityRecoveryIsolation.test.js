@@ -33,6 +33,13 @@ async function worker(data, tabs, initialInventory) {
       if (failure) return { ok: false, error: failure };
       return { ok: true, data: currentInventory };
     }
+    if (message.type === "APPLE_CAREERS_READ_RECOVERY_SUBMISSION_STATUS") {
+      const tab = tabs.find(tab => tab.id === _tabId);
+      return { ok: true, data: { requestId: message.requestId, jobId: message.expectedJobId,
+        url: tab.url, identityVerified: true, observedAt: Date.now(), documentStartedAt: message.notBefore,
+        submissionOutcome: "unknown", proof: "unverified",
+        reason: "The reviewed page does not provide exact submission confirmation." } };
+    }
     assert.fail(`Unexpected browser action: ${message.type}`);
   } });
   await h.ready;
@@ -219,6 +226,8 @@ test("successful count sync cannot authorize batch review while recovery identit
   assert.equal(response.errorType, "workflow_recovery_required");
   assert.equal(h.data.appleSubmissionSyncStatus.state, "synced");
   assert.equal((await h.sandbox.appleRankingCapacity(await h.sandbox.readAppleRankingState())).known, true);
+  assert.equal(h.calls.messages.filter(message => message.type === "APPLE_CAREERS_READ_RECOVERY_SUBMISSION_STATUS").length, 1,
+    "Retry Check must attempt exact-page verification without treating an unknown result as confirmation");
   assertUnresolved(h);
 });
 
