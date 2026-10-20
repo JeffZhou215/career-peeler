@@ -28,7 +28,7 @@ async function fixture(options = {}) {
     if (message.type === 'APPLE_CAREERS_GET_SUBMITTED_HISTORY_PAGE') return { ok: true, data: page };
     if (message.type === 'APPLE_CAREERS_GET_ALL_SUBMITTED_HISTORY_PAGES') return options.failedInventory
       ? { ok: false, error: 'Synthetic incomplete inventory.' } : { ok: true, data: { pages: [page], pageCount: 1 } };
-    if (message.type === 'APPLE_CAREERS_REVOKE_WORKFLOW') return { ok: true, workflowSessionId: message.workflowSessionId };
+    if (message.type === 'APPLE_CAREERS_REVOKE_WORKFLOW') return { ok: !options.failedRevocation, workflowSessionId: message.workflowSessionId };
     const jobId = core.getJobIdFromUrl(tab.url);
     if (message.type === 'APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS') {
       await options.onDetail?.(jobId, h);
@@ -413,4 +413,135 @@ test('content scripts cannot request the extension-only job-page check', async (
   const h = await fixture();
   assert.equal((await h.check(ids[0], { tab: source })).ok, false);
   assert.equal(h.calls.created.length, 0);
+});
+
+async function interruptedOrdinaryForm(options = {}) {
+  const h = await fixture(options);
+  const jobId = ids[0], id = ranking.idOf(jobId), job = h.data.appleJobRanking.jobs[id];
+  const failure = h.data.appleJobRanking.applicationFailures[id];
+  Object.assign(failure, { submissionOutcomeUnknown: true, status: 'uncertain',
+    workflowSessionId: 'interrupted-form', errorType: 'apply_failed' });
+  job.queueStatus = 'uncertain';
+  h.data.appleJobRanking.reservations.push({ jobId, startedAt: 123 });
+  h.data.appleApplicationWorkflow = { id: 'interrupted-form', owner: 'prior-worker', status: 'paused',
+    reconciliationRequired: true, currentJobId: jobId, jobs: { [jobId]: { ...job,
+      workflowSessionId: 'interrupted-form', state: 'in_progress', stepId: 'form-step', stepPending: true,
+      submissionOutcome: 'not_attempted', submissionAttemptCount: 0, tabId: source.id } } };
+  h.verify = () => h.sandbox.dispatch({ type: 'APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION',
+    workflowSessionId: 'interrupted-form', jobId, tab: source });
+  return h;
+}
+
+test('page-only checks cannot unlock interrupted forms; explicit verified no-Submit reconciliation makes them selectable', async () => {
+  const h = await interruptedOrdinaryForm();
+  const before = structuredClone(h.data.appleApplicationWorkflow);
+  assert.equal((await h.check()).data.state, 'submit');
+  assert.deepEqual(h.data.appleApplicationWorkflow, before);
+  assert.equal((await h.sandbox.getAppleRankingView(profile)).applicationFailures.find(f => f.jobId === ids[0]).canReturnToQueue, false);
+  assert.equal(h.calls.messages.some(m => /GET_.*SUBMITTED_HISTORY/.test(m.type)), false);
+  const verified = await h.verify();
+  assert.equal(verified.ok, true, verified.error);
+  assert.equal(verified.data.resolved, true);
+  const failure = h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])];
+  assert.equal(failure.submissionOutcomeUnknown, false);
+  assert.equal(failure.status, 'needs_review');
+  assert.equal((await h.sandbox.getAppleRankingView(profile)).applicationFailures.find(f => f.jobId === ids[0]).canReturnToQueue, true);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].reconciliation, 'not_attempted');
+  assert.equal(h.data.appleJobRanking.reservations.some(r => r.jobId === ids[0]), false);
+  assert.equal(h.calls.messages.some(m => /RUN_APPLICATION|AUTHORIZE_WORKFLOW/.test(m.type)), false);
+  const returned = await h.return([ids[0]]);
+  assert.deepEqual([...returned.queuedIds], [ids[0]]);
+});
+
+for (const options of [{ failedInventory: true }, { failedRevocation: true }]) {
+  test(`${Object.keys(options)[0]} cannot unlock an interrupted application or release its reservation`, async () => {
+    const h = await interruptedOrdinaryForm(options);
+    const result = await h.verify();
+    assert.equal(result.ok, false);
+    assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].submissionOutcomeUnknown, true);
+    assert.ok(h.data.appleJobRanking.reservations.some(r => r.jobId === ids[0]));
+    assert.equal((await h.sandbox.getAppleRankingView(profile)).applicationFailures.find(f => f.jobId === ids[0]).canReturnToQueue, false);
+    assert.equal(h.calls.messages.some(m => /RUN_APPLICATION|AUTHORIZE_WORKFLOW/.test(m.type)), false);
+  });
+}
+
+test('a genuinely unknown Submit stays locked after explicit empty-inventory verification and a fresh batch', async () => {
+  const h = await interruptedOrdinaryForm();
+  Object.assign(h.data.appleApplicationWorkflow.jobs[ids[0]], { state: 'uncertain', submissionOutcome: 'unknown',
+    submissionAttemptCount: 1, submitAuthorizedStep: 'form-step', submitIntentAt: Date.now() });
+  const verified = await h.verify();
+  assert.equal(verified.ok, true, verified.error); assert.equal(verified.data.resolved, false);
+  assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].submissionOutcomeUnknown, true);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionOutcome, 'unknown');
+  assert.ok(h.data.appleJobRanking.reservations.some(r => r.jobId === ids[0]));
+  assert.equal((await h.return([ids[0]])).queuedIds.length, 0);
+  assert.equal(h.calls.messages.some(m => /RUN_APPLICATION|AUTHORIZE_WORKFLOW/.test(m.type)), false);
+});
+
+test('verified ordinary-form recovery preserves explicit cancellation and does not automatically requeue', async () => {
+  const h = await interruptedOrdinaryForm();
+  Object.assign(h.data.appleApplicationWorkflow, { status: 'cancelled', stopRequested: true });
+  const verified = await h.verify();
+  assert.equal(verified.ok, true, verified.error);
+  assert.equal(h.data.appleApplicationWorkflow.status, 'cancelled');
+  assert.equal(h.data.appleApplicationWorkflow.stopRequested, true);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'needs_review');
+  assert.equal(h.calls.messages.some(m => /RUN_APPLICATION|AUTHORIZE_WORKFLOW/.test(m.type)), false);
+});
+
+test('a no-Submit reconciliation repairs only a failure bound to that same operation', async () => {
+  for (const scenario of ['missing session', 'other session', 'other full ID', 'explicit Submit error']) {
+    const h = await interruptedOrdinaryForm();
+    const failure = h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])];
+    if (scenario === 'missing session') delete failure.workflowSessionId;
+    if (scenario === 'other session') failure.workflowSessionId = 'another-attempt';
+    if (scenario === 'other full ID') failure.jobId = ids[0].replace('0836', '9999');
+    if (scenario === 'explicit Submit error') failure.errorType = 'clicked_but_unconfirmed';
+    await h.verify();
+    assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].submissionOutcomeUnknown, true, scenario);
+  }
+});
+
+test('legacy worker-interruption metadata needs its exact recovery event and full job identity', async () => {
+  for (const matches of [true, false]) {
+    const h = await interruptedOrdinaryForm();
+    const failure = h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])];
+    delete failure.workflowSessionId;
+    Object.assign(failure, { errorType: 'worker_interrupted', failedAt: matches ? 321 : 654, legacy: true });
+    h.data.appleApplicationWorkflow.recoveredAt = 321;
+    await h.verify();
+    assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].submissionOutcomeUnknown, !matches);
+  }
+});
+
+test('reconciliation metadata repair rechecks the durable journal atomically before clearing an unknown flag', async () => {
+  for (const scenario of ['late unknown', 'new owner', 'write failure']) {
+    const h = await interruptedOrdinaryForm();
+    const update = h.sandbox.CareerPeelerJobStore.updateCollections;
+    h.sandbox.CareerPeelerJobStore.updateCollections = async (keys, callback) => {
+      if (scenario === 'write failure') throw new Error('Synthetic verification write failure.');
+      if (scenario === 'new owner') h.data.appleApplicationWorkflow.id = 'new-owner';
+      else Object.assign(h.data.appleApplicationWorkflow.jobs[ids[0]], { state: 'uncertain', submissionOutcome: 'unknown',
+        submissionAttemptCount: 1, submitAuthorizedStep: 'late-step', submitIntentAt: Date.now() });
+      return update(keys, callback);
+    };
+    await h.verify();
+    assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].submissionOutcomeUnknown, true, scenario);
+    assert.equal((await h.sandbox.getAppleRankingView(profile)).applicationFailures.find(f => f.jobId === ids[0]).canReturnToQueue, false, scenario);
+  }
+});
+
+test('no-Submit proof rejects pending, attempted, unreconciled, or inconsistent operation records', async () => {
+  const h = await interruptedOrdinaryForm();
+  const journal = h.data.appleApplicationWorkflow;
+  const failure = h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])];
+  const safe = { ...journal.jobs[ids[0]], state: 'failed', stepPending: false,
+    reconciliation: 'not_attempted', reconciledAt: Date.now() };
+  assert.equal(h.sandbox.appleFailureHasReconciledNoSubmit(failure, safe, journal), true);
+  for (const changes of [{ stepPending: true }, { submissionOutcome: 'unknown' }, { submissionAttemptCount: 1 },
+    { acknowledgedAttemptCount: 1 }, { submitIntentAt: 1 }, { submitAuthorizedStep: 'submit-step' },
+    { reconciliation: 'absent' }, { reconciledAt: undefined }, { jobId: ids[1] }, { url: 'https://example.com' }]) {
+    assert.equal(h.sandbox.appleFailureHasReconciledNoSubmit(failure, { ...safe, ...changes }, journal), false, JSON.stringify(changes));
+  }
+  assert.equal(h.sandbox.appleFailureHasReconciledNoSubmit(failure, safe, { ...journal, status: 'running' }), false);
 });

@@ -90,6 +90,8 @@ To retry known failures, expand **Activity**, complete any missing answers in **
 
 **Check Job Status** reads that job's page: **Submit Resume** allows a new reviewed retry, while **Submitted** and **Page Not Found** exclude the role from apply-capable lists and queues. Removed and submitted roles retain their history. Loading, sign-in, and identity failures remain unverified. These checks do not change your active submission count. **Outcome Unknown** stays blocked even if the posting is removed or a sync finds it absent; use the interrupted workflow's **Check Application Status** for reconciliation. Changed or outdated assessments require ranking again before returning a role.
 
+Activity shows how many roles are retryable. For an interrupted workflow, use **Verify Previous Application** to check Active submissions and reconcile its saved operation. A verified interruption before Submit becomes selectable again; an unresolved Submit remains locked. Verification does not queue or apply a role. Then select retryable roles and use **Return Selected To Application Queue**.
+
 To apply one reviewed role, open its Apple job page and choose **Apply This Role** in the Jobs tab. Review the role and confirm submission. The extension checks available slots, then completes the application stages using your saved profile. It does not require a queue entry or a strong match score. If a step fails, the application stays open and Activity records the job link and reason. A previous unknown Submit outcome requires reconciliation; absence from the submissions list alone does not authorize an automatic retry.
 
 Small **?** buttons explain controls. Expand a role to see its details; opening another role in the same list closes the previous one.

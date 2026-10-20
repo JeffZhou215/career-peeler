@@ -12,15 +12,16 @@ function FailureDetails({ job }) {
   </>;
 }
 export function ApplicationFailureList({ failures, selectedIds, busy, running, rowFeedback = {}, onSelect, onSelectAll,
-  onClear, onReturn, onRetry, onCheck, onOpenSetup }) {
+  onClear, onReturn, onRetry, onCheck, onVerify, onOpenSetup }) {
   const unresolved = failures.filter(job => !resolvedStatuses.includes(job.status));
   const selectable = unresolved.filter(job => job.canReturnToQueue === true);
   return <>
     {!!unresolved.length && <div className="compact-fold-body retry-selection-controls">
       <div className="compact-actions">
-        <button type="button" className="secondary" disabled={busy || running || !selectable.length} onClick={onSelectAll}>Select Retryable</button>
+        <button type="button" className="secondary" disabled={busy || running || !selectable.length} onClick={onSelectAll}>Select Retryable ({selectable.length})</button>
         <button type="button" className="secondary" disabled={busy || running || !selectedIds.length} onClick={onClear}>Clear Selection</button>
       </div>
+      <span className="compact-role-meta">{selectable.length} Retryable · {unresolved.length - selectable.length} Not Ready To Retry</span>
       <button type="button" className="secondary" disabled={busy || running || !selectedIds.length} onClick={onReturn}>
         {busy ? "Checking Applications…" : `Return Selected To Application Queue (${selectedIds.length})`}
       </button>
@@ -29,9 +30,12 @@ export function ApplicationFailureList({ failures, selectedIds, busy, running, r
     {!!failures.length && <ul className="queue-failure-list">{failures.map(job => {
       const resolved = resolvedStatuses.includes(job.status);
       const unknown = !resolved && (job.submissionOutcomeUnknown !== false || job.retryBlockedType === "submission_outcome_unknown");
+      const canVerify = job.canReturnToQueue !== true && job.retryWorkflowSessionId &&
+        ["submission_outcome_unknown", "workflow_recovery_required"].includes(job.retryBlockedType);
       return <li key={job.jobId}>
         <div className="retry-role-heading">
           {!resolved && <input type="checkbox" aria-label={`Select ${job.title || "Role"}, Job ID ${job.jobId}, To Return To Queue`}
+            title={job.canReturnToQueue !== true ? job.retryBlockedReason || "This role is not ready to retry. Review its status below." : undefined}
             checked={selectedIds.includes(job.jobId)} disabled={busy || running || job.canReturnToQueue !== true}
             onChange={() => onSelect(job.jobId)} />}
         <a className="queue-failure-title" href={job.url} target="_blank" rel="noopener noreferrer">{job.title || "Open Job"}</a>
@@ -45,8 +49,11 @@ export function ApplicationFailureList({ failures, selectedIds, busy, running, r
             {job.canReturnToQueue === true && <button type="button" className="secondary" disabled={busy || running}
               aria-label={`Review And Retry ${job.title || job.jobId}`} onClick={() => onRetry(job.jobId)}>Review &amp; Retry</button>}
             <button type="button" className="secondary" disabled={busy || running} onClick={() => onCheck(job)}>Check Job Status</button>
+            {canVerify && <button type="button" className="secondary" disabled={busy || running}
+              onClick={() => onVerify(job)}>Verify Previous Application</button>}
             {/answer|eligibility_unresolved/.test(job.errorType || "") && <button type="button" className="secondary" disabled={busy || running} onClick={onOpenSetup}>Complete Answers</button>}
           </div>
+          {canVerify && <span className="compact-role-meta">Verify Previous Application checks Active submissions. An uncertain Submit cannot be retried.</span>}
         </>}
         {rowFeedback[job.jobId] && <p className="muted" role="status">{rowFeedback[job.jobId]}</p>}
       </li>;
@@ -101,13 +108,38 @@ export function AppleActivity({ view, save, setStatusMessage, onReviewRetry, onO
     finally { busyRef.current = false; setBusy(false); }
   }
 
+  async function verifyPreviousApplication(job) {
+    if (busyRef.current || view?.running) return;
+    const jobId = job?.jobId;
+    const workflowSessionId = job?.retryWorkflowSessionId;
+    if (!jobId || !workflowSessionId || job.canReturnToQueue === true ||
+        !["submission_outcome_unknown", "workflow_recovery_required"].includes(job.retryBlockedType)) {
+      if (jobId) setRowFeedback(current => ({ ...current, [jobId]: "This application has no matching previous record to verify. Refresh Activity and review its status." }));
+      return;
+    }
+    busyRef.current = true; setBusy(true); setError("");
+    try {
+      const tab = await getActiveTab();
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION",
+        workflowSessionId, jobId, tab });
+      if (!response?.ok || typeof response.data?.resolved !== "boolean") {
+        throw new Error(response?.error || "The previous application could not be verified. No application was started.");
+      }
+      setRowFeedback(current => ({ ...current, [jobId]: response.data.message || (response.data.resolved
+        ? "Previous application checked. Review Activity before selecting a retry. No application was started."
+        : "The previous submission remains unverified. An uncertain Submit cannot be retried.") }));
+    } catch (failure) {
+      setRowFeedback(current => ({ ...current, [jobId]: failure.message || "The previous application could not be verified. No application was started." }));
+    } finally { busyRef.current = false; setBusy(false); }
+  }
+
   return <details className="ios-activity"><summary><span>Activity</span><span className="function-meta">{unresolved.length ? `${unresolved.length} Needs Review` : view?.running ? "Running" : "Saved"}</span></summary>
     <div className="compact-fold-body">
       <ApplicationFailureList failures={failures} selectedIds={selectedIds} busy={busy} running={view?.running} rowFeedback={rowFeedback}
         onSelect={id => setSelectedIds(ids => ids.includes(id) ? ids.filter(value => value !== id) : [...ids, id])}
         onSelectAll={() => setSelectedIds(unresolved.filter(job => job.canReturnToQueue === true).map(job => job.jobId))}
         onClear={() => setSelectedIds([])} onReturn={() => returnToQueue()} onRetry={id => returnToQueue([id], true)}
-        onCheck={checkStatus} onOpenSetup={onOpenSetup} />
+        onCheck={checkStatus} onVerify={verifyPreviousApplication} onOpenSetup={onOpenSetup} />
       {error && <p className="submitted-history-error" role="alert">{error}</p>}
       <AutofillActivityLog storageKey="appleCareersKnownSiteActivity" />
       {!failures.length && !view?.phase && <p className="muted">No Activity Yet.</p>}
