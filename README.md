@@ -50,6 +50,8 @@ The scan summary counts jobs found and strong matches in **This Scan**. **Scan D
 
 Selected roles are processed in score order after checking available slots. Unselected roles and roles beyond available capacity stay queued. Adding a role to the queue does not submit an application.
 
+Each queued role keeps its full Apple job ID, including the location suffix. Ranking caches are matched to that exact ID. Older same-role location-link mismatches are repaired without changing your selected ID; the live posting must still verify its ID and description before applying.
+
 A live selection counter shows how many slots remain to be covered. It tells you when enough roles are selected and when the selection exceeds available slots. Extra selections are allowed as backups if an application fails. The capacity notice stays visible while you scroll the application queue and is repeated in the confirmation sheet.
 
 **Preparing Batch** loads your selected roles' saved scores. After confirmation, **Checking Submission Capacity** verifies all active applications before applying. It reuses a suitable submissions tab in the same window and restores its page, or opens and closes a temporary background tab. This check can take several seconds while Apple loads each submissions page.

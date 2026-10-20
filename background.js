@@ -3373,7 +3373,23 @@ function normalizeAppleSubmittedJobId(jobId) {
   return value.match(/^(\d+)(?:-\d+)?$/)?.[1] || value;
 }
 
-async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = {}) {
+function appleDetailsMatchExactJob(details, jobId) {
+  if (!details || details.jobId && String(details.jobId) !== String(jobId)) return false;
+  try {
+    const url = new URL(details.url);
+    return !url.username && !url.password && /^\/[a-z]{2}-[a-z]{2}\/details\//i.test(url.pathname) &&
+      CareerPeelerApplicationSafety.matchesJob(jobId, url.href);
+  } catch (_) { return false; }
+}
+
+function appleCachedRoleDetails(cache, jobId, exactJobIdentity = false) {
+  return [cache[String(jobId)], cache[normalizeAppleSubmittedJobId(jobId)]].find(cached =>
+    cached?.version === 2 && Number.isFinite(cached.fetchedAt) && cached.fetchedAt <= Date.now() &&
+    Date.now() - cached.fetchedAt < APPLE_SUBMITTED_ROLE_DETAILS_CACHE_TTL_MS && cached.description &&
+    (!exactJobIdentity || appleDetailsMatchExactJob(cached, jobId)));
+}
+
+async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId, exactJobIdentity = false } = {}) {
   const detailsByJobId = new Map();
   let detailTab = null;
   const appleRoles = roles.filter((role) =>
@@ -3381,7 +3397,6 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
   );
   const cache = await CareerPeelerJobStore.getRecords(APPLE_SUBMITTED_ROLE_DETAILS_CACHE_KEY,
     appleRoles.flatMap(role => [normalizeAppleSubmittedJobId(role.jobId), String(role.jobId)]));
-  const now = Date.now();
   let fetchedCount = 0;
   let cachedCount = 0;
   let unavailableCount = 0;
@@ -3389,12 +3404,8 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
   let cacheSaveFailed = false;
 
   for (const role of appleRoles) {
-    const cached = cache[normalizeAppleSubmittedJobId(role.jobId)] || cache[String(role.jobId)];
-    if (
-      cached?.version === 2 &&
-      now - Number(cached.fetchedAt || 0) < APPLE_SUBMITTED_ROLE_DETAILS_CACHE_TTL_MS &&
-      cached.description
-    ) {
+    const cached = appleCachedRoleDetails(cache, role.jobId, exactJobIdentity);
+    if (cached) {
       detailsByJobId.set(String(role.jobId), cached);
       cachedCount += 1;
     }
@@ -3427,7 +3438,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
           await chrome.tabs.update(detailTab.id, { url: role.url, active: false });
         }
         await waitForTabComplete(detailTab.id);
-        const details = await waitForAppleSubmittedRoleDetails(detailTab.id, String(role.jobId));
+        const details = await waitForAppleSubmittedRoleDetails(detailTab.id, String(role.jobId), 15000, { exactJobIdentity });
         if (!details) {
           unavailableCount += 1;
           continue;
@@ -3435,6 +3446,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
 
         const cachedDetails = {
           version: 2,
+          jobId: String(details.jobId),
           url: details.url || role.url,
           title: details.title,
           description: String(details.description || "").slice(0, 7000),
@@ -3444,7 +3456,9 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
           requiredExperience: details.requiredExperience || [],
           fetchedAt: Date.now()
         };
-        cache[normalizeAppleSubmittedJobId(role.jobId)] = cachedDetails;
+        // Full location variants must not overwrite one another. Base-only
+        // submission rows retain their own canonical-detail cache separately.
+        cache[String(role.jobId)] = cachedDetails;
         detailsByJobId.set(String(role.jobId), cachedDetails);
         fetchedCount += 1;
         pendingCacheWrites += 1;
@@ -3469,7 +3483,7 @@ async function fetchAppleSubmittedRoleDetails(roles, { shouldStop, windowId } = 
   return { detailsByJobId, fetchedCount, cachedCount, unavailableCount, cacheSaveFailed };
 }
 
-async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs = 15000, { forApplication = false } = {}) {
+async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs = 15000, { forApplication = false, exactJobIdentity = false } = {}) {
   const deadline = Date.now() + timeoutMs;
   let unavailableChecks = 0;
   let lastReadError = null;
@@ -3485,11 +3499,12 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
     }
     const details = response?.ok ? response.data : null;
     if (response && !response.ok) lastReadError = response.error || "The job page could not be read.";
-    if (forApplication && details) {
+    if ((forApplication || exactJobIdentity) && details) {
       const currentTab = await chrome.tabs.get(tabId);
       if (!CareerPeelerApplicationSafety.matchesJob(expectedJobId, currentTab.url) ||
           (details.jobId && String(details.jobId) !== String(expectedJobId)) ||
           (details.url && !CareerPeelerApplicationSafety.matchesJob(expectedJobId, details.url))) {
+        if (!forApplication) return null;
         throw Object.assign(new Error("The live posting identifies a different Apple job. Review the selected full job ID before applying."),
           { code: "job_identity_mismatch" });
       }
@@ -3512,7 +3527,7 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
       return null;
     }
     if (details?.ready && !details.postingUnavailable && details.description &&
-        (forApplication ? exactIdentity :
+        (forApplication || exactJobIdentity ? exactIdentity :
           normalizeAppleSubmittedJobId(details.jobId) === normalizeAppleSubmittedJobId(expectedJobId))) {
       return details;
     }

@@ -130,7 +130,7 @@ function workerHarness(options = {}) {
   const intervals = new Map();
   const store = options.store || {};
   const calls = { scored: 0, applied: [], removed: [], pages: 0, pageUrls: [], capacityReads: [], capacityTabs: [],
-    collected: [], next: [], updated: [], workerPulses: 0, intervalsStarted: [], intervalsCleared: [] };
+    collected: [], next: [], updated: [], detailOptions: [], workerPulses: 0, intervalsStarted: [], intervalsCleared: [] };
   const mocks = { pages: [], activeRoles: [], live: details, workflow: { ok: true, data: { submitted: true } } };
   const adapter = {
     get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(store[key])])),
@@ -142,6 +142,13 @@ function workerHarness(options = {}) {
       return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));
     },
     putRecords: async (key, values) => { store[key] = { ...store[key], ...structuredClone(values) }; },
+    updateCollections: async (keys, update) => {
+      const values = Object.fromEntries(keys.map(key => [key, structuredClone(store[key])]));
+      const changed = update(values);
+      if (!changed || typeof changed.then === 'function' || Object.keys(changed).some(key => !keys.includes(key))) throw new Error('Invalid collection transaction.');
+      Object.assign(store, structuredClone(changed));
+      return structuredClone(changed);
+    },
     updateMetadata: async (key, update) => { const value = update(structuredClone(store[key])); store[key] = structuredClone(value); return structuredClone(value); },
     getMetadata: async key => structuredClone(store[key])
   };
@@ -242,10 +249,14 @@ function workerHarness(options = {}) {
       if (message.type === "APPLE_CAREERS_LOCAL_MATCH_POSTING") return { ok: true, data: { score: 90 } };
       throw new Error(`Unexpected message ${message.type}`);
     },
-    fetchAppleSubmittedRoleDetails: async (links) => {
-      if (mocks.onDetails) await mocks.onDetails(links);
+    fetchAppleSubmittedRoleDetails: async (links, options = {}) => {
+      calls.detailOptions.push({ exactJobIdentity: options.exactJobIdentity });
+      if (mocks.onDetails) await mocks.onDetails(links, options);
       if (mocks.noDetails) return { detailsByJobId: new Map() };
-      return { detailsByJobId: new Map(links.map((job) => [job.jobId, details])) };
+      return { detailsByJobId: new Map(links.map((job) => {
+        const bound = { ...details, jobId: job.jobId, url: job.url };
+        return [job.jobId, mocks.detailTransform ? mocks.detailTransform(bound, job) : bound];
+      })) };
     },
     callOpenAi: async () => { calls.scored += 1; if (mocks.onScore) mocks.onScore(calls.scored); if (mocks.error) throw mocks.error; return JSON.stringify(good); },
     runApplicationWorkflow: async (tab, options) => {
@@ -325,6 +336,81 @@ test('a scan does not transfer a posting exclusion to another full-ID variant', 
   assert.equal(h.store.appleJobRanking.jobs['100'].jobId, next.jobId);
   assert.equal(h.store.appleJobRanking.jobs['100'].submissionQueueExclusion, undefined);
   assert.equal(h.calls.scored, 1);
+});
+
+test('ranking requires exact-ID details and retains the original full-ID search link', async () => {
+  const h = workerHarness();
+  const jobId = '200685673-0836';
+  const link = { jobId, title: details.title,
+    url: `https://jobs.apple.com/en-us/details/${jobId}/original-search-slug?team=SFTWR#qualifications` };
+  h.mocks.pages = [{ links: [link], hasNextPage: false }];
+  h.mocks.detailTransform = bound => ({ ...bound,
+    url: `https://jobs.apple.com/en-us/details/${jobId}/a-different-but-valid-detail-slug?team=MLAI` });
+  await h.api.runAppleJobRanking({ searchUrl: 'https://jobs.apple.com/en-us/search?team=MLAI', sourceTabId: 1 }, profile);
+  const saved = h.store.appleJobRanking.jobs[ranking.idOf(jobId)];
+  assert.equal(saved.jobId, jobId);
+  assert.equal(saved.url, link.url, 'detail-cache navigation must not overwrite the observed search link');
+  assert.equal(saved.score, 90);
+  assert.equal(h.calls.scored, 1);
+  assert.ok(h.calls.detailOptions.length > 0);
+  assert.ok(h.calls.detailOptions.every(options => options.exactJobIdentity === true));
+});
+
+test('wrong-location details cannot score, queue, or automatically apply the reviewed search result', async () => {
+  for (const mismatch of ['jobId', 'url', 'both']) {
+    const h = workerHarness();
+    const jobId = '200685673-0836', siblingId = '200685673-0157';
+    const link = { jobId, title: details.title, url: `https://jobs.apple.com/en-us/details/${jobId}/engineer` };
+    h.mocks.pages = [{ links: [link], hasNextPage: false }];
+    h.mocks.detailTransform = bound => ({ ...bound,
+      ...(mismatch !== 'url' ? { jobId: siblingId } : {}),
+      ...(mismatch !== 'jobId' ? { url: bound.url.replace(jobId, siblingId) } : {}) });
+    await h.api.runAppleJobRanking({ searchUrl: 'https://jobs.apple.com/en-us/search', sourceTabId: 1,
+      autoApply: true }, profile);
+    const saved = h.store.appleJobRanking.jobs[ranking.idOf(jobId)];
+    assert.equal(saved.jobId, jobId, mismatch);
+    assert.equal(saved.url, link.url, mismatch);
+    assert.equal(saved.score, null, mismatch);
+    assert.equal(saved.eligible, false, mismatch);
+    assert.notEqual(saved.queueStatus, 'queued', mismatch);
+    assert.equal(h.calls.scored, 0, mismatch);
+    assert.equal(h.calls.applied.length, 0, mismatch);
+  }
+});
+
+test('another location discovered for the same base ID never inherits the previous reviewed queue entry', async () => {
+  const h = workerHarness();
+  const prior = h.queuedJob('200685673-0836', 99);
+  const discovered = h.queuedJob('200685673-0157', 90);
+  h.store.appleJobRanking = { jobs: { '200685673': prior }, applicationFailures: {}, searches: {}, reservations: [] };
+  h.mocks.pages = [{ links: [{ jobId: discovered.jobId, title: discovered.title, url: discovered.url }], hasNextPage: false }];
+  await h.api.runAppleJobRanking({ searchUrl: 'https://jobs.apple.com/en-us/search', sourceTabId: 1 }, profile);
+  const saved = h.store.appleJobRanking.jobs['200685673'];
+  assert.equal(saved.jobId, discovered.jobId);
+  assert.equal(saved.url, discovered.url);
+  assert.equal(saved.queueStatus, 'available');
+  assert.equal(h.calls.scored, 1);
+  assert.equal(h.calls.applied.length, 0);
+});
+
+test('assessment revalidation rejects another location cache and prefers the verified full-ID cache', async () => {
+  const jobId = '200685673-0836', siblingId = '200685673-0157';
+  for (const exactCache of [false, true]) {
+    const h = workerHarness();
+    const saved = { ...h.queuedJob(jobId, 60), eligible: false, evaluationVersion: 0,
+      reason: 'An older assessment.', breakdown: { responsibilities: 90, qualifications: 90, level: 90, domain: 90 },
+      minimumChecks: good.minimum_checks, evidenceChecks: good.evidence, confidence: 'high' };
+    const sibling = { ...details, jobId: siblingId, url: saved.url.replace(jobId, siblingId) };
+    h.store.appleJobRanking = { jobs: { '200685673': saved }, applicationFailures: {}, searches: {}, reservations: [] };
+    h.store.details = { '200685673': sibling,
+      ...(exactCache ? { [jobId]: { ...details, jobId, url: saved.url } } : {}) };
+    const view = await h.api.getAppleRankingView(profile);
+    assert.equal(view.queued[0].jobId, jobId);
+    assert.equal(view.queued[0].url, saved.url);
+    assert.equal(view.queued[0].score, exactCache ? 90 : 60);
+    assert.equal(view.queued[0].eligible, exactCache);
+    assert.equal(h.calls.scored, 0, 'revalidation never makes an OpenAI request');
+  }
 });
 
 test("quota errors leave discovered jobs and completed scores available without retrying billing failures", async () => {

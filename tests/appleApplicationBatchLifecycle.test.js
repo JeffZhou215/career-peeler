@@ -50,6 +50,8 @@ async function fixture(options = {}) {
           ready: false, postingUnavailable: true, unavailableReason: "Sorry, this role does not exist or is no longer available." } };
         if (options.changedDetailJob === jobId) return { ok: true, data: { ...details, ready: true,
           jobId: ids[2], url: `https://jobs.apple.com/en-us/details/${ids[2]}/engineer` } };
+        if (options.changedPostingJob === jobId) return { ok: true, data: { ...details,
+          description: "A materially changed role with different engineering responsibilities.", jobId, url: tab.url, ready: true } };
         return { ok: true, data: { ...details, jobId, url: tab.url, ready: true } };
       }
       if (message.type === "APPLE_CAREERS_EXTRACT_JOB") return { ok: true, data: {
@@ -164,6 +166,71 @@ test("a genuine posting identity change still pauses before any application in t
   assert.equal(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])].errorType, "job_identity_mismatch");
   assert.equal(h.stages.size, 0);
   assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "queued");
+  assert.equal(h.data.appleJobRanking.reservations.length, 0);
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 0);
+});
+
+test("repairing a cached suffix link preserves the reviewed ID and still rejects a live identity change", async () => {
+  const h = await fixture({ liveDetailReads: true, changedDetailJob: ids[0] });
+  const key = ranking.idOf(ids[0]);
+  const expectedUrl = h.data.appleJobRanking.jobs[key].url;
+  h.data.appleJobRanking.jobs[key].url = expectedUrl.replace(ids[0], `${key}-0157`);
+
+  const prepared = await h.prepare([ids[0]]);
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.equal(prepared.data.jobs[0].jobId, ids[0], "repair must never substitute the cached location's job ID");
+  assert.equal(prepared.data.jobs[0].url, expectedUrl);
+  assert.equal(h.data.appleJobRanking.jobs[key].jobId, ids[0]);
+  assert.equal(h.data.appleJobRanking.jobs[key].url, expectedUrl, "repair must be durable before a new owner is claimed");
+  assert.equal(h.data.appleApplicationWorkflow.id, undefined);
+  assert.equal(h.stages.size, 0);
+
+  await h.start([ids[0]]);
+  await h.finished;
+  assert.ok(h.calls.created.some(tab => tab.url === expectedUrl), "the application preflight opens the selected full-ID URL");
+  const failure = h.data.appleJobRanking.applicationFailures[key];
+  assert.equal(failure.jobId, ids[0]);
+  assert.equal(failure.url, expectedUrl);
+  assert.equal(failure.errorType, "job_identity_mismatch");
+  assert.equal(failure.submissionOutcomeUnknown, false);
+  assert.equal(h.data.appleJobRanking.jobs[key].queueStatus, "needs_review");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].jobId, ids[0]);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].url, expectedUrl);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionAttemptCount, 0);
+  assert.equal(h.stages.size, 0, "repair does not authorize form actions when live identity changes");
+  assert.equal(h.data.appleJobRanking.reservations.length, 0);
+  assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 0);
+});
+
+test("repairing a cached suffix link does not bypass the reviewed posting signature", async () => {
+  const h = await fixture({ liveDetailReads: true, changedPostingJob: ids[0] });
+  const key = ranking.idOf(ids[0]);
+  const job = h.data.appleJobRanking.jobs[key];
+  const expectedUrl = job.url;
+  const reviewedSignature = job.postingSignature;
+  job.url = expectedUrl.replace(ids[0], `${key}-0157`);
+
+  const prepared = await h.prepare([ids[0]]);
+  assert.equal(prepared.ok, true, prepared.error);
+  assert.equal(prepared.data.jobs[0].jobId, ids[0]);
+  assert.equal(prepared.data.jobs[0].url, expectedUrl);
+  assert.equal(prepared.data.jobs[0].postingSignature, reviewedSignature);
+  await h.start([ids[0]]);
+  await h.finished;
+
+  const failure = h.data.appleJobRanking.applicationFailures[key];
+  assert.equal(failure.jobId, ids[0]);
+  assert.equal(failure.url, expectedUrl);
+  assert.equal(failure.errorType, "posting_changed");
+  assert.equal(failure.lastStep, "Verify Job Description");
+  assert.equal(failure.submissionOutcomeUnknown, false);
+  assert.equal(h.data.appleJobRanking.jobs[key].postingSignature, reviewedSignature,
+    "a link repair must not accept a different live description as the reviewed assessment");
+  assert.equal(h.data.appleJobRanking.jobs[key].eligible, false);
+  assert.equal(h.data.appleJobRanking.jobs[key].queueStatus, "needs_review");
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].submissionAttemptCount, 0);
+  assert.equal(h.stages.size, 0);
+  assert.ok(!h.calls.messages.some(message => message.type === "APPLE_CAREERS_RUN_APPLICATION_WORKFLOW_STEP"));
   assert.equal(h.data.appleJobRanking.reservations.length, 0);
   assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 0);
 });

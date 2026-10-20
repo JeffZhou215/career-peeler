@@ -1308,3 +1308,171 @@ asyncTest("redirected Apple posting IDs pass detail extraction", async () => {
     sandbox.chrome.tabs = originalTabs;
   }
 });
+
+// Exercise the real cache and detail-reader path together. A ranking-only mock
+// of fetchAppleSubmittedRoleDetails would hide cross-location cache collisions.
+async function withAppleDetailCacheFixture(cache, read, run) {
+  const key = "appleSubmittedRoleDetailsCache";
+  const previousCache = storageData[key];
+  const originalTabs = sandbox.chrome.tabs;
+  const originalDelay = sandbox.delay;
+  const tabs = new Map();
+  const calls = { created: [], reads: [], removed: [] };
+  let nextId = 600;
+  try {
+    storageData[key] = structuredClone(cache);
+    sandbox.delay = async () => {};
+    sandbox.chrome.tabs = {
+      ...originalTabs,
+      async create(options) {
+        const tab = { ...options, id: nextId++, status: "complete" };
+        calls.created.push({ ...tab });
+        tabs.set(tab.id, tab);
+        return { ...tab };
+      },
+      async get(id) { return { ...tabs.get(id) }; },
+      async update(id, changes) {
+        Object.assign(tabs.get(id), changes);
+        return { ...tabs.get(id) };
+      },
+      async remove(id) { calls.removed.push(id); tabs.delete(id); },
+      async sendMessage(id, message) {
+        assert.equal(message.type, "APPLE_CAREERS_EXTRACT_SUBMITTED_ROLE_DETAILS",
+          "cache validation must never invoke an application action");
+        const tab = { ...tabs.get(id) };
+        calls.reads.push({ tab, message });
+        return { ok: true, data: await read(tab, calls.reads.length) };
+      }
+    };
+    await run(calls);
+    assert.equal(tabs.size, 0, "owned detail tabs must be closed after cache reads");
+  } finally {
+    sandbox.chrome.tabs = originalTabs;
+    sandbox.delay = originalDelay;
+    if (previousCache === undefined) delete storageData[key];
+    else storageData[key] = previousCache;
+  }
+}
+
+const exactDetailRole = jobId => ({ jobId, title: "Systems Software Engineer",
+  url: `https://jobs.apple.com/en-us/details/${jobId}/systems-software-engineer` });
+const exactCachedDetail = (jobId, description = `Description for ${jobId}`) => ({
+  version: 2, jobId, url: exactDetailRole(jobId).url, title: "Systems Software Engineer",
+  description, minimumQualifications: "Software engineering experience.",
+  preferredQualifications: "", fetchedAt: Date.now()
+});
+
+asyncTest("exact ranking cache prefers the selected full ID over another location's base cache", async () => {
+  const selectedId = "200685673-0836";
+  await withAppleDetailCacheFixture({
+    "200685673": exactCachedDetail("200685673-0157", "Wrong location"),
+    [selectedId]: exactCachedDetail(selectedId, "Exact location")
+  }, () => { assert.fail("valid exact cache must not fetch a detail page"); }, async calls => {
+    const result = await fetchAppleSubmittedRoleDetails([exactDetailRole(selectedId)], { exactJobIdentity: true });
+    assert.equal(result.cachedCount, 1);
+    assert.equal(result.fetchedCount, 0);
+    assert.equal(result.detailsByJobId.get(selectedId)?.description, "Exact location");
+    assert.equal(result.detailsByJobId.get(selectedId)?.url, exactDetailRole(selectedId).url);
+    assert.equal(calls.created.length, 0);
+  });
+});
+
+asyncTest("exact ranking cache refetches another suffix instead of reusing its base entry", async () => {
+  const selectedId = "200685673-0836";
+  await withAppleDetailCacheFixture({ "200685673": exactCachedDetail("200685673-0157") }, tab => ({
+    ...exactCachedDetail(selectedId, "Fresh exact details"), url: tab.url, ready: true
+  }), async calls => {
+    const result = await fetchAppleSubmittedRoleDetails([exactDetailRole(selectedId)], { windowId: 7, exactJobIdentity: true });
+    assert.equal(result.cachedCount, 0);
+    assert.equal(result.fetchedCount, 1);
+    assert.equal(result.detailsByJobId.get(selectedId)?.description, "Fresh exact details");
+    assert.equal(calls.created.length, 1);
+    assert.equal(calls.created[0].windowId, 7);
+    assert.equal(calls.created[0].active, false);
+    assert.equal(storageData.appleSubmittedRoleDetailsCache[selectedId]?.jobId, selectedId);
+    assert.equal(storageData.appleSubmittedRoleDetailsCache[selectedId]?.url, exactDetailRole(selectedId).url);
+  });
+});
+
+asyncTest("exact ranking details cache retains and independently reuses two full suffixes", async () => {
+  const ids = ["200685673-0836", "200685673-0157"];
+  await withAppleDetailCacheFixture({}, tab => ({
+    ...exactCachedDetail(core.getJobIdFromUrl(tab.url)), url: tab.url, ready: true
+  }), async calls => {
+    const first = await fetchAppleSubmittedRoleDetails(ids.map(exactDetailRole), { windowId: 7, exactJobIdentity: true });
+    assert.equal(first.fetchedCount, 2);
+    assert.equal(first.cachedCount, 0);
+    assert.equal(calls.reads.length, 2);
+    const again = await fetchAppleSubmittedRoleDetails(ids.map(exactDetailRole), { windowId: 7, exactJobIdentity: true });
+    assert.equal(again.cachedCount, 2);
+    assert.equal(again.fetchedCount, 0);
+    assert.equal(calls.reads.length, 2, "each suffix must reuse its own exact cache without navigation");
+    for (const jobId of ids) {
+      assert.equal(again.detailsByJobId.get(jobId)?.jobId, jobId);
+      assert.equal(again.detailsByJobId.get(jobId)?.url, exactDetailRole(jobId).url);
+      assert.equal(storageData.appleSubmittedRoleDetailsCache[jobId]?.jobId, jobId);
+    }
+  });
+});
+
+for (const [label, cached] of [
+  ["missing URL and ID", { version: 2, description: "Unidentified old cache", fetchedAt: Date.now() }],
+  ["invalid URL", { ...exactCachedDetail("200685673-0836"), url: "https://example.com/details/200685673-0836" }],
+  ["contradictory cached ID", { ...exactCachedDetail("200685673-0836"), jobId: "200685673-0157" }],
+  ["stale exact entry", { ...exactCachedDetail("200685673-0836"), fetchedAt: Date.now() - 181 * 86400000 }]
+]) {
+  asyncTest(`exact ranking details ignore ${label} and fetch a verified identity`, async () => {
+    const selectedId = "200685673-0836";
+    await withAppleDetailCacheFixture({ [selectedId]: cached, "200685673": cached }, tab => ({
+      ...exactCachedDetail(selectedId, "Verified replacement cache"), url: tab.url, ready: true
+    }), async calls => {
+      const result = await fetchAppleSubmittedRoleDetails([exactDetailRole(selectedId)], { windowId: 7, exactJobIdentity: true });
+      assert.equal(result.cachedCount, 0);
+      assert.equal(result.fetchedCount, 1);
+      assert.equal(result.detailsByJobId.get(selectedId)?.description, "Verified replacement cache");
+      assert.equal(calls.reads.length, 1);
+    });
+  });
+}
+
+asyncTest("exact ranking accepts legacy base-key cache only when its URL verifies the selected full ID", async () => {
+  const selectedId = "200685673-0836";
+  const cached = exactCachedDetail(selectedId, "Legacy exact URL");
+  delete cached.jobId;
+  await withAppleDetailCacheFixture({ "200685673": cached }, () => {
+    assert.fail("a legacy cache with the selected exact URL remains reusable");
+  }, async () => {
+    const result = await fetchAppleSubmittedRoleDetails([exactDetailRole(selectedId)], { exactJobIdentity: true });
+    assert.equal(result.cachedCount, 1);
+    assert.equal(result.detailsByJobId.get(selectedId)?.url, exactDetailRole(selectedId).url);
+  });
+});
+
+asyncTest("exact detail extraction rejects another suffix without calling it an unavailable posting", async () => {
+  const selectedId = "200685673-0836";
+  await withAppleDetailCacheFixture({}, tab => ({
+    ...exactCachedDetail("200685673-0157"), ready: true
+  }), async calls => {
+    const result = await fetchAppleSubmittedRoleDetails([exactDetailRole(selectedId)], { windowId: 7, exactJobIdentity: true });
+    assert.equal(result.detailsByJobId.has(selectedId), false);
+    assert.equal(result.fetchedCount, 0);
+    assert.equal(result.cachedCount, 0);
+    assert.equal(calls.reads.length, 1, "known identity mismatch should not spin until a timeout");
+    assert.equal(storageData.appleSubmittedRoleDetailsCache[selectedId], undefined);
+    assert.equal(storageData.appleJobRanking?.jobs?.["200685673"]?.submissionQueueExclusion, undefined);
+  });
+});
+
+asyncTest("exact detail extraction rejects a conflicting URL even when the returned job ID matches", async () => {
+  const selectedId = "200685673-0836";
+  await withAppleDetailCacheFixture({}, () => ({
+    ...exactCachedDetail(selectedId), url: exactDetailRole("200685673-0157").url, ready: true
+  }), async calls => {
+    const result = await fetchAppleSubmittedRoleDetails([exactDetailRole(selectedId)], { windowId: 7, exactJobIdentity: true });
+    assert.equal(result.detailsByJobId.has(selectedId), false);
+    assert.equal(result.fetchedCount, 0);
+    assert.equal(calls.reads.length, 1);
+    assert.equal(storageData.appleSubmittedRoleDetailsCache[selectedId], undefined);
+    assert.equal(storageData.appleJobRanking?.jobs?.["200685673"]?.submissionQueueExclusion, undefined);
+  });
+});
