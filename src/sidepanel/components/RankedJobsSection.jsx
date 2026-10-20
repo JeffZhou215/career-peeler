@@ -81,7 +81,11 @@ export function ApplicationBatchReview({ batch, selectedCount, preparing, starti
     {batch?.reconciliationPerformed && ready && <p className="muted" role="status">Previous Applications Checked. Review And Confirm This Batch Before Applying.</p>}
     {ready && <>
       <p className="muted">Capacity Is Verified Before Applying. Selected Roles Are Processed In Score Order Until Slots Are Filled. Extra Selections Can Be Used If An Application Fails; Unprocessed Roles Stay Queued.</p>
-      <ul className="sheet-job-list">{batch.jobs.map(job => <li key={job.jobId}><a href={job.url} target="_blank" rel="noopener noreferrer">{job.title}</a><span className="compact-role-meta">{job.jobId} · {job.score}% · {job.eligible ? "Strong Match" : "Match Concerns"}</span>{!job.eligible && <p className="muted">{job.reason}</p>}</li>)}</ul>
+      <ul className="sheet-job-list">{batch.jobs.map(job => <li key={job.jobId}><a href={job.url} target="_blank" rel="noopener noreferrer">{job.title}</a><span className="compact-role-meta">{job.jobId} · {job.score}% · {job.eligible ? "Strong Match" : "Match Concerns"}</span>{!job.eligible && <p className="muted">{job.reason}</p>}
+        {job.previousApplicationFailure && <details className="compact-fold"><summary>Previous Application Failure</summary><div className="compact-fold-body">
+          <p>{job.previousApplicationFailure.reason}</p>{job.previousApplicationFailure.lastStep && <span className="compact-role-meta">Last Step: {job.previousApplicationFailure.lastStep}</span>}
+        </div></details>}
+      </li>)}</ul>
       {batch.reviewToken && <label className="checkbox-row consent-row"><input type="checkbox" checked={reviewAcknowledged} disabled={busy} onChange={event => onReviewChange(event.target.checked)} /><span>I Reviewed The Match Concerns For These {batch.reviewCount} Jobs</span></label>}
       <label className="checkbox-row consent-row"><input type="checkbox" checked={allowSubmission} disabled={busy} onChange={event => onConsentChange(event.target.checked)} /><span>I Allow These Applications To Be Submitted</span></label>
     </>}
@@ -95,7 +99,8 @@ export function ApplicationBatchReview({ batch, selectedCount, preparing, starti
   </>;
 }
 
-export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange, embedded = false, onOpenSetup }) {
+export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryChange, embedded = false, onOpenSetup,
+  reviewRetryRequest, onRetryRequestHandled }) {
   const roleGroupId = useId();
   const [view, setView] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -129,6 +134,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const rankingRefreshGeneration = useRef(0);
   const rankingRefreshPending = useRef(null);
   const [recoveryCheckResult, setRecoveryCheckResult] = useState(null);
+  const handledRetryRequest = useRef(null);
 
   useEffect(() => {
     setRecoveryCheckResult(result => result?.sessionId === workflowSessionId ? result : null);
@@ -378,6 +384,20 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     if (view) onSummaryChange?.(view);
   }, [view, onSummaryChange]);
 
+  useEffect(() => {
+    if (!reviewRetryRequest || handledRetryRequest.current === reviewRetryRequest.requestId) return;
+    handledRetryRequest.current = reviewRetryRequest.requestId;
+    onRetryRequestHandled?.();
+    if (busy || view?.running || applyOpen) {
+      setStatusMessage("Finish the current workflow or close its review sheet before reviewing another retry.");
+      return;
+    }
+    setQueueOpen(true);
+    setSelectedQueueIds([reviewRetryRequest.jobId]);
+    // Preparation only. The existing sheet still requires explicit Confirm And Apply.
+    reviewSelectedBatch([reviewRetryRequest.jobId]);
+  }, [reviewRetryRequest]);
+
   const capacity = view?.capacity;
   const jobs = [...new Map([...(view?.ranked || []), ...(view?.candidates || [])]
     .map((job) => [String(job.jobId), job])).values()].filter((job) => job.queueStatus !== "queued").sort((a, b) => b.score - a.score);
@@ -396,7 +416,8 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const queueReviewAcknowledged = !needsQueueReview || reviewedQueueToken === applicationBatch.reviewToken;
   const interruptedRanking = view?.recovered && latestSearch && !latestSearch.complete && /^Ranking\b/i.test(view.phase || "");
   const progressLabel = view?.running
-    ? /^Checking Apple submission/i.test(view.phase || "") ? "Checking Submission Capacity"
+    ? /^Checking applications for retry/i.test(view.phase || "") ? "Checking Applications For Retry"
+      : /^Checking Apple submission/i.test(view.phase || "") ? "Checking Submission Capacity"
       : /^Applying/i.test(view.phase || "") ? view.workflowMode === "current_role" ? "Applying This Role" : "Applying Application Queue"
       : /page (\d+)/i.test(view.phase || "") ? `Ranking Page ${view.phase.match(/page (\d+)/i)[1]}` : "Ranking Jobs"
     : view?.recovery?.stopRequested && view.recovery.reconciliationRequired ? "Application Stopped"

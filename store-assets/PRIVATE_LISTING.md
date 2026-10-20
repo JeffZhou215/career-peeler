@@ -73,7 +73,7 @@ Control And Recovery
 
 • Applications use your own explicit saved personal answers and Apple's saved resume. Missing or conflicting answers stop for manual review.
 • Unknown application or withdrawal outcomes require reconciliation rather than automatic replay.
-• Activity links identify roles that need manual review.
+• Activity links identify roles needing review. Return checked, safely retryable roles to the application queue, or review and confirm one retry. Unknown submission outcomes remain blocked.
 • Rolebeam uses your own OpenAI API key. API requests can incur charges.
 
 DATA DISCLOSURE: Your PDF, parsed resume, profile, API key, job caches and workflow records are stored locally in your Chrome profile. Enabled/requested AI features send the relevant PDF, resume/profile evidence, job text or required-question context directly to OpenAI. Apple receives authorized application interactions. Rolebeam has no developer-operated backend, analytics or advertising service. Read the privacy policy before use.

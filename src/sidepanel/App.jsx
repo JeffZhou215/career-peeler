@@ -21,6 +21,7 @@ export function App() {
   const [tab, setTab] = useState("jobs");
   const [statusMessage, setStatusMessage] = useState("");
   const [queueSummary, setQueueSummary] = useState(null);
+  const [reviewRetryRequest, setReviewRetryRequest] = useState(null);
   if (!loaded) return null;
   const capacity = queueSummary?.capacity;
   const countVerified = capacity?.known && syncStatus.state !== "failed";
@@ -42,11 +43,13 @@ export function App() {
       </div>
     </div>
     <div className="ios-workspace">
-      <section role="tabpanel" id="jobs-panel" aria-labelledby="jobs-tab" hidden={tab !== "jobs"}><RankedJobsSection embedded profile={profile} save={save} setStatusMessage={setStatusMessage} onSummaryChange={setQueueSummary} onOpenSetup={() => setTab("setup")} /></section>
+      <section role="tabpanel" id="jobs-panel" aria-labelledby="jobs-tab" hidden={tab !== "jobs"}><RankedJobsSection embedded profile={profile} save={save} setStatusMessage={setStatusMessage} onSummaryChange={setQueueSummary} onOpenSetup={() => setTab("setup")}
+        reviewRetryRequest={reviewRetryRequest} onRetryRequestHandled={() => setReviewRetryRequest(null)} /></section>
       <section role="tabpanel" id="submissions-panel" aria-labelledby="submissions-tab" hidden={tab !== "submissions"}><SubmittedApplicationsSection embedded syncStatus={syncStatus} syncNow={syncNow} profile={profile} setStatusMessage={setStatusMessage} /></section>
       <section role="tabpanel" id="setup-panel" aria-labelledby="setup-tab" hidden={tab !== "setup"}><AppleSetupSection profile={profile} save={save} /></section>
       {statusMessage && <section className="status compact-status" aria-live="polite"><span>{statusMessage}</span><button type="button" className="status-dismiss" aria-label="Dismiss Status" onClick={() => setStatusMessage("")}>×</button></section>}
-      <AppleActivity view={queueSummary} />
+      <AppleActivity view={queueSummary} save={save} setStatusMessage={setStatusMessage} onOpenSetup={() => setTab("setup")}
+        onReviewRetry={jobId => { setTab("jobs"); setReviewRetryRequest({ jobId, requestId: crypto.randomUUID() }); }} />
     </div>
     <nav className="ios-tabbar" role="tablist" aria-label="Apple Careers Views">{[["jobs","Jobs"],["submissions","Submissions"],["setup","Setup"]].map(([key,label]) =>
       <button key={key} id={`${key}-tab`} role="tab" aria-selected={tab === key} aria-controls={`${key}-panel`} type="button" onClick={() => setTab(key)}><TabIcon tab={key} /><span>{label}</span></button>)}</nav>

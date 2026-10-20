@@ -87,6 +87,13 @@ function createBackgroundHarness(tabs = [{ id: 1, windowId: 1, status: "complete
     patch: async (key, value) => { data[key] = structuredClone(value); },
     getMetadata: async key => structuredClone(data[key]),
     updateMetadata: async (key, update) => { const value = update(structuredClone(data[key])); data[key] = structuredClone(value); return structuredClone(value); },
+    updateCollections: async (keys, update) => {
+      const values = Object.fromEntries(keys.map(key => [key, structuredClone(data[key])]));
+      const changes = update(values);
+      if (!changes || typeof changes.then === "function" || Object.keys(changes).some(key => !keys.includes(key))) throw new Error("Invalid collection transaction.");
+      Object.assign(data, structuredClone(changes));
+      return structuredClone(changes);
+    },
     getRecords: async (key, ids, field = null) => {
       const records = field ? data[key]?.[field] : data[key];
       return Object.fromEntries(ids.filter(id => records?.[id]).map(id => [id, structuredClone(records[id])]));

@@ -3536,6 +3536,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_REMOVE_QUEUED_JOB",
   "APPLE_CAREERS_APPLY_JOB_QUEUE",
   "APPLE_CAREERS_PREPARE_APPLICATION_BATCH",
+  "APPLE_CAREERS_RETURN_APPLICATIONS_TO_QUEUE",
   "APPLE_CAREERS_PREPARE_CURRENT_ROLE",
   "APPLE_CAREERS_APPLY_CURRENT_ROLE",
   "APPLE_CAREERS_STOP_JOB_RANKING",
@@ -3610,6 +3611,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "APPLE_CAREERS_PREPARE_APPLICATION_BATCH") {
         if (sender.tab) throw new Error("Application batches must be reviewed from the extension panel.");
         sendResponse(await prepareAppleApplicationBatch(message.userProfile, message.selectedIds, message.tab, message.reviewRequestId));
+      } else if (message.type === "APPLE_CAREERS_RETURN_APPLICATIONS_TO_QUEUE") {
+        const prefix = chrome.runtime.id ? `chrome-extension://${chrome.runtime.id}/` : null;
+        if (sender.tab || (sender.id && sender.id !== chrome.runtime.id) ||
+            (sender.url && (!prefix || !sender.url.startsWith(prefix)))) throw new Error("Return applications from the extension panel.");
+        sendResponse(await returnAppleApplicationsToQueue(message.userProfile, message.selectedIds, message.tab));
       } else if (message.type === "APPLE_CAREERS_PREPARE_CURRENT_ROLE") {
         if (sender.tab) throw new Error("Review this role from the extension panel.");
         sendResponse(await prepareAppleCurrentRole(message.tabId, message.userProfile));
