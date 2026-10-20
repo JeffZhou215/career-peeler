@@ -64,6 +64,17 @@ test("top N deduplicates posting aliases, excludes submitted IDs, and never pads
   assert.deepEqual(ranking.topCandidates(jobs, 50, 0, ["102-0836"]).map((job) => job.jobId), ["100-0836"]);
 });
 
+test("removed and page-submitted records are excluded from manual and automatic ranking even with stale queue status", () => {
+  for (const state of ['unavailable', 'submitted']) {
+    const job = { jobId: '100-0836', queueStatus: 'queued', score: 99, eligible: true,
+      submissionQueueExclusion: { jobId: '100-0836', state, checkedAt: 100 } };
+    assert.equal(ranking.rankedCandidates([job]).length, 0);
+    assert.equal(ranking.topCandidates([job]).length, 0);
+    assert.equal(ranking.rankedCandidates([{ ...job, jobId: '100-9999' }]).length, 1,
+      'an exclusion cannot apply to an unobserved full-ID variant');
+  }
+});
+
 test("capacity counts current applications and uncertain slots, rather than the lifetime applied ledger", () => {
   const snapshot = { complete: true, updatedAt: 1000, scannedAt: 1000,
     roles: [{ jobId: "100-0836" }, { jobId: "100-9999" }, { jobId: "101" }] };
@@ -232,7 +243,8 @@ function workerHarness(options = {}) {
       throw new Error(`Unexpected message ${message.type}`);
     },
     fetchAppleSubmittedRoleDetails: async (links) => {
-      if (mocks.onDetails) mocks.onDetails(links);
+      if (mocks.onDetails) await mocks.onDetails(links);
+      if (mocks.noDetails) return { detailsByJobId: new Map() };
       return { detailsByJobId: new Map(links.map((job) => [job.jobId, details])) };
     },
     callOpenAi: async () => { calls.scored += 1; if (mocks.onScore) mocks.onScore(calls.scored); if (mocks.error) throw mocks.error; return JSON.stringify(good); },
@@ -272,6 +284,47 @@ test("filtered scans visit all pages, deduplicate overlaps, and reuse matching s
   const changed = await h.api.getAppleRankingView({ ...profile, resumeText: "Different resume content" }, 50);
   assert.equal(changed.candidates.length, 0);
   assert.equal(changed.staleCount, 3);
+});
+
+test('a scan preserves a new unavailable-page observation instead of overwriting it with an unscored placeholder', async () => {
+  const h = workerHarness();
+  h.mocks.pages = [{ links: [h.queuedJob('100', 99)], hasNextPage: false }];
+  h.mocks.noDetails = true;
+  h.mocks.onDetails = async () => {
+    const job = h.store.appleJobRanking.jobs['100'];
+    job.queueStatus = 'unavailable';
+    job.submissionQueueExclusion = { jobId: '100', state: 'unavailable', checkedAt: 100, url: job.url };
+  };
+  await h.api.runAppleJobRanking({ searchUrl: 'https://jobs.apple.com/en-us/search', sourceTabId: 1, autoApply: true }, profile);
+  assert.equal(h.store.appleJobRanking.jobs['100'].submissionQueueExclusion.state, 'unavailable');
+  assert.equal(h.calls.scored, 0); assert.equal(h.calls.applied.length, 0);
+  assert.equal((await h.api.getAppleRankingView(profile)).ranked.length, 0);
+  assert.equal(Object.values(h.store.appleJobRanking.searches)[0].complete, true);
+});
+
+test('new scans and changed matching profiles cannot silently resurrect an excluded cached posting', async () => {
+  const h = workerHarness();
+  const job = h.queuedJob('100', 99);
+  job.submissionQueueExclusion = { jobId: '100', state: 'submitted', checkedAt: 100, url: job.url };
+  h.store.appleJobRanking = { jobs: { '100': job }, applicationFailures: {}, searches: {}, reservations: [] };
+  h.mocks.pages = [{ links: [job], hasNextPage: false }];
+  h.mocks.onDetails = () => assert.fail('cached exclusion is not permission to restore a job');
+  await h.api.runAppleJobRanking({ searchUrl: 'https://jobs.apple.com/en-us/search', sourceTabId: 1, autoApply: true },
+    { ...profile, userYearsOfExperience: 5 });
+  assert.equal(h.store.appleJobRanking.jobs['100'].submissionQueueExclusion.state, 'submitted');
+  assert.equal(h.calls.scored, 0); assert.equal(h.calls.applied.length, 0);
+});
+
+test('a scan does not transfer a posting exclusion to another full-ID variant', async () => {
+  const h = workerHarness();
+  const prior = h.queuedJob('100-0836', 99), next = h.queuedJob('100-9999', 90);
+  prior.submissionQueueExclusion = { jobId: prior.jobId, state: 'unavailable', checkedAt: 100, url: prior.url };
+  h.store.appleJobRanking = { jobs: { '100': prior }, applicationFailures: {}, searches: {}, reservations: [] };
+  h.mocks.pages = [{ links: [next], hasNextPage: false }];
+  await h.api.runAppleJobRanking({ searchUrl: 'https://jobs.apple.com/en-us/search', sourceTabId: 1 }, profile);
+  assert.equal(h.store.appleJobRanking.jobs['100'].jobId, next.jobId);
+  assert.equal(h.store.appleJobRanking.jobs['100'].submissionQueueExclusion, undefined);
+  assert.equal(h.calls.scored, 1);
 });
 
 test("quota errors leave discovered jobs and completed scores available without retrying billing failures", async () => {

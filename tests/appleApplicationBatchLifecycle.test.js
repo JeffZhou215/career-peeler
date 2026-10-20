@@ -148,7 +148,7 @@ test("an explicitly unavailable posting is recorded without Submit and the remai
   assert.equal(failed.submissionOutcomeUnknown, false);
   assert.equal(h.stages.has(ids[0]), false, "no application step is sent for the unavailable role");
   assert.equal(h.stages.get(ids[1]), 4, "the next selected role completes all mocked application steps");
-  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "needs_review");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "unavailable");
   assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "submitted");
   assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[2])].queueStatus, "queued");
   assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 1);
@@ -176,7 +176,7 @@ test("an unavailable middle posting preserves prior confirmed results and contin
   assert.equal(h.stages.has(ids[1]), false);
   assert.equal(h.stages.get(ids[2]), 4);
   assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, "submitted");
-  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "needs_review");
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, "unavailable");
   assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[2])].queueStatus, "submitted");
   assert.equal(h.data.appleJobRanking.lastBatchSummary.submitted, 2);
   assert.equal(h.data.appleJobRanking.lastBatchSummary.failed, 1);

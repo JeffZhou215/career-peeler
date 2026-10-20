@@ -54,6 +54,7 @@ async function fixture(options = {}) {
   }])) };
   h.return = (selectedIds = ids, userProfile = profile, sender = {}) => h.sandbox.dispatch({
     type: 'APPLE_CAREERS_RETURN_APPLICATIONS_TO_QUEUE', selectedIds, userProfile, tab: source }, sender);
+  h.check = (jobId = ids[0], sender = {}) => h.sandbox.dispatch({ type: 'APPLE_CAREERS_CHECK_REVIEW_JOB_PAGE', jobId, tab: source }, sender);
   h.unknown = (jobId = ids[0]) => {
     const job = h.data.appleJobRanking.jobs[ranking.idOf(jobId)];
     job.queueStatus = 'uncertain';
@@ -78,7 +79,8 @@ test('batch return revalidates only selected roles, preserves history and queues
     assert.equal(failure.status, 'requeued'); assert.equal(failure.attempts, 2); assert.equal(failure.failedAt, 123);
     assert.equal(failure.reason, 'A saved answer was missing.');
   }
-  assert.equal(h.data.appleJobRanking.capacitySnapshot.complete, true);
+  assert.equal(h.data.appleJobRanking.capacitySnapshot, undefined, 'returning to queue does not scan Active submissions');
+  assert.ok(!h.calls.messages.some(m => /GET_.*SUBMITTED_HISTORY/.test(m.type)));
   assert.equal(h.data.appleApplicationWorkflow.id, undefined, 'no application owner was claimed');
   assert.equal(h.data.appleJobRanking.reservations.length, 0);
   assert.ok(h.calls.created.every(tab => tab.active === false));
@@ -148,12 +150,13 @@ test('worker restart and repeated return requests cannot clear an unknown Submit
 });
 
 for (const mode of ['unavailable', 'changed', 'disabled', 'submitted']) {
-  test(`${mode} posting stays in review while a safe selection can return`, async () => {
+  test(`${mode} posting cannot be queued while a safe selection can return`, async () => {
     const h = await fixture(); h.modes[ids[0]] = mode;
     const response = await h.return();
     assert.deepEqual([...response.queuedIds], [ids[1]], response.error);
     assert.equal(response.blocked[0].jobId, ids[0]);
-    assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'needs_review');
+    assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus,
+      mode === 'unavailable' ? 'unavailable' : mode === 'submitted' ? 'page_submitted' : 'needs_review');
   });
 }
 
@@ -164,18 +167,20 @@ test('an identity mismatch aborts the check without returning any roles', async 
   assert.ok(ids.every(id => h.data.appleJobRanking.jobs[ranking.idOf(id)].queueStatus === 'needs_review'));
 });
 
-test('a failed or incomplete capacity read cannot return applications', async () => {
+test('returning jobs to queue does not request inventory even when capacity synchronization would fail', async () => {
   const h = await fixture({ failedInventory: true });
   const response = await h.return();
-  assert.equal(response.ok, false); assert.match(response.error, /incomplete inventory/);
-  assert.equal(h.calls.created.length, 0);
+  assert.equal(response.ok, true); assert.deepEqual([...response.queuedIds], ids);
+  assert.ok(!h.calls.messages.some(m => /GET_.*SUBMITTED_HISTORY/.test(m.type)));
+  assert.equal(h.data.appleJobRanking.capacitySnapshot, undefined);
 });
 
-test('fresh inventory presence resolves an application instead of queueing a duplicate', async () => {
-  const h = await fixture({ activeRoles: [{ jobId: ids[0], active: true }] });
+test('Submitted on the exact job page excludes it without reading inventory or claiming active confirmation', async () => {
+  const h = await fixture(); h.modes[ids[0]] = 'submitted';
   const response = await h.return([ids[0]]);
   assert.equal(response.queuedIds.length, 0); assert.equal(response.blocked[0].errorType, 'already_applied');
-  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'submitted');
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'page_submitted');
+  assert.ok(!h.calls.messages.some(m => /GET_.*SUBMITTED_HISTORY/.test(m.type)));
 });
 
 test('changed resume, missing answers, and mismatched full IDs cannot be requeued', async () => {
@@ -188,7 +193,7 @@ test('changed resume, missing answers, and mismatched full IDs cannot be requeue
     const response = await h.return(selected, p);
     assert.ok(!response.ok || !response.queuedIds.length, change);
     assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'needs_review');
-    assert.equal(h.calls.created.length, 0);
+    if (change !== 'answer') assert.equal(h.calls.created.length, 0);
   }
 });
 
@@ -299,5 +304,113 @@ test('content scripts cannot request returning applications to the queue', async
   const h = await fixture();
   const response = await h.return(ids, profile, { tab: source });
   assert.equal(response.ok, false); assert.match(response.error, /extension panel/);
+  assert.equal(h.calls.created.length, 0);
+});
+
+for (const [mode, state] of [['apply', 'submit'], ['submitted', 'submitted'], ['unavailable', 'unavailable']]) {
+  test(`Check Job Status reads ${mode} directly without Active inventory, scoring, or application actions`, async () => {
+    const h = await fixture(); h.modes[ids[0]] = mode;
+    const response = await h.check();
+    assert.equal(response.ok, true, response.error);
+    assert.equal(response.data.state, state);
+    assert.equal(h.data.appleJobRanking.capacitySnapshot, undefined);
+    assert.equal(h.calls.created.length, 1); assert.equal(h.calls.created[0].active, false);
+    assert.ok(!h.calls.messages.some(m => /SUBMITTED_HISTORY|RUN_APPLICATION|AUTHORIZE|SCORE/.test(m.type)));
+    assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[1])].queueStatus, 'needs_review');
+    if (state === 'submit') assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'needs_review');
+    else {
+      const view = await h.sandbox.getAppleRankingView(profile);
+      for (const key of ['ranked', 'candidates', 'queued', 'staleMatches', 'excludedMatches']) {
+        assert.ok(!view[key].some(job => job.jobId === ids[0]), key);
+      }
+      assert.equal(view.applicationFailures.find(job => job.jobId === ids[0]).canReturnToQueue, false);
+      const before = h.calls.created.length;
+      assert.equal((await h.return([ids[0]])).queuedIds.length, 0);
+      assert.equal(h.calls.created.length, before, 'fresh batch cannot bypass the persisted exclusion');
+    }
+  });
+}
+
+for (const mode of ['submitted', 'unavailable']) {
+  test(`${mode} on a job page excludes an uncertain role without resolving its prior Submit or releasing capacity`, async () => {
+    const h = await fixture(); h.unknown(); h.modes[ids[0]] = mode;
+    const journal = structuredClone(h.data.appleApplicationWorkflow), reservations = structuredClone(h.data.appleJobRanking.reservations);
+    assert.equal((await h.check()).ok, true);
+    assert.deepEqual(h.data.appleApplicationWorkflow, journal);
+    assert.deepEqual(h.data.appleJobRanking.reservations, reservations);
+    assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'uncertain');
+    const view = await h.sandbox.getAppleRankingView(profile);
+    const failure = view.applicationFailures.find(job => job.jobId === ids[0]);
+    assert.equal(failure.status, 'uncertain'); assert.equal(failure.submissionOutcomeUnknown, true);
+    assert.equal(failure.retryBlockedType, 'submission_outcome_unknown');
+    assert.equal((await h.return([ids[0]])).queuedIds.length, 0);
+  });
+}
+
+test('page exclusion survives worker restart, stale queue status, profile changes, and direct batch messages', async () => {
+  const h = await fixture(); h.modes[ids[0]] = 'unavailable'; await h.check();
+  h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus = 'queued';
+  const restarted = createBackgroundHarness([{ ...source }], { data: h.data }); await restarted.ready;
+  for (const p of [profile, { ...profile, userYearsOfExperience: 5 }]) {
+    const view = await restarted.sandbox.getAppleRankingView(p);
+    for (const key of ['queued', 'ranked', 'excludedMatches', 'staleMatches']) assert.ok(!view[key].some(job => job.jobId === ids[0]), key);
+  }
+  await assert.rejects(restarted.sandbox.readAppleSelectedApplicationBatch(profile, [ids[0]]), /selected roles|available|queued/i);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].submissionQueueExclusion.state, 'unavailable');
+});
+
+test('legacy unavailable diagnostic is excluded immediately without rescanning or a matching profile', async () => {
+  const h = await fixture();
+  const id = ranking.idOf(ids[0]);
+  h.data.appleJobRanking.jobs[id].queueStatus = 'queued';
+  h.data.appleJobRanking.applicationFailures[id].errorType = 'job_unavailable';
+  await assert.rejects(h.sandbox.readAppleSelectedApplicationBatch(profile, [ids[0]]), /selected roles|available|queued/i);
+  const view = await h.sandbox.getAppleRankingView({ ...profile, userYearsOfExperience: 9 });
+  assert.ok(!view.staleMatches.some(job => job.jobId === ids[0]));
+  assert.equal(view.applicationFailures.find(job => job.jobId === ids[0]).status, 'unavailable');
+  assert.equal(h.calls.created.length, 0);
+});
+
+test('a different full-ID variant cannot exclude the stored job sharing its base ID', async () => {
+  const h = await fixture();
+  const other = ids[0].replace('0836', '9999');
+  await h.sandbox.recordAppleJobPageExclusion(other, `https://jobs.apple.com/en-us/details/${other}/engineer`, 'unavailable');
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].submissionQueueExclusion, undefined);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'needs_review');
+});
+
+test('a failed page-status persistence is reported without claiming removal or changing capacity', async () => {
+  const h = await fixture(); h.modes[ids[0]] = 'submitted';
+  h.sandbox.CareerPeelerJobStore.updateCollections = async () => { throw new Error('Synthetic exclusion write failure'); };
+  const response = await h.check();
+  assert.equal(response.ok, false); assert.match(response.error, /write failure/);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].submissionQueueExclusion, undefined);
+  assert.equal(h.data.appleJobRanking.capacitySnapshot, undefined);
+});
+
+test('unverified, disabled, or different-ID job pages never become removed or submitted', async () => {
+  for (const mode of ['disabled', 'identity']) {
+    const h = await fixture(); h.modes[ids[0]] = mode;
+    assert.equal((await h.check()).ok, false);
+    assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].submissionQueueExclusion, undefined);
+  }
+});
+
+test('repeated status checks and Stop cannot start competing work or queue an application', async () => {
+  let entered, release;
+  const gate = new Promise(resolve => { release = resolve; }), reached = new Promise(resolve => { entered = resolve; });
+  const h = await fixture({ onDetail: async () => { entered(); await gate; } });
+  const pending = h.check(); await reached;
+  assert.equal((await h.check()).ok, false);
+  await h.sandbox.stopAppleJobRanking(); release();
+  const response = await pending;
+  assert.equal(response.ok, false); assert.equal(response.errorType, 'stopped_by_user');
+  assert.equal(h.calls.created.length, 1);
+  assert.equal(h.data.appleJobRanking.jobs[ranking.idOf(ids[0])].queueStatus, 'needs_review');
+});
+
+test('content scripts cannot request the extension-only job-page check', async () => {
+  const h = await fixture();
+  assert.equal((await h.check(ids[0], { tab: source })).ok, false);
   assert.equal(h.calls.created.length, 0);
 });

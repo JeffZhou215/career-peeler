@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { AutofillActivityLog } from "./AutofillActivityLog";
 import { formatRelativeTime, getActiveTab } from "../lib/format";
 
+const resolvedStatuses = ["submitted", "requeued", "unavailable", "page_submitted"];
+
 function FailureDetails({ job }) {
   return <>
     <p>{job.reason}</p>{job.lastStep && <span className="compact-role-meta">Last Step: {job.lastStep}</span>}
@@ -11,7 +13,7 @@ function FailureDetails({ job }) {
 }
 export function ApplicationFailureList({ failures, selectedIds, busy, running, rowFeedback = {}, onSelect, onSelectAll,
   onClear, onReturn, onRetry, onCheck, onOpenSetup }) {
-  const unresolved = failures.filter(job => !["submitted", "requeued"].includes(job.status));
+  const unresolved = failures.filter(job => !resolvedStatuses.includes(job.status));
   const selectable = unresolved.filter(job => job.canReturnToQueue === true);
   return <>
     {!!unresolved.length && <div className="compact-fold-body retry-selection-controls">
@@ -22,10 +24,10 @@ export function ApplicationFailureList({ failures, selectedIds, busy, running, r
       <button type="button" className="secondary" disabled={busy || running || !selectedIds.length} onClick={onReturn}>
         {busy ? "Checking Applications…" : `Return Selected To Application Queue (${selectedIds.length})`}
       </button>
-      <span className="compact-role-meta">Checks Availability And Capacity. Applications Still Require Review And Confirmation.</span>
+      <span className="compact-role-meta">Checks The Job Page. Capacity Is Verified Before Applying. Applications Require Review And Confirmation.</span>
     </div>}
     {!!failures.length && <ul className="queue-failure-list">{failures.map(job => {
-      const resolved = ["submitted", "requeued"].includes(job.status);
+      const resolved = resolvedStatuses.includes(job.status);
       const unknown = !resolved && (job.submissionOutcomeUnknown !== false || job.retryBlockedType === "submission_outcome_unknown");
       return <li key={job.jobId}>
         <div className="retry-role-heading">
@@ -34,14 +36,15 @@ export function ApplicationFailureList({ failures, selectedIds, busy, running, r
             onChange={() => onSelect(job.jobId)} />}
         <a className="queue-failure-title" href={job.url} target="_blank" rel="noopener noreferrer">{job.title || "Open Job"}</a>
         </div>
-        <span className="compact-role-meta">{job.jobId} · {job.status === "submitted" ? "Submitted Later" : job.status === "requeued" ? "Requeued" : unknown ? "Outcome Unknown" : "Needs Review"}</span>
+        <span className="compact-role-meta">{job.jobId} · {job.status === "submitted" ? "Submitted Later" : job.status === "requeued" ? "Requeued"
+          : job.status === "unavailable" ? "Posting Removed" : job.status === "page_submitted" ? "Submitted On Apple" : unknown ? "Outcome Unknown" : "Needs Review"}</span>
         {resolved ? <details className="compact-fold"><summary>Previous Failure</summary><div className="compact-fold-body"><FailureDetails job={job} /></div></details> : <>
           <FailureDetails job={job} />
           {job.retryBlockedReason && <span className="compact-role-meta">{job.retryBlockedReason}</span>}
           <div className="compact-actions">
             {job.canReturnToQueue === true && <button type="button" className="secondary" disabled={busy || running}
               aria-label={`Review And Retry ${job.title || job.jobId}`} onClick={() => onRetry(job.jobId)}>Review &amp; Retry</button>}
-            {(unknown || job.retryBlockedType === "workflow_recovery_required") && <button type="button" className="secondary" disabled={busy || running} onClick={() => onCheck(job)}>Check Application Status</button>}
+            <button type="button" className="secondary" disabled={busy || running} onClick={() => onCheck(job)}>Check Job Status</button>
             {/answer|eligibility_unresolved/.test(job.errorType || "") && <button type="button" className="secondary" disabled={busy || running} onClick={onOpenSetup}>Complete Answers</button>}
           </div>
         </>}
@@ -53,7 +56,7 @@ export function ApplicationFailureList({ failures, selectedIds, busy, running, r
 
 export function AppleActivity({ view, save, setStatusMessage, onReviewRetry, onOpenSetup }) {
   const failures = view?.applicationFailures || [];
-  const unresolved = failures.filter(job => !["submitted", "requeued"].includes(job.status));
+  const unresolved = failures.filter(job => !resolvedStatuses.includes(job.status));
   const [selectedIds, setSelectedIds] = useState([]);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -91,11 +94,9 @@ export function AppleActivity({ view, save, setStatusMessage, onReviewRetry, onO
     busyRef.current = true; setBusy(true); setError("");
     try {
       const tab = await getActiveTab();
-      const response = await chrome.runtime.sendMessage(job.retryWorkflowSessionId
-        ? { type: "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION", workflowSessionId: job.retryWorkflowSessionId, jobId: job.jobId, tab }
-        : { type: "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY", tab });
+      const response = await chrome.runtime.sendMessage({ type: "APPLE_CAREERS_CHECK_REVIEW_JOB_PAGE", jobId: job.jobId, tab });
       if (!response?.ok) throw new Error(response?.error || "Application status could not be checked.");
-      setRowFeedback(current => ({ ...current, [job.jobId]: response.data?.message || "Active submissions checked. Unknown outcomes remain blocked unless Apple confirms the submission." }));
+      setRowFeedback(current => ({ ...current, [job.jobId]: response.data?.message || "Job page checked. Unknown submission outcomes remain blocked." }));
     } catch (failure) { setError(failure.message || "Application status could not be checked."); }
     finally { busyRef.current = false; setBusy(false); }
   }

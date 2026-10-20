@@ -28,7 +28,7 @@ test('known failures provide batch selection, setup, and individual Review & Ret
   const html = render({ selectedIds: [ids[0]] });
   assert.match(html, /Return Selected To Application Queue \(1\)/);
   assert.match(html, /Review &amp; Retry/); assert.match(html, /Complete Answers/);
-  assert.match(html, /Applications Still Require Review And Confirmation/);
+  assert.match(html, /Applications Require Review And Confirmation/);
   assert.doesNotMatch(html, /Confirm And Apply|Apply Selected/);
   for (const id of ids) assert.ok(html.includes(`Job ID ${id}, To Return To Queue`));
 });
@@ -36,14 +36,14 @@ test('known failures provide batch selection, setup, and individual Review & Ret
 test('unknown outcomes remain visibly blocked even after inventory absence was recorded', () => {
   const html = render({ failures: [{ ...failure(ids[0]), status: 'needs_review', canReturnToQueue: false,
     submissionOutcomeUnknown: true, verifiedAbsentAt: Date.now(), retryBlockedReason: 'The outcome is still unknown.' }] });
-  assert.match(html, /Outcome Unknown/); assert.match(html, /Check Application Status/);
+  assert.match(html, /Outcome Unknown/); assert.match(html, /Check Job Status/);
   assert.match(html, /type="checkbox"[^>]*disabled=""/);
   assert.doesNotMatch(html, /Review &amp; Retry/);
 });
 
 test('a durable unknown override stays visible when old failure metadata claimed a known result', () => {
   const html = render({ failures: [{ ...failure(ids[0]), canReturnToQueue: false, retryBlockedType: 'submission_outcome_unknown' }] });
-  assert.match(html, /Outcome Unknown|Check Application Status/);
+  assert.match(html, /Outcome Unknown|Check Job Status/);
   assert.doesNotMatch(html, /Review &amp; Retry/);
 });
 
@@ -53,6 +53,17 @@ test('requeued and submitted failures remain available as folded history without
   assert.match(html, /Requeued/); assert.match(html, /Submitted Later/); assert.match(html, /Previous Failure/);
   assert.doesNotMatch(html, /type="checkbox"|Review &amp; Retry|Return Selected To Application Queue/);
   const activity = renderToStaticMarkup(createElement(Activity, { view: { applicationFailures: failures, running: false } }));
+  assert.doesNotMatch(activity, /\d+ Needs Review/);
+});
+
+test('removed and page-submitted jobs are folded history without retry or selection controls', () => {
+  const failures = [{ ...failure(ids[0]), status: 'unavailable', canReturnToQueue: false },
+    { ...failure(ids[1]), status: 'page_submitted', canReturnToQueue: false }];
+  const html = render({ failures });
+  assert.match(html, /Posting Removed/); assert.match(html, /Submitted On Apple/);
+  assert.match(html, /Previous Failure/);
+  assert.doesNotMatch(html, /type="checkbox"|Review &amp; Retry|Return Selected|Check Job Status/);
+  const activity = renderToStaticMarkup(createElement(Activity, { view: { applicationFailures: failures } }));
   assert.doesNotMatch(activity, /\d+ Needs Review/);
 });
 
@@ -133,7 +144,7 @@ test('unknown status checks never send profile data, requeue jobs, or start an a
   const h = handlerHarness({ save: () => assert.fail('Read-only reconciliation must not save the profile'),
     sendMessage: async () => ({ ok: true, data: { resolved: false, message: 'Still unknown; no retry authorized.' } }) });
   await h.sandbox.checkJob({ ...failure(ids[0]), retryWorkflowSessionId: 'old-owner' });
-  assert.equal(h.messages[0].type, 'APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION');
+  assert.equal(h.messages[0].type, 'APPLE_CAREERS_CHECK_REVIEW_JOB_PAGE');
   assert.equal(h.messages[0].jobId, ids[0]); assert.equal(h.messages[0].userProfile, undefined);
   assert.equal(h.reviews.length, 0); assert.match(h.state.rows[ids[0]], /Still unknown/);
 });

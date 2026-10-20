@@ -3501,8 +3501,14 @@ async function waitForAppleSubmittedRoleDetails(tabId, expectedJobId, timeoutMs 
     unavailableChecks = details?.postingUnavailable === true && details.ready === false && exactIdentity
       ? unavailableChecks + 1 : 0;
     if (unavailableChecks >= 3) {
+      const currentTab = await chrome.tabs.get(tabId);
+      if (!CareerPeelerApplicationSafety.matchesJob(expectedJobId, currentTab.url)) {
+        if (forApplication) throw Object.assign(new Error("The job tab changed before its availability could be verified."), { code: "job_identity_mismatch" });
+        return null;
+      }
+      await recordAppleJobPageExclusion(String(expectedJobId), details.url, "unavailable");
       if (forApplication) throw Object.assign(new Error("Apple says this role does not exist or is no longer available. No application was started; the remaining selected jobs can continue."),
-        { code: "job_unavailable" });
+        { code: "job_unavailable", url: details.url });
       return null;
     }
     if (details?.ready && !details.postingUnavailable && details.description &&
@@ -3531,6 +3537,7 @@ const RECOGNIZED_MESSAGE_TYPES = new Set([
   "APPLE_CAREERS_GET_JOB_RANKING",
   "APPLE_CAREERS_REFRESH_QUEUE_CAPACITY",
   "APPLE_CAREERS_CHECK_INTERRUPTED_APPLICATION",
+  "APPLE_CAREERS_CHECK_REVIEW_JOB_PAGE",
   "APPLE_CAREERS_START_JOB_RANKING",
   "APPLE_CAREERS_QUEUE_TOP_JOBS",
   "APPLE_CAREERS_REMOVE_QUEUED_JOB",
@@ -3602,6 +3609,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           throw new Error("Check interrupted applications from the extension panel.");
         }
         sendResponse(await checkInterruptedAppleApplication(message));
+      } else if (message.type === "APPLE_CAREERS_CHECK_REVIEW_JOB_PAGE") {
+        const prefix = chrome.runtime.id ? `chrome-extension://${chrome.runtime.id}/` : null;
+        if (sender.tab || (sender.id && sender.id !== chrome.runtime.id) ||
+            (sender.url && (!prefix || !sender.url.startsWith(prefix)))) throw new Error("Check job pages from the extension panel.");
+        sendResponse(await checkAppleReviewJobPage(message.jobId, message.tab));
       } else if (message.type === "APPLE_CAREERS_START_JOB_RANKING") {
         sendResponse(await startAppleJobRanking(message.tab, message.userProfile, { topN: message.topN, resume: message.resume, autoApply: message.autoApply }));
       } else if (message.type === "APPLE_CAREERS_QUEUE_TOP_JOBS") {
