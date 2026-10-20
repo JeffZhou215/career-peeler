@@ -279,6 +279,7 @@ test('repeated successful returns deduplicate roles and preserve previous failur
 test('a reviewed retry survives worker restart after an interrupted ordinary form without changing cancellation', async () => {
   const h = await fixture();
   const job = h.data.appleJobRanking.jobs[ranking.idOf(ids[0])];
+  Object.assign(h.data.appleJobRanking.applicationFailures[ranking.idOf(ids[0])], { errorType: 'worker_interrupted', legacy: true });
   h.data.appleApplicationWorkflow = { id: 'stopped-form', owner: 'previous-worker', status: 'cancelled', stopRequested: true,
     reconciliationRequired: false, jobs: { [ids[0]]: { ...job, state: 'failed', stepPending: false,
       submissionOutcome: 'not_attempted', submissionAttemptCount: 0, reconciliation: 'not_attempted' } } };
