@@ -367,6 +367,58 @@ test("an absent uncertain job remains reserved while a different reviewed batch 
   assert.equal(h.stages.size, 0);
 });
 
+test("ambiguous Active inventory identifies the exact prior blocking application outside the selected batch", async () => {
+  const h = await fixture({ inventoryRoles: [{ jobId: ranking.idOf(ids[2]), active: true }] });
+  const sessionId = await interruptedSession(h, { state: "uncertain" });
+  const prepared = await h.prepare(ids.slice(0, 2));
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "workflow_recovery_required");
+  assert.equal(prepared.errorJob.jobId, ids[2]);
+  assert.equal(prepared.errorJob.title, h.data.appleApplicationWorkflow.jobs[ids[2]].title);
+  assert.equal(prepared.errorJob.url, h.data.appleApplicationWorkflow.jobs[ids[2]].url);
+  assert.equal(prepared.errorJob.source, "recovery");
+  assert.ok(!ids.slice(0, 2).includes(prepared.errorJob.jobId));
+  assert.ok(prepared.error.includes(ids[2]));
+  assert.equal(h.data.appleJobRanking.errorJobId, ids[2]);
+  assert.equal(h.data.appleApplicationWorkflow.id, sessionId);
+  assert.equal(h.data.appleApplicationWorkflow.jobs[ids[2]].submissionOutcome, "unknown");
+  assert.ok(h.data.appleJobRanking.reservations.some(item => item.jobId === ids[2]));
+  assert.equal(h.stages.size, 0);
+  assert.equal(h.calls.checkpoints.length, 0);
+});
+
+test("inventory failure retains the original blocking role's full identity without inventing a selected-job failure", async () => {
+  const h = await fixture({ failCapacity: "Synthetic inventory failure." });
+  await interruptedSession(h, { state: "uncertain" });
+  const prepared = await h.prepare();
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "submission_sync_failed");
+  assert.equal(prepared.errorJob.jobId, ids[2]);
+  assert.equal(prepared.errorJob.source, "recovery");
+  assert.ok(h.sandbox.CareerPeelerApplicationSafety.matchesJob(ids[2], prepared.errorJob.url));
+  assert.equal(h.data.appleJobRanking.errorJobId, ids[2]);
+  assert.equal(h.stages.size, 0);
+});
+
+test("a saved invalid recovery link cannot point the error at a different Apple job", async () => {
+  const h = await fixture({ failCapacity: true });
+  await interruptedSession(h, { state: "uncertain" });
+  h.data.appleApplicationWorkflow.jobs[ids[2]].url = `https://jobs.apple.com/en-us/details/${ids[0]}/wrong-role`;
+  const prepared = await h.prepare();
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorJob.jobId, ids[2]);
+  assert.equal(prepared.errorJob.url, null);
+});
+
+test("generic selected-batch errors do not acquire a job from an unrelated prior failure", async () => {
+  const h = await fixture();
+  h.data.appleJobRanking.errorJobId = ids[2];
+  const prepared = await h.prepare(["299999999-0836"]);
+  assert.equal(prepared.ok, false);
+  assert.equal(prepared.errorType, "batch_review_failed");
+  assert.equal(prepared.errorJob, null);
+});
+
 test("authentication, network, and incomplete preflight inventories retain recovery guards and unknown capacity", async () => {
   const role = { jobId: "200001234-0836", active: true };
   for (const options of [{ failCapacity: "Please sign in to Apple Careers before synchronizing." },
@@ -456,6 +508,9 @@ test("verified absence never authorizes selection of the exact job with an unkno
   const prepared = await h.prepare(ids.slice(0, 2));
   assert.equal(prepared.ok, false);
   assert.equal(prepared.errorType, "submission_outcome_unknown");
+  assert.equal(prepared.errorJob.jobId, ids[0]);
+  assert.equal(prepared.errorJob.source, "selection");
+  assert.ok(prepared.error.includes(ids[0]));
   assert.match(prepared.error, /unknown|uncertain|review|queued|selection|selected/i);
   assert.equal(fullInventoryReads(h).length, 1);
   assert.equal(h.data.appleApplicationWorkflow.jobs[ids[0]].state, "uncertain");

@@ -12,6 +12,8 @@ const selectedIds = ["200000101-0836", "200000102-9999"];
 const batch = { jobs: selectedIds.map((jobId, index) => ({ jobId, title: `Engineer ${index + 1}`, score: 90,
   eligible: true, url: `https://jobs.apple.com/en-us/details/${jobId}/engineer` })),
   batchToken: "reviewed-batch", capacity: { known: true, remaining: 12 }, reviewCount: 0 };
+const recoveryJob = { jobId: "200000103-0836", title: "Previously Interrupted Engineer",
+  url: "https://jobs.apple.com/en-us/details/200000103-0836/previously-interrupted-engineer", source: "recovery" };
 before(async () => {
   server = await createServer({ configFile: false, plugins: [react()], appType: "custom", logLevel: "error",
     server: { middlewareMode: true, hmr: false, ws: false, watch: null } });
@@ -29,7 +31,8 @@ function preparationHarness(response = { ok: true, data: batch }, options = {}) 
   const events = [];
   const requests = [];
   let requestNumber = 0;
-  const state = { open: false, busy: false, batch: { jobs: [] }, count: 0, error: "", errorType: "", view: { capacity: { known: true, remaining: 49 } } };
+  const state = { open: false, busy: false, batch: { jobs: [] }, count: 0, error: "", errorType: "", errorJob: null,
+    view: { capacity: { known: true, remaining: 49 } } };
   const sandbox = { selectedQueueIds: [...selectedIds], batchSelection: { current: [] },
     batchReviewGeneration: { current: 0 }, batchReviewRequest: { current: null },
     batchReviewClosePending: { current: false },
@@ -40,13 +43,14 @@ function preparationHarness(response = { ok: true, data: batch }, options = {}) 
     setBusy: value => { state.busy = value; events.push("busy"); },
     setPendingAction: value => { state.pending = value; },
     setError: value => { state.error = value; }, setBatchReviewErrorType: value => { state.errorType = value; },
+    setBatchReviewErrorJob: value => { state.errorJob = value; },
     setReviewedQueueToken: value => { state.reviewToken = value; },
     setView: update => { state.view = update(state.view); },
     getActiveTab: options.getActiveTab || (async () => ({ id: 7, windowId: 1, url: "https://jobs.apple.com/en-us/search" })),
     save: options.save || (async () => ({ resume: "offline" })),
     chrome: { runtime: { sendMessage: async message => { requests.push(message);
       return options.sendMessage ? options.sendMessage(message) : response; } } },
-    refresh: async () => { state.refreshed = true; }
+    refresh: async () => { state.refreshed = true; await options.refresh?.(state); }
   };
   vm.createContext(sandbox);
   vm.runInContext(`${handlerSource("reviewSelectedBatch", "\n\n  useEffect(")}\nglobalThis.prepare = reviewSelectedBatch; globalThis.cancel = cancelBatchReview;`, sandbox);
@@ -60,6 +64,60 @@ test("loading review retains the requested count and never claims cached capacit
   assert.match(html, /submission-sync-spinner/);
   assert.doesNotMatch(html, /0 Selected|49|Confirm And Apply|Retry Check/);
   assert.match(html, /<button(?![^>]*disabled)[^>]*>Cancel<\/button>/);
+});
+
+test("an unselected previous application remains identifiable and clickable when batch preparation fails", () => {
+  assert.ok(!selectedIds.includes(recoveryJob.jobId));
+  const html = render({ batch: null, error: "The previous application outcome needs review.",
+    errorType: "submission_outcome_unknown", errorJob: recoveryJob });
+  assert.match(html, /Previous Application Needs Review/);
+  assert.ok(html.includes(recoveryJob.title));
+  assert.match(html, /Job ID 200000103-0836/);
+  assert.ok(html.includes(`href="${recoveryJob.url}"`));
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noopener noreferrer"/);
+  assert.match(html, /2 Selected · Capacity Will Be Verified/);
+  assert.doesNotMatch(html, /sheet-job-list|Confirm And Apply|I Allow These Applications/);
+  for (const id of selectedIds) assert.ok(!html.includes(id), "a prior application must not appear as a selected batch role");
+});
+
+test("selected role error context keeps the full suffix without labeling it as a previous application", () => {
+  const errorJob = { ...batch.jobs[1], source: "selection" };
+  const html = render({ error: "The selected role changed.", errorType: "batch_review_failed", errorJob });
+  assert.match(html, /Job ID 200000102-9999/);
+  assert.ok(html.includes(errorJob.title));
+  assert.ok(html.includes(`href="${errorJob.url}"`));
+  assert.doesNotMatch(html, /Previous Application Needs Review|Confirm And Apply/);
+});
+
+test("unsafe or mismatched blocking-role URLs retain the exact ID without a clickable link", () => {
+  for (const url of [
+    "this is not a URL",
+    "javascript:alert(1)",
+    "https://example.com/en-us/details/200000103-0836/engineer",
+    "https://jobs.apple.com.example.com/en-us/details/200000103-0836/engineer",
+    "http://jobs.apple.com/en-us/details/200000103-0836/engineer",
+    "https://jobs.apple.com/en-us/details/200000103-9999/engineer",
+    "https://jobs.apple.com/en-us/details/200000103/engineer",
+    "https://jobs.apple.com/en-us/search",
+    undefined
+  ]) {
+    const html = render({ error: "Review the affected application.", errorType: "submission_outcome_unknown",
+      errorJob: { ...recoveryJob, url } });
+    assert.match(html, /Job ID 200000103-0836/);
+    assert.doesNotMatch(html, /<a\b|href=/, `unsafe or mismatched URL must not create a link: ${url}`);
+    assert.doesNotMatch(html, /Confirm And Apply/);
+  }
+});
+
+test("generic errors never fabricate a role ID or infer a blocking role from the prepared batch", () => {
+  for (const errorJob of [undefined, null, { title: "Unidentified role", source: "recovery" }]) {
+    const html = render({ batch, error: "Apple could not verify inventory.", errorType: "submission_sync_failed", errorJob });
+    assert.match(html, /Apple could not verify inventory/);
+    assert.match(html, /Retry Check/);
+    assert.doesNotMatch(html, /Job ID|Previous Application Needs Review|<a\b|Confirm And Apply|I Allow These Applications/);
+    for (const id of selectedIds) assert.ok(!html.includes(id));
+  }
 });
 
 test("actual application start remains protected from closing while read-only preparation permits it", () => {
@@ -149,6 +207,71 @@ test("preparation failures preserve the original selection for Retry even if the
   assert.equal(h.state.count, 2);
 });
 
+test("preparation failures preserve top-level and nested blocking-job context through a refreshed ranking view", async () => {
+  for (const response of [
+    { ok: false, error: "The previous application needs review.", errorType: "submission_outcome_unknown", errorJob: recoveryJob },
+    { ok: false, error: "The previous application needs review.", data: { errorType: "submission_outcome_unknown", errorJob: recoveryJob } }
+  ]) {
+    const h = preparationHarness(response, { refresh: state => {
+      assert.deepEqual(state.errorJob, recoveryJob, "the error context is installed before refreshing");
+      state.view = { capacity: { known: false }, recovery: null, errorJob: null };
+    } });
+    await h.sandbox.prepare();
+    assert.equal(h.state.errorType, "submission_outcome_unknown");
+    assert.deepEqual(h.state.errorJob, recoveryJob);
+    assert.equal(h.state.view.errorJob, null, "the ranking snapshot does not supply the retained context");
+    assert.equal(h.state.batch, null);
+    assert.equal(h.state.open, true);
+    const html = render({ batch: h.state.batch, error: h.state.error, errorType: h.state.errorType, errorJob: h.state.errorJob });
+    assert.ok(html.includes(`href="${recoveryJob.url}"`));
+    assert.doesNotMatch(html, /Confirm And Apply/);
+  }
+});
+
+test("a thrown preparation failure preserves its blocking-job context", async () => {
+  const h = preparationHarness(undefined, { save: async () => {
+    throw Object.assign(new Error("The previous application cannot be reconciled."),
+      { errorType: "submission_outcome_unknown", errorJob: recoveryJob });
+  } });
+  await h.sandbox.prepare();
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.state.errorType, "submission_outcome_unknown");
+  assert.deepEqual(h.state.errorJob, recoveryJob);
+  assert.equal(h.state.refreshed, true);
+});
+
+test("a fresh preparation clears the previous blocking role before awaiting the next tab lookup", async () => {
+  let resolveTab, request = 0;
+  const nextTab = new Promise(resolve => { resolveTab = resolve; });
+  const h = preparationHarness(undefined, { sendMessage: async () => ++request === 1
+    ? { ok: false, error: "Review the previous application.", errorType: "submission_outcome_unknown", errorJob: recoveryJob }
+    : { ok: true, data: batch } });
+  await h.sandbox.prepare();
+  assert.deepEqual(h.state.errorJob, recoveryJob);
+  h.sandbox.getActiveTab = () => nextTab;
+  const pending = h.sandbox.prepare(h.sandbox.batchSelection.current);
+  assert.equal(h.state.errorJob, null);
+  assert.equal(h.state.error, "");
+  assert.equal(h.state.errorType, "");
+  assert.equal(h.state.busy, true);
+  resolveTab({ id: 7, windowId: 1 });
+  await pending;
+  assert.equal(h.state.batch, batch);
+  assert.equal(h.state.errorJob, null);
+});
+
+test("cancelling a completed failed review clears its retained blocking-role context", async () => {
+  const h = preparationHarness({ ok: false, error: "Review the previous application.",
+    errorType: "submission_outcome_unknown", errorJob: recoveryJob });
+  await h.sandbox.prepare();
+  assert.deepEqual(h.state.errorJob, recoveryJob);
+  assert.equal(h.sandbox.batchReviewRequest.current, null);
+  h.sandbox.cancel();
+  assert.equal(h.state.open, false);
+  assert.equal(h.state.errorJob, null);
+  assert.deepEqual([...h.sandbox.selectedQueueIds], selectedIds);
+});
+
 test("cancelling before a delayed tab lookup preserves selection and prevents a late preparation request", async () => {
   let resolveTab;
   const tab = new Promise(resolve => { resolveTab = resolve; });
@@ -157,6 +280,7 @@ test("cancelling before a delayed tab lookup preserves selection and prevents a 
   h.sandbox.cancel();
   assert.equal(h.state.open, false);
   assert.equal(h.state.busy, false);
+  assert.equal(h.state.errorJob, null);
   resolveTab({ id: 7, windowId: 1 });
   await pending;
   assert.equal(h.requests.length, 0);
@@ -231,22 +355,24 @@ test("a cancelled late failure cannot reopen the sheet or overwrite a newer prep
   assert.equal(h.state.open, true);
   assert.equal(h.state.busy, true);
   assert.equal(h.requests.filter(message => message.type === "APPLE_CAREERS_STOP_JOB_RANKING").length, 1);
-  resolveFirst({ ok: false, error: "A cancelled request failed late.", errorType: "submission_sync_failed" });
+  resolveFirst({ ok: false, error: "A cancelled request failed late.", errorType: "submission_sync_failed", errorJob: recoveryJob });
   await old;
   assert.equal(h.state.open, true);
   assert.equal(h.state.busy, true);
   assert.equal(h.state.pending, "prepare");
   assert.equal(h.state.error, "");
+  assert.equal(h.state.errorJob, null, "late context from the cancelled request must not overwrite the new review");
   resolveSecond({ ok: true, data: batch });
   await next;
   assert.equal(h.state.batch, batch);
   assert.equal(h.state.busy, false);
+  assert.equal(h.state.errorJob, null);
 });
 
 test("a recovery error at Confirm performs preparation once and never retries Apply automatically", async () => {
   const messages = [], preparations = [], cleared = [];
   const sandbox = { applicationBatch: batch, selectedIds: [], visible: [], reviewedQueueToken: null,
-    commitTopN: () => 12, setBusy() {}, setPendingAction() {}, setError() {}, setBatchReviewErrorType() {},
+    commitTopN: () => 12, setBusy() {}, setPendingAction() {}, setError() {}, setBatchReviewErrorType() {}, setBatchReviewErrorJob() {},
     getActiveTab: async () => ({ id: 7, windowId: 1 }), save: async () => ({ afterRanking: "review" }),
     chrome: { runtime: { sendMessage: async message => { messages.push(message); return {
       ok: false, error: "Interrupted application needs reconciliation.", errorType: "workflow_recovery_required" }; } } },
@@ -261,4 +387,38 @@ test("a recovery error at Confirm performs preparation once and never retries Ap
   assert.deepEqual([...messages[0].selectedIds], selectedIds);
   assert.deepEqual(preparations, [selectedIds]);
   assert.equal(cleared.length, 0, "selection is cleared only after an accepted Apply start");
+});
+
+test("Confirm failures retain top-level and nested blocking-role context and clear it before a fresh action", async () => {
+  for (const response of [
+    { ok: false, error: "The reviewed role needs attention.", errorType: "submission_outcome_unknown", errorJob: recoveryJob },
+    { ok: false, error: "The reviewed role needs attention.", data: { errorType: "submission_outcome_unknown", errorJob: recoveryJob } }
+  ]) {
+    const messages = [], cleared = [];
+    const state = { error: "Previous error", errorType: "batch_review_failed", errorJob: { ...batch.jobs[0], source: "selection" } };
+    const sandbox = { applicationBatch: batch, selectedIds: [], visible: [], reviewedQueueToken: null,
+      commitTopN: () => 12, setBusy() {}, setPendingAction() {},
+      setError: value => { state.error = value; }, setBatchReviewErrorType: value => { state.errorType = value; },
+      setBatchReviewErrorJob: value => { state.errorJob = value; },
+      getActiveTab: async () => {
+        assert.equal(state.errorJob, null, "a new action clears stale context before looking up the tab");
+        return { id: 7, windowId: 1 };
+      },
+      save: async () => ({ afterRanking: "review" }),
+      chrome: { runtime: { sendMessage: async message => { messages.push(message); return response; } } },
+      setSelectedQueueIds: ids => cleared.push(ids),
+      setApplyOpen() {}, setView() {}, setQueueOpen() {}, setSelectedIds() {}, setStatusMessage() {}, refresh() {}
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(`${handlerSource("act", "\n\n  async function remove")}\nglobalThis.confirm = act;`, sandbox);
+    await sandbox.confirm("APPLE_CAREERS_APPLY_JOB_QUEUE");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].type, "APPLE_CAREERS_APPLY_JOB_QUEUE");
+    assert.deepEqual(state.errorJob, recoveryJob);
+    assert.equal(state.errorType, "submission_outcome_unknown");
+    assert.equal(cleared.length, 0);
+    const html = render({ batch, error: state.error, errorType: state.errorType, errorJob: state.errorJob });
+    assert.ok(html.includes(`href="${recoveryJob.url}"`));
+    assert.doesNotMatch(html, /Confirm And Apply|I Allow These Applications/);
+  }
 });

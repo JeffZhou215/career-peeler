@@ -81,6 +81,7 @@ The compact sync indicator shows **Syncing**, the last successful sync time, **S
 
 - **Interrupted scan:** use **Resume Scan** with the same search filters. Saved results remain available, and valid cached scores are reused.
 - **Failed application:** expand **Activity** for the job link, reason, and last step. Known failures before submission are skipped; an unknown submission outcome pauses the batch for review.
+- **Blocked batch:** the review sheet identifies the blocking role with its full job ID and a review link. **Previous Application Needs Review** means an earlier interrupted application is blocking the batch, even if that role is not selected now.
 - **Changed submissions:** automatic checks use the current Active Submissions page. Use **Sync Submissions** if all pages are needed. A visible Submitted marker on a job page can update that role's saved status; the complete count is verified again before applying.
 
 After a manual application is verified, its earlier failure is labeled **Submitted Later** and kept under **Previous Failure**. New application activity is grouped by job and includes each Continue step. Older unassigned activity can contain steps from several roles.

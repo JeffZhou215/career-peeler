@@ -30,6 +30,17 @@ function recoveryRole(view) {
   } catch (_) { return null; }
 }
 
+function applicationErrorRole(job) {
+  if (!job || !/^\d+(?:-\d+)?$/.test(String(job.jobId || ""))) return null;
+  const result = { ...job, jobId: String(job.jobId), title: job.title || "Application", url: null };
+  try {
+    const url = new URL(job.url);
+    const id = url.pathname.match(/^\/(?:[a-z]{2}-[a-z]{2}\/details|app\/[a-z]{2}-[a-z]{2}\/apply)\/([^/]+)(?:\/|$)/i)?.[1];
+    if (url.origin === "https://jobs.apple.com" && !url.username && !url.password && id === result.jobId) result.url = url.href;
+  } catch (_) { /* Keep the verified ID visible when its saved link is invalid. */ }
+  return result;
+}
+
 export function RankingRecoveryFeedback({ view, error = "", interruptedRanking = false, latestSearch,
   busy = false, checking = false, result, onCheck }) {
   const recovery = view?.recovery;
@@ -68,10 +79,11 @@ export function RankingRecoveryFeedback({ view, error = "", interruptedRanking =
   </>;
 }
 
-export function ApplicationBatchReview({ batch, selectedCount, preparing, starting, busy, error, errorType, capacity,
+export function ApplicationBatchReview({ batch, selectedCount, preparing, starting, busy, error, errorType, errorJob, capacity,
   allowSubmission, reviewAcknowledged, workflowRunning, onReviewChange, onConsentChange, onConfirm, onRetry, onCancel, onOpenSetup }) {
   const ready = Boolean(batch?.jobs.length) && !preparing && !error;
   const selectionNeedsReview = ["batch_review_failed", "submission_outcome_unknown"].includes(errorType);
+  const failedRole = error ? applicationErrorRole(errorJob) : null;
   return <>
     <SelectionCapacitySummary selectedCount={batch?.jobs.length ?? selectedCount}
       capacity={ready ? batch.capacity || capacity : { known: false }} />
@@ -89,7 +101,13 @@ export function ApplicationBatchReview({ batch, selectedCount, preparing, starti
       {batch.reviewToken && <label className="checkbox-row consent-row"><input type="checkbox" checked={reviewAcknowledged} disabled={busy} onChange={event => onReviewChange(event.target.checked)} /><span>I Reviewed The Match Concerns For These {batch.reviewCount} Jobs</span></label>}
       <label className="checkbox-row consent-row"><input type="checkbox" checked={allowSubmission} disabled={busy} onChange={event => onConsentChange(event.target.checked)} /><span>I Allow These Applications To Be Submitted</span></label>
     </>}
-    {error && <p role="alert" className="submitted-history-error">{error}</p>}
+    {error && <div role="alert" className="submitted-history-error"><p>{error}</p>
+      {failedRole && <>
+        {failedRole.source === "recovery" && <span className="compact-role-meta">Previous Application Needs Review</span>}
+        {failedRole.url ? <a href={failedRole.url} target="_blank" rel="noopener noreferrer">Review {failedRole.title} (Job ID {failedRole.jobId})</a>
+          : <span className="compact-role-meta">{failedRole.title} · Job ID {failedRole.jobId}</span>}
+      </>}
+    </div>}
     <div className="compact-actions">
       <button type="button" className="secondary" disabled={busy && !preparing} onClick={onCancel}>{error && selectionNeedsReview ? "Back To Queue" : "Cancel"}</button>
       {error ? !selectionNeedsReview && <button type="button" className="primary" disabled={busy} onClick={onRetry}>Retry Check</button>
@@ -122,6 +140,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
   const [pendingAction, setPendingAction] = useState(null);
   const [error, setError] = useState("");
   const [batchReviewErrorType, setBatchReviewErrorType] = useState("");
+  const [batchReviewErrorJob, setBatchReviewErrorJob] = useState(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [rankedOpen, setRankedOpen] = useState(true);
   const [reviewedQueueToken, setReviewedQueueToken] = useState(null);
@@ -273,6 +292,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     setPendingAction(type);
     setError("");
     setBatchReviewErrorType("");
+    setBatchReviewErrorJob(null);
     let preparingRecovery = false;
     try {
       const tab = await getActiveTab();
@@ -293,7 +313,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
           return;
         }
         throw Object.assign(new Error(response?.error || "The job queue could not be updated."),
-          { errorType: response?.errorType || response?.data?.errorType });
+          { errorType: response?.errorType || response?.data?.errorType, errorJob: response?.errorJob || response?.data?.errorJob || null });
       }
       if (type === "APPLE_CAREERS_QUEUE_TOP_JOBS") { setQueueOpen(true); setSelectedIds([]); }
       if (type === "APPLE_CAREERS_APPLY_JOB_QUEUE") {
@@ -310,6 +330,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     } catch (failure) {
       setError(failure?.message || "The job queue could not be updated.");
       setBatchReviewErrorType(failure?.errorType || "");
+      setBatchReviewErrorJob(failure?.errorJob || null);
     } finally { if (!preparingRecovery) { setBusy(false); setPendingAction(null); } }
   }
 
@@ -333,6 +354,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     setPendingAction("prepare");
     setError("");
     setBatchReviewErrorType("");
+    setBatchReviewErrorJob(null);
     setReviewedQueueToken(null);
     try {
       const tab = await getActiveTab();
@@ -344,13 +366,14 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
         reviewRequestId: request.reviewRequestId });
       if (!current()) return;
       if (!response?.ok) throw Object.assign(new Error(response?.error || "The selected batch could not be prepared."),
-        { errorType: response?.errorType || response?.data?.errorType });
+        { errorType: response?.errorType || response?.data?.errorType, errorJob: response?.errorJob || response?.data?.errorJob || null });
       setApplicationBatch(response.data);
       setView(current => current ? { ...current, capacity: response.data.capacity } : current);
     } catch (failure) {
       if (!current()) return;
       setError(failure?.message || "The selected batch could not be prepared.");
       setBatchReviewErrorType(failure?.errorType || "");
+      setBatchReviewErrorJob(failure?.errorJob || null);
       await refresh();
     } finally {
       if (current()) { batchReviewRequest.current = null; setBusy(false); setPendingAction(null); }
@@ -365,6 +388,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
       return;
     }
     if (event?.type !== "close") batchReviewClosePending.current = true;
+    setBatchReviewErrorJob(null);
     const request = batchReviewRequest.current;
     if (request) {
       batchReviewGeneration.current++;
@@ -561,7 +585,7 @@ export function RankedJobsSection({ profile, save, setStatusMessage, onSummaryCh
     <Sheet open={applyOpen} onClose={cancelBatchReview} title="Review Application Batch" busy={busy && pendingAction !== "prepare"}>
       <ApplicationBatchReview batch={applicationBatch} selectedCount={reviewSelectionCount}
         preparing={pendingAction === "prepare"} starting={pendingAction === "APPLE_CAREERS_APPLY_JOB_QUEUE"}
-        busy={busy} error={error} errorType={batchReviewErrorType} capacity={capacity} workflowRunning={view?.running}
+        busy={busy} error={error} errorType={batchReviewErrorType} errorJob={batchReviewErrorJob} capacity={capacity} workflowRunning={view?.running}
         allowSubmission={profile.autoApplyConsent} reviewAcknowledged={queueReviewAcknowledged}
         onReviewChange={checked => setReviewedQueueToken(checked ? applicationBatch.reviewToken : null)}
         onConsentChange={checked => save({ autoApplyConsent: checked })}
